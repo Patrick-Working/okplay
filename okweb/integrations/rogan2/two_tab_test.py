@@ -115,7 +115,8 @@ def main():
     a = ap.parse_args()
     prof = tempfile.mkdtemp(prefix='okweb-two-tab-')
     chrome = subprocess.Popen([find_browser(), '--headless=new', '--remote-debugging-port=%d' % a.cdp, '--user-data-dir=' + prof,
-                               '--autoplay-policy=no-user-gesture-required', '--remote-allow-origins=*', '--window-size=1280,960',
+                               '--autoplay-policy=no-user-gesture-required', '--mute-audio',   # never a sound on the PC
+                               '--remote-allow-origins=*', '--window-size=1280,960',
                                '--disable-background-timer-throttling', '--disable-renderer-backgrounding',
                                '--disable-backgrounding-occluded-windows', '--disable-features=IntensiveWakeUpThrottling', 'about:blank'],
                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
