@@ -1,0 +1,27 @@
+LIBRARY _inmm.dll
+EXPORTS
+    auxGetDevCapsA=t_auxGetDevCapsA
+    auxGetNumDevs=t_auxGetNumDevs
+    auxGetVolume=t_auxGetVolume
+    auxSetVolume=t_auxSetVolume
+    joyGetDevCapsA=t_joyGetDevCapsA
+    joyGetPosEx=t_joyGetPosEx
+    mciGetErrorStringA=t_mciGetErrorStringA
+    mciSendCommandA=t_mciSendCommandA
+    midiOutGetVolume=t_midiOutGetVolume
+    midiOutPrepareHeader=t_midiOutPrepareHeader
+    midiOutReset=t_midiOutReset
+    midiOutSetVolume=t_midiOutSetVolume
+    midiOutUnprepareHeader=t_midiOutUnprepareHeader
+    midiStreamClose=t_midiStreamClose
+    midiStreamOpen=t_midiStreamOpen
+    midiStreamOut=t_midiStreamOut
+    midiStreamPause=t_midiStreamPause
+    midiStreamProperty=t_midiStreamProperty
+    midiStreamRestart=t_midiStreamRestart
+    midiStreamStop=t_midiStreamStop
+    timeBeginPeriod=t_timeBeginPeriod
+    timeEndPeriod=t_timeEndPeriod
+    timeGetTime=t_timeGetTime
+    waveOutGetVolume=t_waveOutGetVolume
+    waveOutSetVolume=t_waveOutSetVolume

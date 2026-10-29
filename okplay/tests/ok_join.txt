@@ -1,0 +1,7 @@
+[    16] EVENT connection_ready sp=okplay
+[  1516] EVENT session "dptest H" players 1/8 flags 0x44
+[  1578] EVENT joined "dptest H" in 62ms
+[  1688] EVENT my_player id=1125470146
+[  9703] STAT peer id=1125470144 name=? pings_rx=38 pongs_rx=38 rtt_avg=0 rtt_max=0
+[  9703] STAT sent_pings=38 max_players=2 peers_answering=1
+[  9797] RESULT ok

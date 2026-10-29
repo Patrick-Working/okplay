@@ -1,0 +1,11 @@
+# okweb.js on Apache (oldkid.net/aoe2net/sdk/): games on any site import the module, which a
+# browser only allows with CORS; .js must be served as JavaScript for an ES module.
+<IfModule mod_mime.c>
+  AddType text/javascript .js .mjs
+  AddType application/wasm .wasm
+</IfModule>
+<IfModule mod_headers.c>
+  Header set Access-Control-Allow-Origin "*"
+  # a released version's files only change for compatible fixes: let browsers re-check daily
+  Header set Cache-Control "public, max-age=86400"
+</IfModule>

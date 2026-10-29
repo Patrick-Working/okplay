@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>okweb demo</title>
+<style>
+  :root { --bg: #f6f7f9; --card: #fff; --fg: #1c2330; --mut: #667085; --line: #e3e6eb; --acc: #2f6fdf; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #12151b; --card: #1b2029; --fg: #e6e9ef; --mut: #98a2b3; --line: #2b3240; --acc: #6b9cff; } }
+  :root[data-theme="dark"] { --bg: #12151b; --card: #1b2029; --fg: #e6e9ef; --mut: #98a2b3; --line: #2b3240; --acc: #6b9cff; }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.45 system-ui, Segoe UI, sans-serif; }
+  main { max-width: 760px; margin: 0 auto; padding: 16px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 8px; padding: 12px; margin: 12px 0; }
+  input, button { font: inherit; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--card); color: var(--fg); }
+  button { cursor: pointer; } button.primary { background: var(--acc); border-color: var(--acc); color: #fff; }
+  .row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .mut { color: var(--mut); } #log { height: 260px; overflow-y: auto; white-space: pre-wrap; font: 13px/1.4 Consolas, monospace; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<main>
+  <h1>okweb demo: chat over WebRTC</h1>
+  <p class="mut">Open this page in two browsers (or two tabs). Host in one, join from the other. Messages go
+    browser to browser; the room server only introduces you. <span id="srv"></span></p>
+
+  <div class="card" id="lobby">
+    <div class="row"><label>Your name <input id="name" value="Player"></label></div>
+    <div class="row" style="margin-top:8px">
+      <input id="room" value="Demo room"> <button class="primary" id="host">Host</button>
+      <button id="refresh">Refresh list</button>
+    </div>
+    <ul id="rooms"><li class="mut">No games yet.</li></ul>
+  </div>
+
+  <div class="card" id="game" hidden>
+    <div class="row"><b id="title"></b> <span class="mut" id="who"></span> <button id="leave">Leave</button></div>
+    <div id="log"></div>
+    <form class="row" id="chat"><input id="text" style="flex:1" placeholder="Say something" autocomplete="off"> <button class="primary">Send</button></form>
+  </div>
+
+  <div class="card">
+    <div class="row"><b>Connection details</b> <span class="mut">(if joining fails, copy this and send it)</span> <button id="copy">Copy</button></div>
+    <div id="diag" class="mut" style="height:160px; overflow-y:auto; white-space:pre-wrap; font:12px/1.4 Consolas, monospace"></div>
+  </div>
+</main>
+<script type="module">
+import { OkWeb } from '../sdk/v1/okweb.js?v=1.2.0';   // (?v=: the web host caches .js for days)
+
+// a game id: 32 hex digits of your own (make one up once and keep it); the server URL: okplay.php
+const q = new URLSearchParams(location.search);
+// connection steps and the kinds of route each side found ("host" = home network only, "srflx" =
+// through the router, "relay" = through a relay server) - what tells why two players can't connect
+const diag = (...a) => {
+  const d = document.getElementById('diag');
+  d.textContent += new Date().toISOString().slice(11, 19) + ' ' + a.join(' ') + '\n';
+  d.scrollTop = d.scrollHeight;
+};
+diag('browser:', navigator.userAgent);
+const net = new OkWeb({ server: q.get('server') || 'https://oldkid.net/aoe2net/okplay.php',
+                        game: 'a1b2c3d4e5f60718293a4b5c6d7e8f90', gameName: 'okweb demo', log: diag,
+                        relayOnly: q.has('relayonly'),   // ?relayonly: always through the room server's relay
+                        pingMs: 1000 });                 // each player's round trip, shown next to his name
+document.getElementById('copy').onclick = () => navigator.clipboard.writeText(document.getElementById('diag').textContent)
+  .then(() => diag('(copied)'), () => diag('(copy failed: select the text and copy it by hand)'));
+document.getElementById('srv').textContent = 'Server: ' + net.server.url;
+const $ = (id) => document.getElementById(id);
+let session = null;
+
+const say = (line) => { const l = $('log'); l.textContent += line + '\n'; l.scrollTop = l.scrollHeight; };
+const showPlayers = () => {
+  const st = session.stats();
+  $('who').textContent = 'with ' + (session.players.map((p) => {
+    const s = st[p.id] || {};
+    return p.name + (s.ping != null ? ` (${s.ping} ms, ${s.route === 'relay' ? 'relay' : 'direct'})` : '');
+  }).join(', ') || 'nobody yet');
+};
+
+async function refresh() {
+  const list = $('rooms');
+  try {
+    const rooms = await net.list();
+    list.replaceChildren(...(rooms.length ? rooms.map((r) => {
+      const li = document.createElement('li');
+      const b = document.createElement('button');
+      b.textContent = 'Join';
+      b.onclick = () => enter(net.join(r, { playerName: $('name').value }));
+      li.append(`${r.name} - ${r.players}/${r.maxPlayers}, hosted by ${r.hostName} `, b);
+      return li;
+    }) : [Object.assign(document.createElement('li'), { className: 'mut', textContent: 'No games yet.' })]));
+  } catch (e) { list.replaceChildren(Object.assign(document.createElement('li'), { textContent: e.message })); }
+}
+
+async function enter(promise) {
+  try { session = await promise; } catch (e) { diag('could not start:', e.message); alert(e.message); return; }
+  diag(session.isHost ? 'hosting' : 'joined', 'as', session.me);
+  $('lobby').hidden = true; $('game').hidden = false; $('log').textContent = '';
+  $('title').textContent = session.isHost ? 'Hosting' : 'Joined';
+  session.on('peer-joined', (p) => { say(`* ${p.name} joined`); showPlayers(); });
+  session.on('peer-left', (p, why) => { say(`* ${p.name} left`); diag('player left:', p.name, why); showPlayers(); });
+  session.on('peer-failed', (p, e) => { say(`* could not connect to ${p.name}`); diag('could not connect to', p.name, (e && e.message) || e); });
+  session.on('message', (from, bytes) => say(`${session.names.get(from) || from}: ${new TextDecoder().decode(bytes)}`));
+  session.on('closed', (why) => { say(`* game over (${why})`); diag('game over:', why); setTimeout(back, 1500); });
+  showPlayers();
+}
+
+function back() { $('game').hidden = true; $('lobby').hidden = false; session = null; refresh(); }
+
+$('host').onclick = () => enter(net.host({ name: $('room').value, maxPlayers: 8, playerName: $('name').value }));
+$('refresh').onclick = refresh;
+$('leave').onclick = () => session && session.close('left');
+$('chat').onsubmit = (e) => {
+  e.preventDefault();
+  const t = $('text').value.trim();
+  if (!t || !session) return;
+  session.send(null, t);   // everyone, reliable
+  say(`me: ${t}`);
+  $('text').value = '';
+};
+refresh();
+setInterval(() => { if (!session) refresh(); }, 3000);
+setInterval(() => { if (session) showPlayers(); }, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,14 @@
+GetFileVersionInfoA
+GetFileVersionInfoSizeA
+GetFileVersionInfoSizeW
+GetFileVersionInfoW
+VerFThk_ThunkData32
+VerFindFileA
+VerFindFileW
+VerInstallFileA
+VerInstallFileW
+VerLanguageNameA
+VerLanguageNameW
+VerQueryValueA
+VerQueryValueW
+VerThkSL_ThunkData32

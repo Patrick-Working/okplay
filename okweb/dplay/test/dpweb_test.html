@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DirectPlay web test</title>
+<style>
+  :root { --bg: #fff; --fg: #1c2330; --ok: #1e8e4e; --bad: #c0392b; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #12151b; --fg: #e6e9ef; --ok: #4cc38a; --bad: #ff7a6b; } }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.5 Consolas, monospace; margin: 16px; }
+  .PASS { color: var(--ok); } .FAIL { color: var(--bad); }
+</style>
+</head>
+<body>
+<h1>Our DirectPlay in the browser</h1>
+<pre id="out"></pre>
+<script type="module">
+// Our DirectPlay (WebAssembly) on the "Oldkid.net Online Play" provider (okweb-sp.js + okweb.js).
+// ?role=host|join  ?server=<okplay.php or stand-in>  ?sdk=<folder of okweb-sp.js>
+const q = new URLSearchParams(location.search);
+const sdk = q.get('sdk') || '../../../sdk/v1/';
+const { installOkwebProvider } = await import(sdk + 'okweb-sp.js');
+const out = document.getElementById('out');
+const lines = [];
+const stamp = Date.now();   // always the fresh build (a test page)
+window.Module = {
+  locateFile: (path) => path + '?' + stamp,
+  // ?debug=+dplay: DirectPlay's own trace channels in the console (DPLAYX_DEBUG, as on Windows)
+  preRun: [() => { if (q.get('debug')) window.Module.ENV.DPLAYX_DEBUG = q.get('debug'); }],
+  dpwebLine(t) { lines.push(t); const s = document.createElement('span'); s.className = t.split(' ')[0]; s.textContent = t + '\n'; out.append(s); },
+  dpwebDone(f) { window.__dpweb = { done: true, fails: f, lines }; },
+};
+installOkwebProvider(window.Module, { server: q.get('server') || '/okplay.php',
+                                      playerName: q.get('role') === 'host' ? 'Hana' : 'Ali',
+                                      gameName: 'DirectPlay web test', log: (...a) => console.log('[okweb]', ...a) });
+const s = document.createElement('script');
+s.src = 'dpweb_test.js?' + stamp;
+document.body.append(s);
+</script>
+</body>
+</html>

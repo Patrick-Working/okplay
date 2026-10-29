@@ -1,0 +1,26 @@
+#include <winver.h>
+#include "../src/version.h"
+VS_VERSION_INFO VERSIONINFO
+FILEVERSION 1,0,0,0
+PRODUCTVERSION 1,0,0,0
+FILEOS VOS__WINDOWS32
+FILETYPE VFT_DLL
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904b0"
+        BEGIN
+            VALUE "CompanyName", "Classic Netplay"
+            VALUE "FileDescription", "Classic Netplay movie helper: passes version.dll calls to Windows and adds the Indeo 5 intro-movie decoder (okindeo.dll)"
+            VALUE "FileVersion", "1.0.0.0"
+            VALUE "InternalName", "moviehelper"
+            VALUE "OriginalFilename", "version.dll"
+            VALUE "ProductName", "Classic Netplay drop-in"
+            VALUE "ProductVersion", OKP_VERSION_STR
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

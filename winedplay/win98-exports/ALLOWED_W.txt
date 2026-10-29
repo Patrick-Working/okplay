@@ -1,0 +1,2 @@
+MultiByteToWideChar
+WideCharToMultiByte

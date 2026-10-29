@@ -1,0 +1,12 @@
+okindeo.dll - Indeo Video 5 decoder for Video for Windows (part of Classic Netplay for AoE2)
+
+okindeo.dll contains FFmpeg 7.1 (https://ffmpeg.org), built with only its Indeo 5 decoder and
+statically linked. FFmpeg is licensed under the GNU Lesser General Public License 2.1 or later:
+https://www.gnu.org/licenses/old-licenses/lgpl-2.1.html
+
+You may replace or rebuild the FFmpeg part: okindeo.c (the whole of our code in this DLL),
+build.sh and build-ffmpeg.sh (the exact FFmpeg configuration) are included next to this file, and
+the FFmpeg 7.1 source is at https://ffmpeg.org/releases/ffmpeg-7.1.tar.xz (a copy is kept on the
+server that hosts this release).
+
+The decoder only adds a codec Windows lost; it does not change any game file. Uninstall removes it.

@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Two players</title>
+<style>
+  :root { --bg: #101318; --fg: #e6e9ef; }
+  @media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { --bg: #f6f7f9; --fg: #1c2330; } }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--fg); font: 12px system-ui, sans-serif; }
+  .row { display: flex; gap: 4px; height: calc(100% - 18px); }
+  iframe { flex: 1; border: 0; min-width: 0; }
+  .bar { height: 18px; line-height: 18px; padding: 0 6px; }
+</style>
+</head>
+<body>
+<div class="bar">Two copies of the game side by side (both stay visible, so both keep running). ?game=rogan2.html&amp;netserver=...</div>
+<div class="row">
+  <iframe id="a" title="Player 1"></iframe>
+  <iframe id="b" title="Player 2"></iframe>
+</div>
+<script>
+  // Online Play test page: two independent copies of a browser game in one tab, so neither is a
+  // hidden tab (hidden tabs pause a game's loop). Each frame is its own page: own memory, own peer.
+  const q = new URLSearchParams(location.search);
+  const game = q.get('game') || 'rogan2.html';
+  const server = q.get('netserver') || 'http://127.0.0.1:8799/okplay';
+  const extra = q.has('nettrace') ? '&nettrace' : '';   // the games' network trace, in the console
+  document.getElementById('a').src = game + '?netserver=' + encodeURIComponent(server) + '&netname=One' + extra;
+  document.getElementById('b').src = game + '?netserver=' + encodeURIComponent(server) + '&netname=Two' + extra;
+</script>
+</body>
+</html>

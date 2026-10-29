@@ -1,0 +1,2671 @@
+dplayx.c:2403: Provider #1 '@%SystemRoot%\system32\dpwsockx.dll,-3000' (6.0)
+dplayx.c:2403: Provider #2 'IPX Connection For DirectPlay' (6.0)
+dplayx.c:2403: Provider #3 '@%SystemRoot%\system32\dpmodemx.dll,-3000' (6.0)
+dplayx.c:2403: Provider #4 'Oldkid.net Online Play' (6.0)
+dplayx.c:2403: Provider #5 '@%SystemRoot%\system32\dpmodemx.dll,-3001' (6.0)
+dplayx.c:2449: Found 5 providers
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2525: Test failed: Unknown Address type found {66d8dc59-28e8-4d3e-ba93-2e98d251c0f3}
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2591: Test failed: got=5
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2525: Test failed: Unknown Address type found {66d8dc59-28e8-4d3e-ba93-2e98d251c0f3}
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2598: Test failed: got=5
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2525: Test failed: Unknown Address type found {66d8dc59-28e8-4d3e-ba93-2e98d251c0f3}
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2614: Test failed: got=5
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2525: Test failed: Unknown Address type found {66d8dc59-28e8-4d3e-ba93-2e98d251c0f3}
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2517: Test marked todo: expected=80 got=60
+dplayx.c:2563: Test marked todo: expected=3 got=2
+dplayx.c:2629: Test failed: got=5
+dplayx.c:2730: Test failed: expected=65632 got=65568
+dplayx.c:2737: Test failed: expected=65536 got=0
+dplayx.c:2744: Test failed: expected=65479 got=65487
+dplayx.c:2745: Test failed: expected=65536 got=0
+dplayx.c:2730: Test failed: expected=65632 got=65568
+dplayx.c:2737: Test failed: expected=65536 got=0
+dplayx.c:2748: Test failed: expected=1048547 got=1048555
+dplayx.c:2849: Test succeeded inside todo block: IDirectPlayLobby3A_EnumAddress 0
+dplayx.c:2816: Test marked todo: wrong count 2
+dplayx.c:4113: Test failed: got port 58313.
+dplayx.c:4113: Test failed: got address 0x18043f88.
+dplayx.c:4114: Test failed: got port 58313.
+dplayx.c:4114: Test failed: got address 0x18043f88.
+dplayx.c:4117: Test marked todo: got hr 0.
+dplayx.c:4118: Test marked todo: got hr 0.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got port 58313.
+dplayx.c:4123: Test failed: got address 0x18043f88.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: connect returned -1.
+dplayx.c:4123: Test failed: send() returned -1.
+dplayx.c:4123: Test failed: got session count 0.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got port 58313.
+dplayx.c:4124: Test failed: got address 0x18043f88.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: connect returned -1.
+dplayx.c:4124: Test failed: send() returned -1.
+dplayx.c:4124: Test failed: got session count 0.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got port 58313.
+dplayx.c:4125: Test failed: got address 0x18043f88.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: connect returned -1.
+dplayx.c:4125: Test failed: send() returned -1.
+dplayx.c:4125: Test failed: got session count 0.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got port 58313.
+dplayx.c:4126: Test failed: got address 0x18043f88.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: connect returned -1.
+dplayx.c:4126: Test failed: send() returned -1.
+dplayx.c:4126: Test failed: got session count 0.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got session count 0.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: got session count 0.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: got port 58313.
+dplayx.c:4129: Test failed: got address 0x18043f88.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: connect returned -1.
+dplayx.c:4129: Test failed: send() returned -1.
+dplayx.c:4129: Test failed: got session count 0.
+dplayx.c:4129: Test marked todo: got timeout count 0.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got session count 0.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: got session count 0.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: got port 58313.
+dplayx.c:4130: Test failed: got address 0x18043f88.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: connect returned -1.
+dplayx.c:4130: Test failed: send() returned -1.
+dplayx.c:4130: Test failed: got session count 0.
+dplayx.c:4130: Test marked todo: got timeout count 0.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got port 58313.
+dplayx.c:4135: Test failed: got address 0x18043f88.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: connect returned -1.
+dplayx.c:4135: Test failed: send() returned -1.
+dplayx.c:4135: Test failed: got session count 0.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got port 58313.
+dplayx.c:4138: Test failed: got address 0x18043f88.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: connect returned -1.
+dplayx.c:4138: Test failed: send() returned -1.
+dplayx.c:4138: Test failed: got session count 0.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3356: Test failed: got port 58313.
+dplayx.c:3356: Test failed: got address 0x18043f88.
+dplayx.c:3358: Test failed: connect returned -1.
+dplayx.c:3360: Test failed: send() returned -1.
+dplayx.c:3364: Test failed: send() returned -1.
+dplayx.c:3374: Test failed: got session count 0.
+dplayx.c:3379: Test failed: accept() returned 0xffffffff.
+dplayx.c:3379: Test failed: select() returned -1.
+dplayx.c:3379: Test failed: recv() returned -1.
+dplayx.c:3379: Test failed: got mixed 0xcccccccc.
+dplayx.c:3379: Test failed: got family -13108.
+dplayx.c:3379: Test failed: got port 52428.
+dplayx.c:3379: Test failed: got address 0xcccccccc.
+dplayx.c:3379: Test failed: got magic 0xcccccccc.
+dplayx.c:3379: Test failed: got command 52428.
+dplayx.c:3379: Test failed: got flags 0xcccccccc.
+dplayx.c:3379: Test failed: connect returned -1.
+dplayx.c:3379: Test failed: send() returned -1.
+dplayx.c:3379: Test failed: Open() returned 0x887700dc.
+dplayx.c:3382: Test failed: accept() returned 0xffffffff.
+dplayx.c:3382: Test failed: select() returned -1.
+dplayx.c:3382: Test failed: recv() returned -1.
+dplayx.c:3382: Test failed: got mixed 0xcccccccc.
+dplayx.c:3382: Test failed: got family -13108.
+dplayx.c:3382: Test failed: got port 52428.
+dplayx.c:3382: Test failed: got address 0xcccccccc.
+dplayx.c:3382: Test failed: got magic 0xcccccccc.
+dplayx.c:3382: Test failed: got command 52428.
+dplayx.c:3382: Test failed: got flags 0xcccccccc.
+dplayx.c:3382: Test failed: connect returned -1.
+dplayx.c:3382: Test failed: send() returned -1.
+dplayx.c:3382: Test failed: select() returned -1.
+dplayx.c:3382: Test failed: recv() returned -1.
+dplayx.c:3382: Test failed: send() returned -1.
+dplayx.c:3382: Test failed: Open() returned 0x887700dc.
+dplayx.c:3388: Test failed: accept() returned 0xffffffff.
+dplayx.c:3388: Test failed: select() returned -1.
+dplayx.c:3388: Test failed: recv() returned -1.
+dplayx.c:3388: Test failed: got mixed 0xcccccccc.
+dplayx.c:3388: Test failed: got family -13108.
+dplayx.c:3388: Test failed: got port 52428.
+dplayx.c:3388: Test failed: got address 0xcccccccc.
+dplayx.c:3388: Test failed: got magic 0xcccccccc.
+dplayx.c:3388: Test failed: got command 52428.
+dplayx.c:3388: Test failed: got flags 0xcccccccc.
+dplayx.c:3388: Test failed: connect returned -1.
+dplayx.c:3388: Test failed: send() returned -1.
+dplayx.c:3388: Test failed: select() returned -1.
+dplayx.c:3388: Test failed: recv() returned -1.
+dplayx.c:3388: Test failed: send() returned -1.
+dplayx.c:3388: Test failed: Open() returned 0x887700dc.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3398: Test failed: got port 58313.
+dplayx.c:3398: Test failed: got address 0x18043f88.
+dplayx.c:3400: Test failed: connect returned -1.
+dplayx.c:3402: Test failed: send() returned -1.
+dplayx.c:3412: Test failed: got session count 0.
+dplayx.c:3419: Test failed: accept() returned 0xffffffff.
+dplayx.c:3419: Test failed: select() returned -1.
+dplayx.c:3419: Test failed: recv() returned -1.
+dplayx.c:3419: Test failed: got mixed 0xcccccccc.
+dplayx.c:3419: Test failed: got family -13108.
+dplayx.c:3419: Test failed: got port 52428.
+dplayx.c:3419: Test failed: got address 0xcccccccc.
+dplayx.c:3419: Test failed: got magic 0xcccccccc.
+dplayx.c:3419: Test failed: got command 52428.
+dplayx.c:3419: Test failed: got flags 0xcccccccc.
+dplayx.c:3419: Test failed: connect returned -1.
+dplayx.c:3419: Test failed: send() returned -1.
+dplayx.c:3419: Test failed: select() returned -1.
+dplayx.c:3419: Test failed: recv() returned -1.
+dplayx.c:3419: Test failed: send() returned -1.
+dplayx.c:3419: Test failed: Open() returned 0x887700dc.
+dplayx.c:3423: Test failed: accept() returned 0xffffffff.
+dplayx.c:3423: Test failed: select() returned -1.
+dplayx.c:3423: Test failed: recv() returned -1.
+dplayx.c:3423: Test failed: got mixed 0xcccccccc.
+dplayx.c:3423: Test failed: got family -13108.
+dplayx.c:3423: Test failed: got port 52428.
+dplayx.c:3423: Test failed: got address 0xcccccccc.
+dplayx.c:3423: Test failed: got magic 0xcccccccc.
+dplayx.c:3423: Test failed: got command 52428.
+dplayx.c:3423: Test failed: got flags 0xcccccccc.
+dplayx.c:3423: Test failed: connect returned -1.
+dplayx.c:3423: Test failed: send() returned -1.
+dplayx.c:3423: Test failed: select() returned -1.
+dplayx.c:3423: Test failed: recv() returned -1.
+dplayx.c:3423: Test failed: send() returned -1.
+dplayx.c:3423: Test failed: Open() returned 0x887700dc.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: got port 58313.
+dplayx.c:3646: Test failed: got address 0x18043f88.
+dplayx.c:3646: Test failed: connect returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3595: Test failed: got session count 0.
+dplayx.c:3646: Test failed: accept() returned 0xffffffff.
+dplayx.c:3646: Test failed: select() returned -1.
+dplayx.c:3646: Test failed: recv() returned -1.
+dplayx.c:3646: Test failed: got mixed 0xcccccccc.
+dplayx.c:3646: Test failed: got family -13108.
+dplayx.c:3646: Test failed: got port 52428.
+dplayx.c:3646: Test failed: got address 0xcccccccc.
+dplayx.c:3646: Test failed: got magic 0xcccccccc.
+dplayx.c:3646: Test failed: got command 52428.
+dplayx.c:3646: Test failed: got flags 0xcccccccc.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: select() returned -1.
+dplayx.c:3646: Test failed: recv() returned -1.
+dplayx.c:3646: Test failed: send() returned -1.
+dplayx.c:3646: Test failed: Open() returned 0x887700dc.
+dplayx.c:3648: Test failed: send() returned -1.
+dplayx.c:3649: Test failed: select() returned -1.
+dplayx.c:3649: Test failed: recv() returned -1.
+dplayx.c:3649: Test failed: got mixed 0xcccccccc.
+dplayx.c:3649: Test failed: got family -13108.
+dplayx.c:3649: Test failed: got port 52428.
+dplayx.c:3649: Test failed: got address 0xcccccccc.
+dplayx.c:3649: Test failed: got magic 0xcccccccc.
+dplayx.c:3649: Test failed: got command 52428.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: got port 58313.
+dplayx.c:4980: Test failed: got address 0x18043f88.
+dplayx.c:4980: Test failed: connect returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:3595: Test failed: got session count 0.
+dplayx.c:4980: Test failed: accept() returned 0xffffffff.
+dplayx.c:4980: Test failed: select() returned -1.
+dplayx.c:4980: Test failed: recv() returned -1.
+dplayx.c:4980: Test failed: got mixed 0xcccccccc.
+dplayx.c:4980: Test failed: got family -13108.
+dplayx.c:4980: Test failed: got port 52428.
+dplayx.c:4980: Test failed: got address 0xcccccccc.
+dplayx.c:4980: Test failed: got magic 0xcccccccc.
+dplayx.c:4980: Test failed: got command 52428.
+dplayx.c:4980: Test failed: got flags 0xcccccccc.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: select() returned -1.
+dplayx.c:4980: Test failed: recv() returned -1.
+dplayx.c:4980: Test failed: send() returned -1.
+dplayx.c:4980: Test failed: Open() returned 0x887700dc.
+dplayx.c:4984: Test failed: select() returned -1.
+dplayx.c:4984: Test failed: recv() returned -1.
+dplayx.c:4984: Test failed: got mixed 0xcccccccc.
+dplayx.c:4984: Test failed: got family -13108.
+dplayx.c:4984: Test failed: got port 52428.
+dplayx.c:4984: Test failed: got address 0xcccccccc.
+dplayx.c:4984: Test failed: got magic 0xcccccccc.
+dplayx.c:4984: Test failed: got command 52428.
+dplayx.c:4984: Test failed: got flags 0xcccccccc.
+dplayx.c:4984: Test failed: connect returned -1.
+dplayx.c:4984: Test failed: send() returned -1.
+dplayx.c:4984: Test failed: select() returned -1.
+dplayx.c:4984: Test failed: recv() returned -1.
+dplayx.c:4984: Test failed: got mixed 0xcccccccc.
+dplayx.c:4984: Test failed: got family -13108.
+dplayx.c:4984: Test failed: got port 52428.
+dplayx.c:4984: Test failed: got address 0xcccccccc.
+dplayx.c:4984: Test failed: got magic 0xcccccccc.
+dplayx.c:4984: Test failed: got command 52428.
+dplayx.c:4984: Test failed: got destination id 0xcccccccc.
+dplayx.c:4984: Test failed: got player id 0xcccccccc.
+dplayx.c:4984: Test failed: got group id 0xcccccccc.
+dplayx.c:4984: Test failed: got create offset 3435973836.
+dplayx.c:4984: Test failed: got password offset 3435973836.
+dplayx.c:4984: Test failed: got player info size 3435973836.
+dplayx.c:4984: Test failed: got flags 0xcccccccc.
+dplayx.c:4984: Test failed: got player info player id 0xcccccccc.
+dplayx.c:4984: Test failed: got short name length 3435973836.
+dplayx.c:4984: Test failed: got long name length 3435973836.
+dplayx.c:4984: Test failed: got SP data size 3435973836.
+dplayx.c:4984: Test failed: got player data size 3435973836.
+dplayx.c:4984: Test failed: got player count 3435973836.
+dplayx.c:4984: Test failed: got system player id 0xcccccccc.
+dplayx.c:4984: Test failed: got fixed size 3435973836.
+dplayx.c:4984: Test failed: got parent id 0xcccccccc.
+dplayx.c:4984: Test failed: select() returned -1.
+dplayx.c:4984: Test failed: recv() returned -1.
+dplayx.c:4984: Test failed: got TCP family -13108.
+dplayx.c:4984: Test failed: got TCP port 52428.
+dplayx.c:4984: Test failed: got TCP address 0xcccccccc.
+dplayx.c:4984: Test failed: got UDP family -13108.
+dplayx.c:4984: Test failed: got UDP port 52428.
+dplayx.c:4984: Test failed: got UDP address 0xcccccccc.
+dplayx.c:4984: Test failed: select() returned -1.
+dplayx.c:4984: Test failed: recv() returned -1.
+dplayx.c:4984: Test failed: player data didn't match.
+dplayx.c:4984: Test failed: select() returned -1.
+dplayx.c:4984: Test failed: recv() returned -1.
+dplayx.c:4984: Test failed: got reserved1 52428.
+dplayx.c:4984: Test failed: select() returned -1.
+dplayx.c:4984: Test failed: recv() returned -1.
+dplayx.c:4984: Test failed: got reserved2 3435973836.
+dplayx.c:4984: Test failed: CreatePlayer() returned 0x80070057.
+dplayx.c:4984: Test failed: got dpid 0xdeadbeef.
+dplayx.c:4984: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:4984: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:4984: Test failed: got player count 0.
+dplayx.c:4987: Test failed: select() returned -1.
+dplayx.c:4987: Test failed: recv() returned -1.
+dplayx.c:4987: Test failed: got mixed 0xcccccccc.
+dplayx.c:4987: Test failed: got family -13108.
+dplayx.c:4987: Test failed: got port 52428.
+dplayx.c:4987: Test failed: got address 0xcccccccc.
+dplayx.c:4987: Test failed: got magic 0xcccccccc.
+dplayx.c:4987: Test failed: got command 52428.
+dplayx.c:4987: Test failed: got flags 0xcccccccc.
+dplayx.c:4987: Test failed: connect returned -1.
+dplayx.c:4987: Test failed: send() returned -1.
+dplayx.c:4987: Test failed: select() returned -1.
+dplayx.c:4987: Test failed: recv() returned -1.
+dplayx.c:4987: Test failed: got mixed 0xcccccccc.
+dplayx.c:4987: Test failed: got family -13108.
+dplayx.c:4987: Test failed: got port 52428.
+dplayx.c:4987: Test failed: got address 0xcccccccc.
+dplayx.c:4987: Test failed: got magic 0xcccccccc.
+dplayx.c:4987: Test failed: got command 52428.
+dplayx.c:4987: Test failed: got destination id 0xcccccccc.
+dplayx.c:4987: Test failed: got player id 0xcccccccc.
+dplayx.c:4987: Test failed: got group id 0xcccccccc.
+dplayx.c:4987: Test failed: got create offset 3435973836.
+dplayx.c:4987: Test failed: got password offset 3435973836.
+dplayx.c:4987: Test failed: got player info size 3435973836.
+dplayx.c:4987: Test failed: got flags 0xcccccccc.
+dplayx.c:4987: Test failed: got player info player id 0xcccccccc.
+dplayx.c:4987: Test failed: got short name length 3435973836.
+dplayx.c:4987: Test failed: got long name length 3435973836.
+dplayx.c:4987: Test failed: got SP data size 3435973836.
+dplayx.c:4987: Test failed: got player data size 3435973836.
+dplayx.c:4987: Test failed: got player count 3435973836.
+dplayx.c:4987: Test failed: got system player id 0xcccccccc.
+dplayx.c:4987: Test failed: got fixed size 3435973836.
+dplayx.c:4987: Test failed: got parent id 0xcccccccc.
+dplayx.c:4987: Test failed: select() returned -1.
+dplayx.c:4987: Test failed: recv() returned -1.
+dplayx.c:4987: Test failed: got short name L"\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\c620\7735\0001".
+dplayx.c:4987: Test failed: select() returned -1.
+dplayx.c:4987: Test failed: recv() returned -1.
+dplayx.c:4987: Test failed: got long name L"\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\ffff\f150\013f\b56e\7271\2184\7274\c660\7735\f168\013f\f56c\013f\353a\7270\f168\013f\0400".
+dplayx.c:4987: Test failed: select() returned -1.
+dplayx.c:4987: Test failed: recv() returned -1.
+dplayx.c:4987: Test failed: got TCP family -13108.
+dplayx.c:4987: Test failed: got TCP port 52428.
+dplayx.c:4987: Test failed: got TCP address 0xcccccccc.
+dplayx.c:4987: Test failed: got UDP family -13108.
+dplayx.c:4987: Test failed: got UDP port 52428.
+dplayx.c:4987: Test failed: got UDP address 0xcccccccc.
+dplayx.c:4987: Test failed: select() returned -1.
+dplayx.c:4987: Test failed: recv() returned -1.
+dplayx.c:4987: Test failed: player data didn't match.
+dplayx.c:4987: Test failed: select() returned -1.
+dplayx.c:4987: Test failed: recv() returned -1.
+dplayx.c:4987: Test failed: got reserved1 52428.
+dplayx.c:4987: Test failed: select() returned -1.
+dplayx.c:4987: Test failed: recv() returned -1.
+dplayx.c:4987: Test failed: got reserved2 3435973836.
+dplayx.c:4987: Test failed: CreatePlayer() returned 0x80070057.
+dplayx.c:4987: Test failed: got dpid 0xdeadbeef.
+dplayx.c:4987: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:4987: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:4987: Test failed: got player count 0.
+dplayx.c:4993: Test failed: select() returned -1.
+dplayx.c:4993: Test failed: recv() returned -1.
+dplayx.c:4993: Test failed: got mixed 0xcccccccc.
+dplayx.c:4993: Test failed: got family -13108.
+dplayx.c:4993: Test failed: got port 52428.
+dplayx.c:4993: Test failed: got address 0xcccccccc.
+dplayx.c:4993: Test failed: got magic 0xcccccccc.
+dplayx.c:4993: Test failed: got command 52428.
+dplayx.c:4993: Test failed: got flags 0xcccccccc.
+dplayx.c:4993: Test failed: connect returned -1.
+dplayx.c:4993: Test failed: send() returned -1.
+dplayx.c:4993: Test failed: select() returned -1.
+dplayx.c:4993: Test failed: recv() returned -1.
+dplayx.c:4993: Test failed: got mixed 0xcccccccc.
+dplayx.c:4993: Test failed: got family -13108.
+dplayx.c:4993: Test failed: got port 52428.
+dplayx.c:4993: Test failed: got address 0xcccccccc.
+dplayx.c:4993: Test failed: got magic 0xcccccccc.
+dplayx.c:4993: Test failed: got command 52428.
+dplayx.c:4993: Test failed: got destination id 0xcccccccc.
+dplayx.c:4993: Test failed: got player id 0xcccccccc.
+dplayx.c:4993: Test failed: got group id 0xcccccccc.
+dplayx.c:4993: Test failed: got create offset 3435973836.
+dplayx.c:4993: Test failed: got password offset 3435973836.
+dplayx.c:4993: Test failed: got player info size 3435973836.
+dplayx.c:4993: Test failed: got flags 0xcccccccc.
+dplayx.c:4993: Test failed: got player info player id 0xcccccccc.
+dplayx.c:4993: Test failed: got short name length 3435973836.
+dplayx.c:4993: Test failed: got long name length 3435973836.
+dplayx.c:4993: Test failed: got SP data size 3435973836.
+dplayx.c:4993: Test failed: got player data size 3435973836.
+dplayx.c:4993: Test failed: got player count 3435973836.
+dplayx.c:4993: Test failed: got system player id 0xcccccccc.
+dplayx.c:4993: Test failed: got fixed size 3435973836.
+dplayx.c:4993: Test failed: got parent id 0xcccccccc.
+dplayx.c:4993: Test failed: select() returned -1.
+dplayx.c:4993: Test failed: recv() returned -1.
+dplayx.c:4993: Test failed: got short name L"\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\c620\7735\0001".
+dplayx.c:4993: Test failed: select() returned -1.
+dplayx.c:4993: Test failed: recv() returned -1.
+dplayx.c:4993: Test failed: got long name L"\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\cccc\ffff\f150\013f\b56e\7271\2184\7274\c660\7735\f168\013f\f56c\013f\353a\7270\f168\013f\0400".
+dplayx.c:4993: Test failed: select() returned -1.
+dplayx.c:4993: Test failed: recv() returned -1.
+dplayx.c:4993: Test failed: got TCP family -13108.
+dplayx.c:4993: Test failed: got TCP port 52428.
+dplayx.c:4993: Test failed: got TCP address 0xcccccccc.
+dplayx.c:4993: Test failed: got UDP family -13108.
+dplayx.c:4993: Test failed: got UDP port 52428.
+dplayx.c:4993: Test failed: got UDP address 0xcccccccc.
+dplayx.c:4993: Test failed: select() returned -1.
+dplayx.c:4993: Test failed: recv() returned -1.
+dplayx.c:4993: Test failed: player data didn't match.
+dplayx.c:4993: Test failed: select() returned -1.
+dplayx.c:4993: Test failed: recv() returned -1.
+dplayx.c:4993: Test failed: got reserved1 52428.
+dplayx.c:4993: Test failed: select() returned -1.
+dplayx.c:4993: Test failed: recv() returned -1.
+dplayx.c:4993: Test failed: got reserved2 3435973836.
+dplayx.c:4993: Test failed: CreatePlayer() returned 0x80070057.
+dplayx.c:4993: Test failed: got dpid 0xdeadbeef.
+dplayx.c:4993: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:4993: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:4993: Test failed: got player count 0.
+dplayx.c:4997: Test failed: select() returned -1.
+dplayx.c:4997: Test failed: recv() returned -1.
+dplayx.c:4997: Test failed: got mixed 0xcccccccc.
+dplayx.c:4997: Test failed: got family -13108.
+dplayx.c:4997: Test failed: got port 52428.
+dplayx.c:4997: Test failed: got address 0xcccccccc.
+dplayx.c:4997: Test failed: got magic 0xcccccccc.
+dplayx.c:4997: Test failed: got command 52428.
+dplayx.c:4997: Test failed: got flags 0xcccccccc.
+dplayx.c:4997: Test failed: connect returned -1.
+dplayx.c:4997: Test failed: send() returned -1.
+dplayx.c:4997: Test failed: select() returned -1.
+dplayx.c:4997: Test failed: recv() returned -1.
+dplayx.c:4997: Test failed: got mixed 0xcccccccc.
+dplayx.c:4997: Test failed: got family -13108.
+dplayx.c:4997: Test failed: got port 52428.
+dplayx.c:4997: Test failed: got address 0xcccccccc.
+dplayx.c:4997: Test failed: got magic 0xcccccccc.
+dplayx.c:4997: Test failed: got command 52428.
+dplayx.c:4997: Test failed: got destination id 0xcccccccc.
+dplayx.c:4997: Test failed: got player id 0xcccccccc.
+dplayx.c:4997: Test failed: got group id 0xcccccccc.
+dplayx.c:4997: Test failed: got create offset 3435973836.
+dplayx.c:4997: Test failed: got password offset 3435973836.
+dplayx.c:4997: Test failed: got player info size 3435973836.
+dplayx.c:4997: Test failed: got flags 0xcccccccc.
+dplayx.c:4997: Test failed: got player info player id 0xcccccccc.
+dplayx.c:4997: Test failed: got short name length 3435973836.
+dplayx.c:4997: Test failed: got long name length 3435973836.
+dplayx.c:4997: Test failed: got SP data size 3435973836.
+dplayx.c:4997: Test failed: got player data size 3435973836.
+dplayx.c:4997: Test failed: got player count 3435973836.
+dplayx.c:4997: Test failed: got system player id 0xcccccccc.
+dplayx.c:4997: Test failed: got fixed size 3435973836.
+dplayx.c:4997: Test failed: got parent id 0xcccccccc.
+dplayx.c:4997: Test failed: select() returned -1.
+dplayx.c:4997: Test failed: recv() returned -1.
+dplayx.c:4997: Test failed: got TCP family -13108.
+dplayx.c:4997: Test failed: got TCP port 52428.
+dplayx.c:4997: Test failed: got TCP address 0xcccccccc.
+dplayx.c:4997: Test failed: got UDP family -13108.
+dplayx.c:4997: Test failed: got UDP port 52428.
+dplayx.c:4997: Test failed: got UDP address 0xcccccccc.
+dplayx.c:4997: Test failed: select() returned -1.
+dplayx.c:4997: Test failed: recv() returned -1.
+dplayx.c:4997: Test failed: player data didn't match.
+dplayx.c:4997: Test failed: select() returned -1.
+dplayx.c:4997: Test failed: recv() returned -1.
+dplayx.c:4997: Test failed: got reserved1 52428.
+dplayx.c:4997: Test failed: select() returned -1.
+dplayx.c:4997: Test failed: recv() returned -1.
+dplayx.c:4997: Test failed: got reserved2 3435973836.
+dplayx.c:4997: Test failed: CreatePlayer() returned 0x80070057.
+dplayx.c:4997: Test failed: got dpid 0xdeadbeef.
+dplayx.c:4997: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:4997: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:4997: Test failed: got player count 0.
+dplayx.c:5005: Test failed: select() returned -1.
+dplayx.c:5005: Test failed: recv() returned -1.
+dplayx.c:5005: Test failed: got mixed 0xcccccccc.
+dplayx.c:5005: Test failed: got family -13108.
+dplayx.c:5005: Test failed: got port 52428.
+dplayx.c:5005: Test failed: got address 0xcccccccc.
+dplayx.c:5005: Test failed: got magic 0xcccccccc.
+dplayx.c:5005: Test failed: got command 52428.
+dplayx.c:5005: Test failed: got flags 0xcccccccc.
+dplayx.c:5005: Test failed: connect returned -1.
+dplayx.c:5005: Test failed: send() returned -1.
+dplayx.c:5005: Test failed: select() returned -1.
+dplayx.c:5005: Test failed: recv() returned -1.
+dplayx.c:5005: Test failed: got mixed 0xcccccccc.
+dplayx.c:5005: Test failed: got family -13108.
+dplayx.c:5005: Test failed: got port 52428.
+dplayx.c:5005: Test failed: got address 0xcccccccc.
+dplayx.c:5005: Test failed: got magic 0xcccccccc.
+dplayx.c:5005: Test failed: got command 52428.
+dplayx.c:5005: Test failed: got destination id 0xcccccccc.
+dplayx.c:5005: Test failed: got player id 0xcccccccc.
+dplayx.c:5005: Test failed: got group id 0xcccccccc.
+dplayx.c:5005: Test failed: got create offset 3435973836.
+dplayx.c:5005: Test failed: got password offset 3435973836.
+dplayx.c:5005: Test failed: got player info size 3435973836.
+dplayx.c:5005: Test failed: got flags 0xcccccccc.
+dplayx.c:5005: Test failed: got player info player id 0xcccccccc.
+dplayx.c:5005: Test failed: got short name length 3435973836.
+dplayx.c:5005: Test failed: got long name length 3435973836.
+dplayx.c:5005: Test failed: got SP data size 3435973836.
+dplayx.c:5005: Test failed: got player data size 3435973836.
+dplayx.c:5005: Test failed: got player count 3435973836.
+dplayx.c:5005: Test failed: got system player id 0xcccccccc.
+dplayx.c:5005: Test failed: got fixed size 3435973836.
+dplayx.c:5005: Test failed: got parent id 0xcccccccc.
+dplayx.c:5005: Test failed: select() returned -1.
+dplayx.c:5005: Test failed: recv() returned -1.
+dplayx.c:5005: Test failed: got TCP family -13108.
+dplayx.c:5005: Test failed: got TCP port 52428.
+dplayx.c:5005: Test failed: got TCP address 0xcccccccc.
+dplayx.c:5005: Test failed: got UDP family -13108.
+dplayx.c:5005: Test failed: got UDP port 52428.
+dplayx.c:5005: Test failed: got UDP address 0xcccccccc.
+dplayx.c:5005: Test failed: select() returned -1.
+dplayx.c:5005: Test failed: recv() returned -1.
+dplayx.c:5005: Test failed: player data didn't match.
+dplayx.c:5005: Test failed: select() returned -1.
+dplayx.c:5005: Test failed: recv() returned -1.
+dplayx.c:5005: Test failed: got reserved1 52428.
+dplayx.c:5005: Test failed: select() returned -1.
+dplayx.c:5005: Test failed: recv() returned -1.
+dplayx.c:5005: Test failed: got reserved2 3435973836.
+dplayx.c:5005: Test failed: CreatePlayer() returned 0x80070057.
+dplayx.c:5005: Test failed: got dpid 0xdeadbeef.
+dplayx.c:5005: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:5005: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:5005: Test failed: got player count 0.
+dplayx.c:5008: Test failed: select() returned -1.
+dplayx.c:5008: Test failed: recv() returned -1.
+dplayx.c:5008: Test failed: got mixed 0xcccccccc.
+dplayx.c:5008: Test failed: got family -13108.
+dplayx.c:5008: Test failed: got port 52428.
+dplayx.c:5008: Test failed: got address 0xcccccccc.
+dplayx.c:5008: Test failed: got magic 0xcccccccc.
+dplayx.c:5008: Test failed: got command 52428.
+dplayx.c:5008: Test failed: got flags 0xcccccccc.
+dplayx.c:5008: Test failed: connect returned -1.
+dplayx.c:5008: Test failed: send() returned -1.
+dplayx.c:5008: Test failed: select() returned -1.
+dplayx.c:5008: Test failed: recv() returned -1.
+dplayx.c:5008: Test failed: got mixed 0xcccccccc.
+dplayx.c:5008: Test failed: got family -13108.
+dplayx.c:5008: Test failed: got port 52428.
+dplayx.c:5008: Test failed: got address 0xcccccccc.
+dplayx.c:5008: Test failed: got magic 0xcccccccc.
+dplayx.c:5008: Test failed: got command 52428.
+dplayx.c:5008: Test failed: got destination id 0xcccccccc.
+dplayx.c:5008: Test failed: got player id 0xcccccccc.
+dplayx.c:5008: Test failed: got group id 0xcccccccc.
+dplayx.c:5008: Test failed: got create offset 3435973836.
+dplayx.c:5008: Test failed: got password offset 3435973836.
+dplayx.c:5008: Test failed: got player info size 3435973836.
+dplayx.c:5008: Test failed: got flags 0xcccccccc.
+dplayx.c:5008: Test failed: got player info player id 0xcccccccc.
+dplayx.c:5008: Test failed: got short name length 3435973836.
+dplayx.c:5008: Test failed: got long name length 3435973836.
+dplayx.c:5008: Test failed: got SP data size 3435973836.
+dplayx.c:5008: Test failed: got player data size 3435973836.
+dplayx.c:5008: Test failed: got player count 3435973836.
+dplayx.c:5008: Test failed: got system player id 0xcccccccc.
+dplayx.c:5008: Test failed: got fixed size 3435973836.
+dplayx.c:5008: Test failed: got parent id 0xcccccccc.
+dplayx.c:5008: Test failed: select() returned -1.
+dplayx.c:5008: Test failed: recv() returned -1.
+dplayx.c:5008: Test failed: got TCP family -13108.
+dplayx.c:5008: Test failed: got TCP port 52428.
+dplayx.c:5008: Test failed: got TCP address 0xcccccccc.
+dplayx.c:5008: Test failed: got UDP family -13108.
+dplayx.c:5008: Test failed: got UDP port 52428.
+dplayx.c:5008: Test failed: got UDP address 0xcccccccc.
+dplayx.c:5008: Test failed: select() returned -1.
+dplayx.c:5008: Test failed: recv() returned -1.
+dplayx.c:5008: Test failed: player data didn't match.
+dplayx.c:5008: Test failed: select() returned -1.
+dplayx.c:5008: Test failed: recv() returned -1.
+dplayx.c:5008: Test failed: got reserved1 52428.
+dplayx.c:5008: Test failed: select() returned -1.
+dplayx.c:5008: Test failed: recv() returned -1.
+dplayx.c:5008: Test failed: got reserved2 3435973836.
+dplayx.c:5008: Test failed: CreatePlayer() returned 0x80070057.
+dplayx.c:5008: Test failed: got dpid 0xdeadbeef.
+dplayx.c:5008: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:5008: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:5008: Test failed: got player count 0.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: got port 58313.
+dplayx.c:5243: Test failed: got address 0x18043f88.
+dplayx.c:5243: Test failed: connect returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:3595: Test failed: got session count 0.
+dplayx.c:5243: Test failed: accept() returned 0xffffffff.
+dplayx.c:5243: Test failed: select() returned -1.
+dplayx.c:5243: Test failed: recv() returned -1.
+dplayx.c:5243: Test failed: got mixed 0xcccccccc.
+dplayx.c:5243: Test failed: got family -13108.
+dplayx.c:5243: Test failed: got port 52428.
+dplayx.c:5243: Test failed: got address 0xcccccccc.
+dplayx.c:5243: Test failed: got magic 0xcccccccc.
+dplayx.c:5243: Test failed: got command 52428.
+dplayx.c:5243: Test failed: got flags 0xcccccccc.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: select() returned -1.
+dplayx.c:5243: Test failed: recv() returned -1.
+dplayx.c:5243: Test failed: send() returned -1.
+dplayx.c:5243: Test failed: Open() returned 0x887700dc.
+dplayx.c:5245: Test failed: select() returned -1.
+dplayx.c:5245: Test failed: recv() returned -1.
+dplayx.c:5245: Test failed: got mixed 0xcccccccc.
+dplayx.c:5245: Test failed: got family -13108.
+dplayx.c:5245: Test failed: got port 52428.
+dplayx.c:5245: Test failed: got address 0xcccccccc.
+dplayx.c:5245: Test failed: got magic 0xcccccccc.
+dplayx.c:5245: Test failed: got command 52428.
+dplayx.c:5245: Test failed: got flags 0xcccccccc.
+dplayx.c:5245: Test failed: send() returned -1.
+dplayx.c:5245: Test failed: select() returned -1.
+dplayx.c:5245: Test failed: recv() returned -1.
+dplayx.c:5245: Test failed: got mixed 0xcccccccc.
+dplayx.c:5245: Test failed: got family -13108.
+dplayx.c:5245: Test failed: got port 52428.
+dplayx.c:5245: Test failed: got address 0xcccccccc.
+dplayx.c:5245: Test failed: got magic 0xcccccccc.
+dplayx.c:5245: Test failed: got command 52428.
+dplayx.c:5245: Test failed: got destination id 0xcccccccc.
+dplayx.c:5245: Test failed: got player id 0xcccccccc.
+dplayx.c:5245: Test failed: got group id 0xcccccccc.
+dplayx.c:5245: Test failed: got create offset 3435973836.
+dplayx.c:5245: Test failed: got password offset 3435973836.
+dplayx.c:5245: Test failed: got player info size 3435973836.
+dplayx.c:5245: Test failed: got flags 0xcccccccc.
+dplayx.c:5245: Test failed: got player info player id 0xcccccccc.
+dplayx.c:5245: Test failed: got short name length 3435973836.
+dplayx.c:5245: Test failed: got long name length 3435973836.
+dplayx.c:5245: Test failed: got SP data size 3435973836.
+dplayx.c:5245: Test failed: got player data size 3435973836.
+dplayx.c:5245: Test failed: got player count 3435973836.
+dplayx.c:5245: Test failed: got system player id 0xcccccccc.
+dplayx.c:5245: Test failed: got fixed size 3435973836.
+dplayx.c:5245: Test failed: got parent id 0xcccccccc.
+dplayx.c:5245: Test failed: select() returned -1.
+dplayx.c:5245: Test failed: recv() returned -1.
+dplayx.c:5245: Test failed: got TCP family -13108.
+dplayx.c:5245: Test failed: got TCP port 52428.
+dplayx.c:5245: Test failed: got TCP address 0xcccccccc.
+dplayx.c:5245: Test failed: got UDP family -13108.
+dplayx.c:5245: Test failed: got UDP port 52428.
+dplayx.c:5245: Test failed: got UDP address 0xcccccccc.
+dplayx.c:5245: Test failed: select() returned -1.
+dplayx.c:5245: Test failed: recv() returned -1.
+dplayx.c:5245: Test failed: got reserved1 52428.
+dplayx.c:5245: Test failed: select() returned -1.
+dplayx.c:5245: Test failed: recv() returned -1.
+dplayx.c:5245: Test failed: got reserved2 3435973836.
+dplayx.c:5245: Test failed: got hr 0x80070057.
+dplayx.c:5245: Test failed: got dpid 0xdeadbeef.
+dplayx.c:5247: Test failed: send() returned -1.
+dplayx.c:5247: Test failed: send() returned -1.
+dplayx.c:5247: Test failed: send() returned -1.
+dplayx.c:5247: Test failed: send() returned -1.
+dplayx.c:5247: Test failed: send() returned -1.
+dplayx.c:5247: Test failed: send() returned -1.
+dplayx.c:5251: Test failed: message wait returned 258
+dplayx.c:5253: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:5253: Test failed: EnumPlayers() returned 0x8877009b.
+dplayx.c:5253: Test failed: got player count 0.
+dplayx.c:5256: Test failed: got hr 0x887700be.
+dplayx.c:5256: Test failed: got source id 0xdeadbeef.
+dplayx.c:5256: Test failed: got message type 0.
+dplayx.c:5256: Test failed: got player type 0.
+dplayx.c:5256: Test failed: got id 0.
+dplayx.c:5256: Test failed: got current players 0.
+dplayx.c:5256: Test failed: got player data size 0.
+dplayx.c:5256: Test failed: player data didn't match.
+dplayx.c:5256: Test failed: got name size 0.
+dplayx.c:5256: Test failed: got short name (null).
+dplayx.c:5256: Test failed: got long name (null).
+dplayx.c:5256: Test failed: got message size 256.
+dplayx.c:5258: Test failed: got destination id 0xdeadbeef.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: got port 58313.
+dplayx.c:8183: Test failed: got address 0x18043f88.
+dplayx.c:8183: Test failed: connect returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:3595: Test failed: got session count 0.
+dplayx.c:8183: Test failed: accept() returned 0xffffffff.
+dplayx.c:8183: Test failed: select() returned -1.
+dplayx.c:8183: Test failed: recv() returned -1.
+dplayx.c:8183: Test failed: got mixed 0xcccccccc.
+dplayx.c:8183: Test failed: got family -13108.
+dplayx.c:8183: Test failed: got port 52428.
+dplayx.c:8183: Test failed: got address 0xcccccccc.
+dplayx.c:8183: Test failed: got magic 0xcccccccc.
+dplayx.c:8183: Test failed: got command 52428.
+dplayx.c:8183: Test failed: got flags 0xcccccccc.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: select() returned -1.
+dplayx.c:8183: Test failed: recv() returned -1.
+dplayx.c:8183: Test failed: send() returned -1.
+dplayx.c:8183: Test failed: Open() returned 0x887700dc.
+dplayx.c:8185: Test failed: select() returned -1.
+dplayx.c:8185: Test failed: recv() returned -1.
+dplayx.c:8185: Test failed: got mixed 0xcccccccc.
+dplayx.c:8185: Test failed: got family -13108.
+dplayx.c:8185: Test failed: got port 52428.
+dplayx.c:8185: Test failed: got address 0xcccccccc.
+dplayx.c:8185: Test failed: got magic 0xcccccccc.
+dplayx.c:8185: Test failed: got command 52428.
+dplayx.c:8185: Test failed: got flags 0xcccccccc.
+dplayx.c:8185: Test failed: send() returned -1.
+dplayx.c:8185: Test failed: select() returned -1.
+dplayx.c:8185: Test failed: recv() returned -1.
+dplayx.c:8185: Test failed: got mixed 0xcccccccc.
+dplayx.c:8185: Test failed: got family -13108.
+dplayx.c:8185: Test failed: got port 52428.
+dplayx.c:8185: Test failed: got address 0xcccccccc.
+dplayx.c:8185: Test failed: got magic 0xcccccccc.
+dplayx.c:8185: Test failed: got command 52428.
+dplayx.c:8185: Test failed: got destination id 0xcccccccc.
+dplayx.c:8185: Test failed: got player id 0xcccccccc.
+dplayx.c:8185: Test failed: got group id 0xcccccccc.
+dplayx.c:8185: Test failed: got create offset 3435973836.
+dplayx.c:8185: Test failed: got password offset 3435973836.
+dplayx.c:8185: Test failed: got player info size 3435973836.
+dplayx.c:8185: Test failed: got flags 0xcccccccc.
+dplayx.c:8185: Test failed: got player info player id 0xcccccccc.
+dplayx.c:8185: Test failed: got short name length 3435973836.
+dplayx.c:8185: Test failed: got long name length 3435973836.
+dplayx.c:8185: Test failed: got SP data size 3435973836.
+dplayx.c:8185: Test failed: got player data size 3435973836.
+dplayx.c:8185: Test failed: got player count 3435973836.
+dplayx.c:8185: Test failed: got system player id 0xcccccccc.
+dplayx.c:8185: Test failed: got fixed size 3435973836.
+dplayx.c:8185: Test failed: got parent id 0xcccccccc.
+dplayx.c:8185: Test failed: select() returned -1.
+dplayx.c:8185: Test failed: recv() returned -1.
+dplayx.c:8185: Test failed: got TCP family -13108.
+dplayx.c:8185: Test failed: got TCP port 52428.
+dplayx.c:8185: Test failed: got TCP address 0xcccccccc.
+dplayx.c:8185: Test failed: got UDP family -13108.
+dplayx.c:8185: Test failed: got UDP port 52428.
+dplayx.c:8185: Test failed: got UDP address 0xcccccccc.
+dplayx.c:8185: Test failed: select() returned -1.
+dplayx.c:8185: Test failed: recv() returned -1.
+dplayx.c:8185: Test failed: got reserved1 52428.
+dplayx.c:8185: Test failed: select() returned -1.
+dplayx.c:8185: Test failed: recv() returned -1.
+dplayx.c:8185: Test failed: got reserved2 3435973836.
+dplayx.c:8185: Test failed: got hr 0x80070057.
+dplayx.c:8185: Test failed: got dpid 0xdeadbeef.
+dplayx.c:8186: Test failed: select() returned -1.
+dplayx.c:8186: Test failed: recv() returned -1.
+dplayx.c:8186: Test failed: got mixed 0xcccccccc.
+dplayx.c:8186: Test failed: got family -13108.
+dplayx.c:8186: Test failed: got port 52428.
+dplayx.c:8186: Test failed: got address 0xcccccccc.
+dplayx.c:8186: Test failed: got magic 0xcccccccc.
+dplayx.c:8186: Test failed: got command 52428.
+dplayx.c:8186: Test failed: got flags 0xcccccccc.
+dplayx.c:8186: Test failed: send() returned -1.
+dplayx.c:8186: Test failed: select() returned -1.
+dplayx.c:8186: Test failed: recv() returned -1.
+dplayx.c:8186: Test failed: got mixed 0xcccccccc.
+dplayx.c:8186: Test failed: got family -13108.
+dplayx.c:8186: Test failed: got port 52428.
+dplayx.c:8186: Test failed: got address 0xcccccccc.
+dplayx.c:8186: Test failed: got magic 0xcccccccc.
+dplayx.c:8186: Test failed: got command 52428.
+dplayx.c:8186: Test failed: got destination id 0xcccccccc.
+dplayx.c:8186: Test failed: got player id 0xcccccccc.
+dplayx.c:8186: Test failed: got group id 0xcccccccc.
+dplayx.c:8186: Test failed: got create offset 3435973836.
+dplayx.c:8186: Test failed: got password offset 3435973836.
+dplayx.c:8186: Test failed: got player info size 3435973836.
+dplayx.c:8186: Test failed: got flags 0xcccccccc.
+dplayx.c:8186: Test failed: got player info player id 0xcccccccc.
+dplayx.c:8186: Test failed: got short name length 3435973836.
+dplayx.c:8186: Test failed: got long name length 3435973836.
+dplayx.c:8186: Test failed: got SP data size 3435973836.
+dplayx.c:8186: Test failed: got player data size 3435973836.
+dplayx.c:8186: Test failed: got player count 3435973836.
+dplayx.c:8186: Test failed: got system player id 0xcccccccc.
+dplayx.c:8186: Test failed: got fixed size 3435973836.
+dplayx.c:8186: Test failed: got parent id 0xcccccccc.
+dplayx.c:8186: Test failed: select() returned -1.
+dplayx.c:8186: Test failed: recv() returned -1.
+dplayx.c:8186: Test failed: got TCP family -13108.
+dplayx.c:8186: Test failed: got TCP port 52428.
+dplayx.c:8186: Test failed: got TCP address 0xcccccccc.
+dplayx.c:8186: Test failed: got UDP family -13108.
+dplayx.c:8186: Test failed: got UDP port 52428.
+dplayx.c:8186: Test failed: got UDP address 0xcccccccc.
+dplayx.c:8186: Test failed: select() returned -1.
+dplayx.c:8186: Test failed: recv() returned -1.
+dplayx.c:8186: Test failed: got reserved1 52428.
+dplayx.c:8186: Test failed: select() returned -1.
+dplayx.c:8186: Test failed: recv() returned -1.
+dplayx.c:8186: Test failed: got reserved2 3435973836.
+dplayx.c:8186: Test failed: got hr 0x80070057.
+dplayx.c:8186: Test failed: got dpid 0xdeadbeef.
+dplayx.c:8188: Test failed: got hr 0x887700be.
+dplayx.c:8188: Test failed: got source id 0xdeadbeef.
+dplayx.c:8188: Test failed: got message type 0.
+dplayx.c:8188: Test failed: got player type 0.
+dplayx.c:8188: Test failed: got id 0.
+dplayx.c:8188: Test failed: got current players 0.
+dplayx.c:8188: Test failed: got name size 0.
+dplayx.c:8188: Test failed: got flags 0.
+dplayx.c:8188: Test failed: got message size 256.
+dplayx.c:8191: Test marked todo: got hr 0x88770096.
+dplayx.c:8194: Test failed: got hr 0x88770096.
+dplayx.c:8196: Test failed: select() returned -1.
+dplayx.c:8196: Test failed: recv() returned -1.
+dplayx.c:8196: Test failed: got mixed 0xcccccccc.
+dplayx.c:8196: Test failed: got family -13108.
+dplayx.c:8196: Test failed: got port 52428.
+dplayx.c:8196: Test failed: got address 0xcccccccc.
+dplayx.c:8196: Test failed: got source id 0xcccccccc.
+dplayx.c:8196: Test failed: got destination id 0xcccccccc.
+dplayx.c:8196: Test failed: message data didn't match.
+dplayx.c:8199: Test failed: got hr 0x88770096.
+dplayx.c:8201: Test failed: got hr 0x887700be.
+dplayx.c:8201: Test failed: got source id 0xdeadbeef.
+dplayx.c:8201: Test failed: message data didn't match.
+dplayx.c:8201: Test failed: got data size 1024.
+dplayx.c:8202: Test failed: got destination id 0xdeadbeef.
+dplayx.c:8205: Test failed: got hr 0x88770096.
+dplayx.c:8211: Test failed: got hr 0x88770096.
+dplayx.c:8213: Test failed: got hr 0x887700be.
+dplayx.c:8213: Test failed: got source id 0xdeadbeef.
+dplayx.c:8213: Test failed: message data didn't match.
+dplayx.c:8213: Test failed: got data size 1024.
+dplayx.c:8214: Test failed: got destination id 0xdeadbeef.
+dplayx.c:8215: Test failed: select() returned -1.
+dplayx.c:8215: Test failed: recv() returned -1.
+dplayx.c:8215: Test failed: got mixed 0xcccccccc.
+dplayx.c:8215: Test failed: got family -13108.
+dplayx.c:8215: Test failed: got port 52428.
+dplayx.c:8215: Test failed: got address 0xcccccccc.
+dplayx.c:8215: Test failed: got source id 0xcccccccc.
+dplayx.c:8215: Test failed: got destination id 0xcccccccc.
+dplayx.c:8215: Test failed: message data didn't match.
+dplayx.c:8220: Test failed: got hr 0x88770096.
+dplayx.c:8222: Test failed: recv() returned -1.
+dplayx.c:8222: Test failed: got source id 0xcccccccc.
+dplayx.c:8222: Test failed: got destination id 0xcccccccc.
+dplayx.c:8222: Test failed: message data didn't match.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: got port 58313.
+dplayx.c:8617: Test failed: got address 0x18043f88.
+dplayx.c:8617: Test failed: connect returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:3595: Test failed: got session count 0.
+dplayx.c:8617: Test failed: accept() returned 0xffffffff.
+dplayx.c:8617: Test failed: select() returned -1.
+dplayx.c:8617: Test failed: recv() returned -1.
+dplayx.c:8617: Test failed: got mixed 0xcccccccc.
+dplayx.c:8617: Test failed: got family -13108.
+dplayx.c:8617: Test failed: got port 52428.
+dplayx.c:8617: Test failed: got address 0xcccccccc.
+dplayx.c:8617: Test failed: got magic 0xcccccccc.
+dplayx.c:8617: Test failed: got command 52428.
+dplayx.c:8617: Test failed: got flags 0xcccccccc.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: select() returned -1.
+dplayx.c:8617: Test failed: recv() returned -1.
+dplayx.c:8617: Test failed: send() returned -1.
+dplayx.c:8617: Test failed: Open() returned 0x887700dc.
+dplayx.c:8619: Test failed: select() returned -1.
+dplayx.c:8619: Test failed: recv() returned -1.
+dplayx.c:8619: Test failed: got mixed 0xcccccccc.
+dplayx.c:8619: Test failed: got family -13108.
+dplayx.c:8619: Test failed: got port 52428.
+dplayx.c:8619: Test failed: got address 0xcccccccc.
+dplayx.c:8619: Test failed: got magic 0xcccccccc.
+dplayx.c:8619: Test failed: got command 52428.
+dplayx.c:8619: Test failed: got flags 0xcccccccc.
+dplayx.c:8619: Test failed: send() returned -1.
+dplayx.c:8619: Test failed: select() returned -1.
+dplayx.c:8619: Test failed: recv() returned -1.
+dplayx.c:8619: Test failed: got mixed 0xcccccccc.
+dplayx.c:8619: Test failed: got family -13108.
+dplayx.c:8619: Test failed: got port 52428.
+dplayx.c:8619: Test failed: got address 0xcccccccc.
+dplayx.c:8619: Test failed: got magic 0xcccccccc.
+dplayx.c:8619: Test failed: got command 52428.
+dplayx.c:8619: Test failed: got destination id 0xcccccccc.
+dplayx.c:8619: Test failed: got player id 0xcccccccc.
+dplayx.c:8619: Test failed: got group id 0xcccccccc.
+dplayx.c:8619: Test failed: got create offset 3435973836.
+dplayx.c:8619: Test failed: got password offset 3435973836.
+dplayx.c:8619: Test failed: got player info size 3435973836.
+dplayx.c:8619: Test failed: got flags 0xcccccccc.
+dplayx.c:8619: Test failed: got player info player id 0xcccccccc.
+dplayx.c:8619: Test failed: got short name length 3435973836.
+dplayx.c:8619: Test failed: got long name length 3435973836.
+dplayx.c:8619: Test failed: got SP data size 3435973836.
+dplayx.c:8619: Test failed: got player data size 3435973836.
+dplayx.c:8619: Test failed: got player count 3435973836.
+dplayx.c:8619: Test failed: got system player id 0xcccccccc.
+dplayx.c:8619: Test failed: got fixed size 3435973836.
+dplayx.c:8619: Test failed: got parent id 0xcccccccc.
+dplayx.c:8619: Test failed: select() returned -1.
+dplayx.c:8619: Test failed: recv() returned -1.
+dplayx.c:8619: Test failed: got TCP family -13108.
+dplayx.c:8619: Test failed: got TCP port 52428.
+dplayx.c:8619: Test failed: got TCP address 0xcccccccc.
+dplayx.c:8619: Test failed: got UDP family -13108.
+dplayx.c:8619: Test failed: got UDP port 52428.
+dplayx.c:8619: Test failed: got UDP address 0xcccccccc.
+dplayx.c:8619: Test failed: select() returned -1.
+dplayx.c:8619: Test failed: recv() returned -1.
+dplayx.c:8619: Test failed: got reserved1 52428.
+dplayx.c:8619: Test failed: select() returned -1.
+dplayx.c:8619: Test failed: recv() returned -1.
+dplayx.c:8619: Test failed: got reserved2 3435973836.
+dplayx.c:8619: Test failed: got hr 0x80070057.
+dplayx.c:8619: Test failed: got dpid 0xdeadbeef.
+dplayx.c:8620: Test failed: select() returned -1.
+dplayx.c:8620: Test failed: recv() returned -1.
+dplayx.c:8620: Test failed: got mixed 0xcccccccc.
+dplayx.c:8620: Test failed: got family -13108.
+dplayx.c:8620: Test failed: got port 52428.
+dplayx.c:8620: Test failed: got address 0xcccccccc.
+dplayx.c:8620: Test failed: got magic 0xcccccccc.
+dplayx.c:8620: Test failed: got command 52428.
+dplayx.c:8620: Test failed: got flags 0xcccccccc.
+dplayx.c:8620: Test failed: send() returned -1.
+dplayx.c:8620: Test failed: select() returned -1.
+dplayx.c:8620: Test failed: recv() returned -1.
+dplayx.c:8620: Test failed: got mixed 0xcccccccc.
+dplayx.c:8620: Test failed: got family -13108.
+dplayx.c:8620: Test failed: got port 52428.
+dplayx.c:8620: Test failed: got address 0xcccccccc.
+dplayx.c:8620: Test failed: got magic 0xcccccccc.
+dplayx.c:8620: Test failed: got command 52428.
+dplayx.c:8620: Test failed: got destination id 0xcccccccc.
+dplayx.c:8620: Test failed: got player id 0xcccccccc.
+dplayx.c:8620: Test failed: got group id 0xcccccccc.
+dplayx.c:8620: Test failed: got create offset 3435973836.
+dplayx.c:8620: Test failed: got password offset 3435973836.
+dplayx.c:8620: Test failed: got player info size 3435973836.
+dplayx.c:8620: Test failed: got flags 0xcccccccc.
+dplayx.c:8620: Test failed: got player info player id 0xcccccccc.
+dplayx.c:8620: Test failed: got short name length 3435973836.
+dplayx.c:8620: Test failed: got long name length 3435973836.
+dplayx.c:8620: Test failed: got SP data size 3435973836.
+dplayx.c:8620: Test failed: got player data size 3435973836.
+dplayx.c:8620: Test failed: got player count 3435973836.
+dplayx.c:8620: Test failed: got system player id 0xcccccccc.
+dplayx.c:8620: Test failed: got fixed size 3435973836.
+dplayx.c:8620: Test failed: got parent id 0xcccccccc.
+dplayx.c:8620: Test failed: select() returned -1.
+dplayx.c:8620: Test failed: recv() returned -1.
+dplayx.c:8620: Test failed: got TCP family -13108.
+dplayx.c:8620: Test failed: got TCP port 52428.
+dplayx.c:8620: Test failed: got TCP address 0xcccccccc.
+dplayx.c:8620: Test failed: got UDP family -13108.
+dplayx.c:8620: Test failed: got UDP port 52428.
+dplayx.c:8620: Test failed: got UDP address 0xcccccccc.
+dplayx.c:8620: Test failed: select() returned -1.
+dplayx.c:8620: Test failed: recv() returned -1.
+dplayx.c:8620: Test failed: got reserved1 52428.
+dplayx.c:8620: Test failed: select() returned -1.
+dplayx.c:8620: Test failed: recv() returned -1.
+dplayx.c:8620: Test failed: got reserved2 3435973836.
+dplayx.c:8620: Test failed: got hr 0x80070057.
+dplayx.c:8620: Test failed: got dpid 0xdeadbeef.
+dplayx.c:8623: Test failed: message wait returned 258
+dplayx.c:8625: Test failed: got hr 0x887700be.
+dplayx.c:8625: Test failed: got source id 0xdeadbeef.
+dplayx.c:8625: Test failed: got message type 0.
+dplayx.c:8625: Test failed: got player type 0.
+dplayx.c:8625: Test failed: got id 0.
+dplayx.c:8625: Test failed: got current players 0.
+dplayx.c:8625: Test failed: got name size 0.
+dplayx.c:8625: Test failed: got flags 0.
+dplayx.c:8625: Test failed: got message size 256.
+dplayx.c:8627: Test failed: send() returned -1.
+dplayx.c:8627: Test failed: send() returned -1.
+dplayx.c:8628: Test failed: send() returned -1.
+dplayx.c:8628: Test failed: send() returned -1.
+dplayx.c:8631: Test failed: message wait returned 258
+dplayx.c:8633: Test failed: message wait returned 258
+dplayx.c:8639: Test failed: got hr 0x887700be.
+dplayx.c:8642: Test failed: got message size 7.
+dplayx.c:8648: Test failed: got hr 0x887700be.
+dplayx.c:8651: Test failed: got message size 256.
+dplayx.c:8658: Test failed: got hr 0x887700be.
+dplayx.c:8659: Test failed: got source id 0xdeadbeef.
+dplayx.c:8660: Test failed: got destination id 0xdeadbeef.
+dplayx.c:8661: Test failed: message data didn't match.
+dplayx.c:8662: Test failed: got message size 256.
+dplayx.c:8669: Test failed: got hr 0x887700be.
+dplayx.c:8670: Test failed: got source id 0xdeadbeef.
+dplayx.c:8671: Test failed: got destination id 0xdeadbeef.
+dplayx.c:8672: Test failed: message data didn't match.
+dplayx.c:8673: Test failed: got message size 256.
+dplayx.c:8680: Test failed: got hr 0x887700be.
+dplayx.c:8681: Test failed: got source id 0xdeadbeef.
+dplayx.c:8682: Test failed: got destination id 0xdeadbeef.
+dplayx.c:8683: Test failed: message data didn't match.
+dplayx.c:8684: Test failed: got message size 256.
+dplayx.c:8691: Test failed: got hr 0x887700be.
+dplayx.c:8692: Test failed: got source id 0xdeadbeef.
+dplayx.c:8693: Test failed: got destination id 0xdeadbeef.
+dplayx.c:8694: Test failed: message data didn't match.
+dplayx.c:8695: Test failed: got message size 256.
+dplayx.c:8701: Test failed: send() returned -1.
+dplayx.c:8701: Test failed: send() returned -1.
+dplayx.c:8704: Test failed: message wait returned 258
+dplayx.c:8717: Test failed: got hr 0x887700be.
+dplayx.c:8719: Test failed: got destination id 0xdeadbeef.
+dplayx.c:8720: Test failed: message data didn't match.
+dplayx.c:8721: Test failed: got message size 256.
+dplayx.c:8729: Test failed: send() returned -1.
+dplayx.c:8729: Test failed: send() returned -1.
+dplayx.c:8732: Test failed: message wait returned 258
+dplayx.c:8734: Test failed: message wait returned 258
+dplayx.c:8741: Test failed: got hr 0x887700be.
+dplayx.c:8742: Test failed: got source id 0xdeadbeef.
+dplayx.c:8744: Test failed: message data didn't match.
+dplayx.c:8745: Test failed: got message size 256.
+dplayx.c:8757: Test failed: got hr 0x887700be.
+dplayx.c:8758: Test failed: got source id 0xdeadbeef.
+dplayx.c:8760: Test failed: message data didn't match.
+dplayx.c:8761: Test failed: got message size 256.
+dplayx.c:8773: Test failed: message wait returned 258
+dplayx.c:8780: Test failed: got hr 0x887700be.
+dplayx.c:8781: Test failed: got source id 0xdeadbeef.
+dplayx.c:8782: Test failed: got destination id 0xdeadbeef.
+dplayx.c:8783: Test failed: message data didn't match.
+dplayx.c:8784: Test failed: got message size 256.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: got port 58313.
+dplayx.c:9111: Test failed: got address 0x18043f88.
+dplayx.c:9111: Test failed: connect returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:3595: Test failed: got session count 0.
+dplayx.c:9111: Test failed: accept() returned 0xffffffff.
+dplayx.c:9111: Test failed: select() returned -1.
+dplayx.c:9111: Test failed: recv() returned -1.
+dplayx.c:9111: Test failed: got mixed 0xcccccccc.
+dplayx.c:9111: Test failed: got family -13108.
+dplayx.c:9111: Test failed: got port 52428.
+dplayx.c:9111: Test failed: got address 0xcccccccc.
+dplayx.c:9111: Test failed: got magic 0xcccccccc.
+dplayx.c:9111: Test failed: got command 52428.
+dplayx.c:9111: Test failed: got flags 0xcccccccc.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: select() returned -1.
+dplayx.c:9111: Test failed: recv() returned -1.
+dplayx.c:9111: Test failed: send() returned -1.
+dplayx.c:9111: Test failed: Open() returned 0x887700dc.
+dplayx.c:9118: Test failed: recv() returned -1.
+dplayx.c:9118: Test failed: got mixed 0xcccccccc.
+dplayx.c:9118: Test failed: got family -13108.
+dplayx.c:9118: Test failed: got port 52428.
+dplayx.c:9118: Test failed: got address 0xcccccccc.
+dplayx.c:9118: Test failed: got magic 0xcccccccc.
+dplayx.c:9118: Test failed: got command 52428.
+dplayx.c:9118: Test failed: got source id 0xcccccccc.
+dplayx.c:9118: Test failed: got tick count 0xcccccccc.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: got port 58313.
+dplayx.c:9187: Test failed: got address 0x18043f88.
+dplayx.c:9187: Test failed: connect returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:3595: Test failed: got session count 0.
+dplayx.c:9187: Test failed: accept() returned 0xffffffff.
+dplayx.c:9187: Test failed: select() returned -1.
+dplayx.c:9187: Test failed: recv() returned -1.
+dplayx.c:9187: Test failed: got mixed 0xcccccccc.
+dplayx.c:9187: Test failed: got family -13108.
+dplayx.c:9187: Test failed: got port 52428.
+dplayx.c:9187: Test failed: got address 0xcccccccc.
+dplayx.c:9187: Test failed: got magic 0xcccccccc.
+dplayx.c:9187: Test failed: got command 52428.
+dplayx.c:9187: Test failed: got flags 0xcccccccc.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: select() returned -1.
+dplayx.c:9187: Test failed: recv() returned -1.
+dplayx.c:9187: Test failed: send() returned -1.
+dplayx.c:9187: Test failed: Open() returned 0x887700dc.

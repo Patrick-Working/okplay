@@ -1,0 +1,8 @@
+[    16] EVENT connection_ready sp=okplay
+[   235] EVENT hosting "dptest H"
+[   344] EVENT my_player id=1125470144
+[  5641] EVENT player_joined id=1125470146 name=J
+[ 13750] EVENT player_left id=1125470146
+[ 14344] STAT peer id=1125470146 name=J pings_rx=38 pongs_rx=38 rtt_avg=0 rtt_max=0
+[ 14344] STAT sent_pings=66 max_players=2 peers_answering=1
+[ 14438] RESULT ok

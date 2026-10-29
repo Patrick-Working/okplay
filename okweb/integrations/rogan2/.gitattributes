@@ -1,0 +1,2 @@
+# git am needs these byte for byte (rogan2 files use CRLF)
+*.patch -text

@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>okweb test</title>
+<style>
+  :root { --bg: #fff; --fg: #1c2330; --ok: #1e8e4e; --bad: #c0392b; }
+  @media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #12151b; --fg: #e6e9ef; --ok: #4cc38a; --bad: #ff7a6b; } }
+  body { background: var(--bg); color: var(--fg); font: 13px/1.5 Consolas, monospace; margin: 16px; }
+  .PASS { color: var(--ok); } .FAIL { color: var(--bad); }
+</style>
+</head>
+<body>
+<h1>okweb.js test</h1>
+<p>Server: <span id="srv"></span></p>
+<pre id="out"></pre>
+<script type="module">
+// okweb.js end to end in one page: a host and two joiners (three OkWeb instances), a full mesh over
+// WebRTC through a real room server. ?server=<okplay.php or stand-in URL>  ?sdk=<okweb.js URL>
+const q = new URLSearchParams(location.search);
+const server = q.get('server') || '/okplay.php';
+const { OkWeb, VERSION } = await import(q.get('sdk') || '../sdk/v1/okweb.js');
+document.getElementById('srv').textContent = server + ' (okweb ' + VERSION + ')';
+const out = document.getElementById('out');
+const results = [];
+const log = (cls, text) => { const s = document.createElement('span'); s.className = cls; s.textContent = text + '\n'; out.append(s); };
+const check = (ok, what) => { results.push({ ok: !!ok, what }); log(ok ? 'PASS' : 'FAIL', (ok ? 'PASS ' : 'FAIL ') + what); };
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (fn, ms = 15000) => { const t = performance.now() + ms; while (performance.now() < t) { if (fn()) return true; await sleep(50); } return false; };
+
+// every request the SDK makes, to prove game bytes never go to the server
+const MARK = 'GAMEDATA-' + Math.random().toString(36).slice(2);
+const requests = [];
+const realFetch = window.fetch;
+window.fetch = (url, init) => { requests.push(String(init && init.body)); return realFetch(url, init); };
+
+const GAME = 'abcdef0123456789abcdef0123456789';
+const mk = (game = GAME) => new OkWeb({ server, game, gameName: 'okweb test', log: (...a) => console.log('[okweb]', ...a) });
+const inbox = (s) => { const m = []; s.on('message', (from, bytes, reliable) => m.push({ from, text: new TextDecoder().decode(bytes), len: bytes.length, reliable })); return m; };
+
+try {
+  const H = await mk().host({ name: 'Test room ' + MARK.slice(-4), maxPlayers: 3, playerName: 'Hana', meta: { map: 'Arabia' } });
+  const hIn = inbox(H);
+  const hJoined = [];
+  H.on('peer-joined', (p) => hJoined.push(p.name));
+  check(H.isHost && /^[0-9a-f]{8}$/.test(H.room), 'host: room ' + H.room);
+
+  const rooms = await mk().list();
+  const mine = rooms.find((r) => r.room === H.room);
+  check(mine && mine.maxPlayers === 3 && mine.meta && mine.meta.map === 'Arabia' && mine.hostName === 'Hana', 'list: the room with its meta');
+  check(!(await mk('00000000000000000000000000000001').list()).some((r) => r.room === H.room), 'list: another game id does not see it');
+
+  const A = await mk().join(H.room, { playerName: 'Ali' });
+  const aIn = inbox(A);
+  check(A.hostId === H.me && A.meta.map === 'Arabia', 'join: A is in');
+  const B = await mk().join(mine, { playerName: 'Bo' });
+  const bIn = inbox(B);
+  await B.ready;
+  const aSeesB = await until(() => A.players.some((p) => p.id === B.me));
+  check(aSeesB && B.players.length === 2 && H.players.length === 2, 'mesh: everyone connected to everyone (3 players)');
+  check(hJoined.join(',') === 'Ali,Bo', 'host: peer-joined events in order');
+  check(A.players.find((p) => p.id === B.me)?.name === 'Bo' && B.players.find((p) => p.id === A.me)?.name === 'Ali', 'names known across the mesh');
+
+  // reliable, to one and to all
+  A.send(B.me, MARK + ' A->B');
+  H.send(null, MARK + ' H->all');
+  B.send(H.me, new Uint8Array([1, 2, 3]));
+  await until(() => bIn.length >= 2 && aIn.length >= 1 && hIn.length >= 1);
+  check(bIn.some((m) => m.text === MARK + ' A->B' && m.from === A.me && m.reliable), 'reliable: A to B directly');
+  check(aIn.some((m) => m.text === MARK + ' H->all') && bIn.some((m) => m.text === MARK + ' H->all'), 'reliable: host to everyone');
+  check(hIn.some((m) => m.len === 3 && m.from === B.me), 'binary bytes arrive intact');
+
+  // ordering on the reliable lane
+  for (let i = 0; i < 200; i++) A.send(H.me, 'seq ' + i);
+  await until(() => hIn.filter((m) => m.text.startsWith('seq ')).length === 200);
+  const seq = hIn.filter((m) => m.text.startsWith('seq ')).map((m) => Number(m.text.slice(4)));
+  check(seq.length === 200 && seq.every((v, i) => v === i), 'reliable: 200 messages, all there, in order');
+
+  // the unreliable lane
+  for (let i = 0; i < 100; i++) B.send(A.me, 'u' + i, { reliable: false });
+  await sleep(1000);
+  const got = aIn.filter((m) => !m.reliable && m.text.startsWith('u')).length;
+  check(got >= 90, `unreliable: ${got} of 100 arrived (same PC: expect nearly all)`);
+
+  // sizes
+  const big = new Uint8Array(65536).fill(7);
+  A.send(B.me, big);
+  await until(() => bIn.some((m) => m.len === 65536));
+  check(bIn.some((m) => m.len === 65536), '64 KB message arrives');
+  let threw = false;
+  try { A.send(B.me, new Uint8Array(65537)); } catch (e) { threw = e instanceof RangeError; }
+  check(threw, 'over 64 KB: RangeError');
+
+  // a fourth player: the room is full (maxPlayers 3)
+  let full = '';
+  try { await mk().join(H.room, { playerName: 'Cy' }); } catch (e) { full = e.message; }
+  check(/full/.test(full), 'full room: the fourth joiner is turned away (' + full + ')');
+  check(H.players.length === 2, 'full room: the host still has its two players');
+
+  // B leaves: the others hear it
+  const aLeft = [], hLeft = [];
+  A.on('peer-left', (p) => aLeft.push(p.id));
+  H.on('peer-left', (p) => hLeft.push(p.id));
+  await B.close();
+  await until(() => aLeft.includes(B.me) && hLeft.includes(B.me), 5000);
+  check(aLeft.includes(B.me) && hLeft.includes(B.me), 'leaving: A and the host see B go');
+
+  // a different game id cannot join (the host refuses its hello)
+  const other = new OkWeb({ server, game: '11111111111111111111111111111111' });
+  let refused = '';
+  try { await other.join({ room: H.room, host: H.me }); } catch (e) { refused = e.message; }
+  check(/different game/.test(refused), 'wrong game id: refused (' + refused + ')');
+  check(H.players.length === 1, 'wrong game id: not left in the host\'s players');
+
+  // the host closes: A's session ends, the room is gone from the list
+  let aClosed = '';
+  A.on('closed', (r) => { aClosed = r; });
+  await H.close();
+  await until(() => aClosed, 5000);
+  check(aClosed === 'host-left', 'host closes: A gets closed(host-left)');
+  check(!(await mk().list()).some((r) => r.room === H.room), 'room removed from the list');
+
+  check(!requests.some((b) => b.includes(MARK + ' ')), `the server never saw game bytes (${requests.length} requests checked)`);
+
+  // pingMs: round trips to each player, direct (both sides ping) - and the route kinds found
+  const P = (opts) => new OkWeb({ server, game: GAME, gameName: 'okweb test', pingMs: 200, ...opts });
+  const PH = await P().host({ name: 'Ping room ' + MARK.slice(-4), maxPlayers: 2, playerName: 'Pia' });
+  const PA = await P().join(PH.room, { playerName: 'Pat' });
+  check(await until(() => (PH.stats()[PA.me]?.pings || []).length >= 5 && (PA.stats()[PH.me]?.pings || []).length >= 5, 6000),
+        `ping: both sides measure (${JSON.stringify(PH.stats()[PA.me]?.pings)} ms)`);
+  const ps = PH.stats()[PA.me];
+  check(ps.ping >= 0 && ps.ping < 1000 && ps.pingMin <= ps.pingAvg && ps.pingAvg <= ps.pingMax && ps.pingLost === 0, 'ping: last, avg, min, max, none lost');
+  check(await until(() => /^[a-z?]+-[a-z?]+$/.test(PH.stats()[PA.me]?.route || ''), 3000), 'ping: the direct route kinds (' + PH.stats()[PA.me]?.route + ')');
+  await PA.close();
+  await PH.close();
+
+  // the relay: when no direct path opens, game messages go through the room server (rsend/rpoll).
+  // _testNoDirect withholds each side's routes, so the direct attempt can't work on this one PC.
+  const R = (opts) => new OkWeb({ server, game: GAME, gameName: 'okweb test', log: (...a) => console.log('[okweb relay]', ...a), ...opts });
+  const RH = await R({ _testNoDirect: true, relayAfterMs: 1500, pingMs: 300 }).host({ name: 'Relay room ' + MARK.slice(-4), maxPlayers: 4, playerName: 'Rhea' });
+  const rhIn = inbox(RH);
+  const t0 = performance.now();
+  const RA = await R({ _testNoDirect: true, relayAfterMs: 1500 }).join(RH.room, { playerName: 'Rex' });
+  const raIn = inbox(RA);
+  const joinMs = Math.round(performance.now() - t0);
+  check(RA.hostId === RH.me && RH.stats()[RA.me]?.state === 'relay' && RA.stats()[RH.me]?.state === 'relay',
+        `relay: no direct path - joined through the server after the direct attempt (${joinMs} ms)`);
+  RA.send(null, 'R1');
+  RH.send(null, 'R2');
+  check(await until(() => rhIn.some((m) => m.text === 'R1') && raIn.some((m) => m.text === 'R2'), 8000), 'relay: messages both ways');
+  for (let i = 0; i < 100; i++) RA.send(RH.me, 'seq ' + i, { reliable: i % 2 === 0 });
+  await until(() => rhIn.filter((m) => m.text.startsWith('seq ')).length === 100, 10000);
+  const rseq = rhIn.filter((m) => m.text.startsWith('seq ')).map((m) => Number(m.text.slice(4)));
+  check(rseq.length === 100 && rseq.every((v, i) => v === i), 'relay: 100 messages (both lanes), all there, in order');
+  check(await until(() => RH.stats()[RA.me]?.ping != null, 4000) && RH.stats()[RA.me].route === 'relay' && !('ping' in RA.stats()[RH.me]),
+        `ping over the relay: ${RH.stats()[RA.me]?.ping} ms (answered by a player who doesn't ping himself)`);
+  // a "relay only" player joins a host that tries directly first, and meets the first joiner too (mesh)
+  const RB = await R({ relayOnly: true }).join(RH.room, { playerName: 'Ray' });
+  await RB.ready;
+  check(await until(() => RA.players.some((p) => p.id === RB.me) && RB.players.length === 2, 8000) && RB.stats()[RA.me]?.state === 'relay',
+        'relay only: joins, and reaches the other joiner through the relay');
+  let rbClosed = '';
+  RB.on('closed', (r) => { rbClosed = r; });
+  await RA.close();
+  await RH.close();
+  check(await until(() => rbClosed, 8000) && rbClosed === 'host-left', 'relay: the host leaving reaches the others (' + rbClosed + ')');
+} catch (e) {
+  check(false, 'exception: ' + (e && e.stack || e));
+}
+const fails = results.filter((r) => !r.ok).length;
+log(fails ? 'FAIL' : 'PASS', `done: ${results.length - fails} passed, ${fails} failed`);
+window.__okweb = { done: true, fails, results };
+</script>
+</body>
+</html>

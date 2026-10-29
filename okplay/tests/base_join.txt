@@ -1,0 +1,7 @@
+[  1828] EVENT connection_ready sp=tcpip
+[  3359] EVENT session "dptest H" players 1/8 flags 0x44
+[  3422] EVENT joined "dptest H" in 63ms
+[  3531] EVENT my_player id=1125283918
+[ 11547] STAT peer id=1125283916 name=? pings_rx=37 pongs_rx=37 rtt_avg=0 rtt_max=0
+[ 11547] STAT sent_pings=37 players_in_session=2 peers_answering=1
+[ 17093] RESULT ok

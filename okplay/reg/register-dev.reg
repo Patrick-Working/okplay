@@ -1,0 +1,9 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node\Microsoft\DirectPlay\Service Providers\Oldkid.net Online Play]
+"DescriptionA"="Oldkid.net Online Play"
+"DescriptionW"="Oldkid.net Online Play"
+"Guid"="{66D8DC59-28E8-4D3E-BA93-2E98D251C0F3}"
+"Path"="D:\\aoe2tool\\okplay\\bin\\okplay.dll"
+"dwReserved1"=dword:00000032
+"dwReserved2"=dword:00000000

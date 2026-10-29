@@ -1,0 +1,8 @@
+[   297] EVENT connection_ready sp=tcpip
+[  2234] EVENT hosting "dptest H"
+[  2344] EVENT my_player id=1125283916
+[  5500] EVENT player_joined id=1125283918 name=J
+[ 13594] EVENT player_left id=1125283918
+[ 14375] STAT peer id=1125283918 name=J pings_rx=37 pongs_rx=37 rtt_avg=0 rtt_max=0
+[ 14375] STAT sent_pings=56 players_in_session=1 peers_answering=1
+[ 19719] RESULT fail

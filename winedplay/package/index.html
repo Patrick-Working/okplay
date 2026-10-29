@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{BRAND}} for Age of Empires II: The Conquerors</title>
+<meta name="description" content="Online and LAN play for the original Age of Empires II: The Conquerors - no VPN, no port forwarding, nothing to install.">
+<style>
+  /* oldkid.net's own look (from oldkid.net/odamex/) */
+  body { max-width: 960px; margin: auto; padding: 0 1em; background-color: #2F3136; color: white;
+         font-family: monospace; font-size: 15px; padding-bottom: 3em; }
+  a { color: #6F85D2; }
+  h1 { color: #6F85D2; text-align: center; font-size: 20px; }
+  h2 { color: #2EC057; text-align: center; font-size: 20px; margin-top: 1.6em; }
+  h3 { color: #2EC057; text-align: left; margin-top: 1em; margin-bottom: 1px; font-size: 18px; }
+  p { margin-top: 1px; margin-bottom: 5px; }
+  code, .k { color: #6F85D2; }
+  table { border-collapse: collapse; width: 100%; margin: 5px 0 10px; }
+  th, td { border: 1px dotted #737373; padding: 5px; text-align: left; vertical-align: top; }
+  th { color: #2EC057; }
+  ul { margin-top: 1px; }
+  .meta, .status, .empty { color: #ababab; }
+  .status.bad { color: #f06292; }
+  footer { margin-top: 3em; padding-top: 1em; border-top: 1px dotted #737373; text-align: center; color: #ababab; }
+  @media (max-width: 560px) { .hide { display: none; } }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>{{BRAND}} for Age of Empires II: The Conquerors</h1>
+    <p>Replaces AoE2's DirectPlay with a small, modern-internet-friendly DLL shim, built on a heavily modified and
+       customized version of Wine's DirectPlay 4 code. Players find each other through a small web-hosted PHP
+       matchmaker (this website); once the host and the joining players have found each other, the game itself is
+       ordinary peer-to-peer network play. No VPN, no port forwarding, no fuss.</p>
+    <p class="meta" style="margin-top: 1em">Source code (LGPL 2.1+): <a href="{{SRCURL}}">okplay on GitHub</a> &middot;
+       <a href="{{FFSRC}}">ffmpeg-7.1.tar.xz</a>. Built on <a href="https://www.winehq.org/">Wine</a>
+       and <a href="https://ffmpeg.org/">FFmpeg</a>.</p>
+  </header>
+
+  <section class="card download">
+    <div>
+      <h2 style="margin-bottom:4px">Download</h2>
+      <div class="meta">Version {{VERSION}} &middot; {{ZIPSIZE}} &middot; {{DATE}} &middot; Windows 10 / 11</div>
+    </div>
+    <a class="btn" href="{{ZIP}}" download>Download {{ZIP}}</a>
+  </section>
+
+  <section class="card">
+    <h2>Live Games</h2>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>Game</th><th>Players</th><th>Status</th><th class="hide">Open for</th></tr></thead>
+      <tbody id="rooms"></tbody>
+    </table>
+    </div>
+    <div id="empty" class="empty" hidden>No open games right now &mdash; host one and it appears here within seconds.</div>
+    <div id="status" class="status">Loading&hellip;</div>
+  </section>
+
+  <section class="card">
+    <h2>Installation</h2>
+    <p>Unzip the download and copy <span class="k">dplayx.dll</span>, <span class="k">okindeo.dll</span> and
+       <span class="k">okplay.ini</span> into the folder that holds <span class="k">age2_x1.exe</span> (original) or
+       <span class="k">age2_x1.5.exe</span> (UserPatch 1.5, strongly recommended) &mdash; usually
+       <span class="k">...\age2_x1\</span>. Then start the game as usual, go to Multiplayer and pick
+       <b>{{ONLINE}}</b> (internet) or <b>{{LAN}}</b> (same network).</p>
+    <p>No installer, no administrator rights, no registry changes. To remove it, delete the three files.
+       Works on Windows 98 through Windows 11 (Windows 95 should work too).</p>
+  </section>
+
+  <section class="card">
+    <h2>Features</h2>
+    <h3>One Connection List</h3>
+    <p>The Multiplayer screen lists {{ONLINE}} and {{LAN}} first, followed by Windows' classic TCP/IP and IPX
+       connections, which still work with players who don't have this.</p>
+    <h3>Windows 98 to Windows 11</h3>
+    <p>The same files run on Windows 98 through Windows 11. On Windows 98 the shim talks to this site over plain
+       HTTP and uses IPv4 only, and the intro videos use Windows' own codec.</p>
+    <h3>Password Protected Games</h3>
+    <p>{{BRAND}} adds a basic server password feature that was not present in the original game. Users will be
+       prompted on lobby creation and lobby join. A blank password is an open game. The dialogue for making a
+       password-protected game can be enabled or disabled in the INI.</p>
+    <h3>Offline LAN Mode</h3>
+    <p>An {{LAN}} mode is available for easy connection within a LAN without requiring an internet connection.
+       {{LAN}} and {{ONLINE}} games can't see each other: if anyone joins over the internet, everyone picks
+       {{ONLINE}}, including players on the same network (they still connect to each other locally).</p>
+    <h3>Intro Videos Playback</h3>
+    <p>The .DLL shim includes the codec to properly play the intro videos, a feature missing in Windows 10/11.</p>
+    <h3>Update Notices</h3>
+    <p>When a newer version is out, a box offers the download the first time you use {{ONLINE}}. It never blocks a
+       game, and it can be turned off in the INI.</p>
+    <h3>Configuration INI</h3>
+    <p>Most features can be turned on or off, including disabling the shim entirely and relying on your existing
+       Windows' DirectPlay driver for classic TCP/IP or IPX games.</p>
+  </section>
+
+  <section class="card">
+    <h2>Why?</h2>
+{{SITE_WHY}}
+  </section>
+  <section class="card">
+    <h2>Arguably Better Ways to Play AoE2 Online</h2>
+    <ul>
+      <li><a href="https://www.voobly.com/">Voobly</a></li>
+      <li><a href="https://store.steampowered.com/app/221380/">Age of Empires II HD</a> (Steam)</li>
+      <li><a href="https://store.steampowered.com/app/813780/">Age of Empires II: Definitive Edition</a> (Steam)</li>
+    </ul>
+  </section>
+
+  <section class="card">
+    <h2>What's in the Download</h2>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>File</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><span class="k">dplayx.dll</span></td><td>The shim. The game loads it instead of Windows' DirectPlay:
+          Wine's DirectPlay 4 with our fixes, with {{ONLINE}} and {{LAN}} built in. It also writes a log for every
+          game run to <span class="k">netplay-logs\</span> next to it (send us that folder if something goes wrong).
+          On Windows 98 it also makes a copy of Windows' own DirectPlay next to it,
+          <span class="k">dplayx-windows9x.dll</span>, for the classic connections.</td></tr>
+        <tr><td><span class="k">okindeo.dll</span></td><td>The Indeo 5 decoder for the intro movies (built from FFmpeg).
+          Optional: without it everything works, the movies just have no picture. Not used on Windows 98, which
+          has its own.</td></tr>
+        <tr><td><span class="k">okplay.ini</span></td><td>Settings (see below). Optional: without it, sensible defaults are used.</td></tr>
+        <tr><td><span class="k">README.txt</span></td><td>Installation and troubleshooting, for offline reading.</td></tr>
+        <tr><td><span class="k">SOURCE.txt</span></td><td>Where to get the source code (LGPL).</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>The INI File</h2>
+    <p><span class="k">okplay.ini</span> sits next to <span class="k">dplayx.dll</span>; all settings are in its
+       <span class="k">[okplay]</span> section. The game reads it every time it starts.</p>
+    <div class="scroll">
+    <table>
+      <thead><tr><th>Setting</th><th>Description</th></tr></thead>
+      <tbody>
+        <tr><td><span class="k">mode=all</span></td><td>Which multiplayer the game uses. <b>all</b>: one list,
+          {{ONLINE}} and {{LAN}} first, then Windows' classic connections (needs Windows' DirectPlay feature on
+          Windows 10/11; without it only the first two are listed). <b>oldkid</b>: {{ONLINE}} and {{LAN}} only.
+          <b>windows</b>: Windows' own DirectPlay only, as if the shim weren't there.
+          <b>ask</b>: a box asks every time the game starts.</td></tr>
+        <tr><td><span class="k">lobby_auto=1</span></td><td>A game started by a DirectPlay lobby program always uses
+          Windows' DirectPlay. 0 = never switch.</td></tr>
+        <tr><td><span class="k">use_password=ask</span></td><td><b>ask</b>: when you host, a box asks for an optional
+          game password. <b>off</b>: never ask (open games). Joining a game that has a password always asks.
+          (Ticking &ldquo;Disable Hosting Password&rdquo; in the box sets this to off.)</td></tr>
+        <tr><td><span class="k">update_check=1</span></td><td>1 = offer newer versions (a box, once per game,
+          never blocking). 0 = never. &ldquo;Don't remind me about this version&rdquo; in the box sets
+          <span class="k">update_seen</span> instead.</td></tr>
+        <tr><td><span class="k">intro=1</span></td><td>1 = play the intro movies, 0 = skip them (the game reaches its
+          menu about a minute and a half sooner).</td></tr>
+        <tr><td><span class="k">videos=1</span></td><td>1 = decode the intro movies with <span class="k">okindeo.dll</span>
+          so they have a picture; 0 = leave them to Windows (sound only).</td></tr>
+        <tr><td><span class="k">online_name</span>, <span class="k">lan_name</span></td><td>The names of the two
+          connections in the game's Multiplayer screen.</td></tr>
+        <tr><td><span class="k">server</span>, <span class="k">key</span></td><td>The matchmaking server (this site) and
+          its key. Change them only to use your own server &mdash; see <span class="k">SELF-HOSTING.md</span> in the source.</td></tr>
+        <tr><td><span class="k">brand</span></td><td>The name shown in the boxes and messages.</td></tr>
+        <tr><td><span class="k">show_windows_connections=0</span></td><td>1 = also list Windows' TCP/IP, IPX, modem and
+          serial connections, run by the shim (only with <span class="k">mode=oldkid</span>; diagnostics only).</td></tr>
+        <tr><td><span class="k">loglevel=3</span></td><td>How much goes into <span class="k">netplay-logs\</span>:
+          3 = everything (while we're testing), 2 = normal, 0 = off.</td></tr>
+        <tr><td><span class="k">stats_ms=10000</span></td><td>A connection-quality line per player in the log every
+          so many milliseconds (0 = off).</td></tr>
+        <tr><td><span class="k">crashdump=1</span></td><td>If the game crashes, save a crash dump next to the log.</td></tr>
+      </tbody>
+    </table>
+    </div>
+  </section>
+
+  <section class="card">
+    <h2>How the Networking Works</h2>
+    <h3>Finding Each Other</h3>
+    <p>When you host on {{ONLINE}}, the shim announces the game to this website about once a second over HTTPS: its
+       name, the player count, and the addresses it can be reached on &mdash; its local-network addresses, its IPv6
+       addresses, and its public IPv4 address as seen by a public STUN server. A joining player's shim reads the list,
+       then sends the host its own addresses through the same website (a &ldquo;knock&rdquo;). A game disappears from
+       the list 15 seconds after its host stops announcing it. The public list on this page never shows anyone's addresses.</p>
+    <h3>Connecting Directly</h3>
+    <p>Both sides then fire small UDP probes at every address the other one gave, at the same time. That opens a path
+       through both home routers (&ldquo;hole punching&rdquo;), and the first path that answers is used &mdash; IPv6
+       directly when both sides have it. From then on the game talks straight between the PCs.
+       It works through most home routers, phone hotspots, etc.
+       The one case it can't handle is when <i>both</i> players are behind the strictest kind of router
+       (&ldquo;symmetric NAT&rdquo;): there is no relay server.</p>
+    <h3>Talking During the Game</h3>
+    <p>Each game uses one UDP socket. DirectPlay's own control messages (joining, leaving, names, the lobby) and
+       anything larger than about 1200 bytes travel on a reliable, in-order lane with acknowledgements, retransmission
+       and splitting of large messages. The game's own traffic keeps the delivery guarantees the game asks DirectPlay
+       for. Keep-alives notice a player whose game crashed within about 15 seconds; if the host leaves, another
+       player takes over as host.</p>
+    <h3>LAN Play</h3>
+    <p>{{LAN}} doesn't use this website at all: the shim finds games by UDP broadcast (port 47632) on every local
+       network the PC is on, then connects the same way.</p>
+    <h3>Passwords</h3>
+    <p>The password you type is never sent. Both PCs turn it into a SHA-256 hash mixed with that game's own unique ID,
+       and DirectPlay compares the hashes. Someone watching the traffic can't read the password, and the value they
+       see is useless for any other game.</p>
+    <h3>Versions</h3>
+    <p>The network protocol is versioned: games from incompatible versions don't show up for each other, so nothing
+       half-works. Everyone in a game needs this version or a compatible one.</p>
+  </section>
+
+{{SITE_PATCHES}}
+
+
+  <footer>
+    <p><a href="https://oldkid.net/">oldkid.net</a> &middot; {{BRAND}} v{{VERSION}}, {{DATE}} &middot;
+       <a href="{{SRCURL}}">source code</a> (LGPL 2.1+) &middot; built on <a href="https://www.winehq.org/">Wine</a>
+       and <a href="https://ffmpeg.org/">FFmpeg</a></p>
+    <p>Privacy: this site counts games hosted and joined, and which versions are in use, without keeping anyone's address.
+       If the game crashes, the next time you open Multiplayer you're asked whether to send a crash report. Connection reports
+       (how well each game connected) are sent only if you say yes when asked. Reports hold the version, Windows version,
+       game and technical details. They never contain player names, chat or addresses, and they're deleted after 90 days.</p>
+  </footer>
+</main>
+
+<script>
+(function () {
+  var API = "okplay.php?a=list&fmt=json";
+  var CUR = "{{VERSION}}";
+  function mm(v) { return String(v || "").split(".").slice(0, 2).join("."); }
+  var tbody = document.getElementById("rooms");
+  var empty = document.getElementById("empty");
+  var status = document.getElementById("status");
+
+  function dur(s) {
+    s = Math.max(0, s | 0);
+    if (s < 60) return s + "s";
+    var m = Math.floor(s / 60);
+    if (m < 60) return m + " min";
+    return Math.floor(m / 60) + " h " + (m % 60) + " min";
+  }
+  function cell(tr, text, cls) {
+    var td = document.createElement("td");
+    td.textContent = text;               // names come from players: never innerHTML
+    if (cls) td.className = cls;
+    tr.appendChild(td);
+    return td;
+  }
+  function render(data) {
+    var rooms = (data && data.rooms) || [];
+    rooms.sort(function (a, b) { return (a.started - b.started) || (a.age - b.age); });
+    tbody.textContent = "";
+    rooms.forEach(function (r) {
+      var tr = document.createElement("tr");
+      var nameCell = cell(tr, (r.pw ? "🔒 " : "") + (r.name || "Unnamed game"));   // lock = password game
+      if (r.game) {                        // which game (0.8.1+ hosts send it; older: known by its id)
+        var g = document.createElement("div");
+        g.className = "meta";
+        g.textContent = r.game + (r.gamever ? " · " + r.gamever : "") + (r.exe ? " · " + r.exe : "");
+        nameCell.appendChild(g);
+      }
+      if (r.wire === 100) {                // a browser game (okweb.js): only other browsers can join it
+        var w = document.createElement("span");
+        w.className = "meta";
+        w.textContent = "  (in the browser)";
+        nameCell.appendChild(w);
+      } else if (r.ver && mm(r.ver) !== mm(CUR)) {   // (browser games have their own version numbers)
+        var v = document.createElement("span");
+        v.className = "meta";
+        v.textContent = "  (host has v" + r.ver + ")";
+        nameCell.appendChild(v);
+      }
+      cell(tr, r.players + " / " + r.maxp, "num");
+      var td = cell(tr, "");
+      var b = document.createElement("span");
+      var st = r.state || (r.started ? "playing" : "lobby");   // the host's judgement (0.8.1+), else flags
+      var full = r.maxp && r.players >= r.maxp;
+      b.className = "badge " + (st === "playing" ? "live" : "wait");
+      b.textContent = st === "playing" ? "In progress" : st === "between" ? "Between games" :
+                      full ? "Full" : "Waiting for players";
+      td.appendChild(b);
+      cell(tr, dur(r.age), "num hide");
+      tbody.appendChild(tr);
+    });
+    empty.hidden = rooms.length !== 0;
+    status.className = "status";
+    status.textContent = "Updated " + new Date().toLocaleTimeString() + " · refreshes every 5 seconds";
+  }
+  function load() {
+    fetch(API, { cache: "no-store" })
+      .then(function (r) { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+      .then(render)
+      .catch(function (e) {
+        status.className = "status bad";
+        status.textContent = "Game list unavailable right now (" + e.message + "). LAN play still works.";
+      });
+  }
+  load();
+  setInterval(load, 5000);
+})();
+</script>
+</body>
+</html>
