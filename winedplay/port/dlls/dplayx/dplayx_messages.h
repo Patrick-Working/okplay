@@ -119,6 +119,7 @@ typedef struct
 
 #define DPMSGCMD_PING                 22
 #define DPMSGCMD_PINGREPLY            23
+#define DPMSGCMD_YOUAREDEAD           24   /* 8 bytes, the envelope only (lifecycle.c) */
 
 #define DPMSGCMD_FORWARDADDPLAYERNACK 36
 

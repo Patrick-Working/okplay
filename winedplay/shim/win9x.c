@@ -263,13 +263,17 @@ static HANDLE WINAPI x_CreateThread( LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LPT
                                      LPVOID param, DWORD flags, LPDWORD id )
 {
     static HANDLE (WINAPI *fn)( LPSECURITY_ATTRIBUTES, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD );
-    extern void okp_log( int level, const char *fmt, ... );
     DWORD dummy, *tid = id ? id : &dummy;
     HANDLE h;
     if ( !fn ) fn = (void *)real( "kernel32.dll", "CreateThread" );   /* the system's, on every Windows */
     h = fn( sa, stack, start, param, flags, tid );
-    /* which of our threads is which: a crash names only the thread id (no dbghelp on 9x) */
-    if ( h ) okp_log( 3, "thread %lu started at %p", (unsigned long)*tid, (void *)start );
+#ifdef OKP_BUILTIN   /* the drop-in has okplay's log; the stand-alone TCP/IP provider (build_dpwsockx.sh) not */
+    {
+        extern void okp_log( int level, const char *fmt, ... );
+        /* which of our threads is which: a crash names only the thread id (no dbghelp on 9x) */
+        if ( h ) okp_log( 3, "thread %lu started at %p", (unsigned long)*tid, (void *)start );
+    }
+#endif
     return h;
 }
 BIND( x_CreateThread, "__imp__CreateThread@24" );

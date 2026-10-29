@@ -115,6 +115,22 @@ roomstate() { # label: the host's room-list state follows the traffic (rdv.c roo
     else echo "FAIL $p"; fails=$((fails+1)); fi
 }
 
+youaredead() { # label: the host drops a silent joiner; the joiner, which waits longer (drop_after=60),
+    # talks again after the blackout and the host answers YOUAREDEAD: the joiner's game gets
+    # DPSYS_SESSIONLOST and the host's player leaves it, as Windows' DirectPlay does (lifecycle.c)
+    local p=$1 at
+    at=$(( $(date +%s) + 12 ))
+    OKP_BLACKOUT="$at:22" run_bg ${p}_host host --name YD --secs 60 --expect 2
+    sleep 3
+    OKP_DROP_AFTER=60 OKP_BLACKOUT="$at:22" run_bg ${p}_join join --name J --secs 54 --session "dptest YD"
+    wait
+    local hl jl
+    hl=$(grep -c "EVENT player_left" "$OUT/${p}_host.txt")
+    jl=$(grep -c "EVENT session_lost" "$OUT/${p}_join.txt")
+    printf "  %-16s host dropped the joiner: %s, joiner's session lost: %s (expected: 1, 1)\n" "$p" "$hl" "$jl"
+    if [[ $hl -ge 1 && $jl == 1 ]]; then echo "PASS $p"; else echo "FAIL $p"; fails=$((fails+1)); fi
+}
+
 blackout() { # label seconds expect(stays|drops): the line goes dead both ways for N s mid-game
     # (OKP_BLACKOUT, net.c); "stays" = nobody leaves and pings flow again afterwards
     local p=$1 secs=$2 expect=$3 at
@@ -516,6 +532,7 @@ case $sc in
               # ends up in - always drops at ~15 s, so these two run on the drop-in's own LAN Play
               DPT="../bin/dptest.exe --sp auto"; export DPTEST_DPLAYX=${DPTEST_DPLAYX:-$(cygpath -aw "$DROPIN_DLL")}
               OKP_DROP_AFTER=30 blackout blackout20da30 20 stays; OKP_DROP_AFTER=30 blackout blackout40da30 40 drops
+              youaredead youaredead
               exit $fails) || fails=$? ;;
     v6)      OKP_TEST_AS=online OKP_FAMILY=6 OKP_STUN= pair v6only ;;
     online)  online ;;

@@ -240,6 +240,52 @@ void DP_LIFE_MachineGone( IDirectPlayImpl *This, DPID systemPlayerId, const char
     LeaveCriticalSection( &This->lock );
 }
 
+/* YOUAREDEAD (24): the host removed this machine (it went silent past the keepalive) and tells it so
+ * when it talks again. Windows' joiner then drops out of the session (okplay blackout, 2026-10-28):
+ * DPSYS_SESSIONLOST, then every other machine and its players leave (DPSYS_DESTROYPLAYERORGROUP for
+ * each player), no host migration, and it pings nobody after that. Its own players stay until Close. */
+HRESULT DP_LIFE_HandleYouAreDead( IDirectPlayImpl *This, const void *body, DWORD size, const void *header )
+{
+    struct PlayerList *plist;
+    DPID machines[ 64 ], ids[ 64 ], sender;
+    int nm = 0, n, i, j;
+    BOOL known;
+
+    EnterCriticalSection( &This->lock );
+    if ( !This->dp2->bConnectionOpen || !This->dp2->lpSysGroup || This->dp2->bHostInterface )
+    {
+        LeaveCriticalSection( &This->lock );
+        return DP_OK;
+    }
+    /* only the host decides who is in the session (no identity: a classic provider - trusted as before) */
+    sender = DP_SenderMachine( This, header, &known );
+    if ( known && sender != This->dp2->nameServerId )
+    {
+        DP_NOTE( "YOUAREDEAD from machine 0x%08lx ignored: not the host (0x%08lx)\n", sender, This->dp2->nameServerId );
+        LeaveCriticalSection( &This->lock );
+        return DP_OK;
+    }
+    DP_NOTE( "YOUAREDEAD from the host: this machine is out of the session\n" );
+    DP_QueueSystemMessage( This, DPSYS_SESSIONLOST );
+    for ( plist = DPQ_FIRST( This->dp2->lpSysGroup->players ); plist && nm < ARRAYSIZE( machines ); plist = DPQ_NEXT( plist->players ) )
+        if ( (plist->lpPData->dwFlags & DPLAYI_PLAYER_SYSPLAYER) && !(plist->lpPData->dwFlags & DPLAYI_PLAYER_PLAYERLOCAL) )
+            machines[ nm++ ] = plist->lpPData->dpid;
+    for ( j = 0; j < nm; j++ )
+    {
+        n = 0;
+        for ( plist = DPQ_FIRST( This->dp2->lpSysGroup->players ); plist && n < ARRAYSIZE( ids ); plist = DPQ_NEXT( plist->players ) )
+        {
+            struct PlayerData *p = plist->lpPData;
+            if ( p->dpid != machines[ j ] && p->systemPlayerId == machines[ j ] && !(p->dwFlags & DPLAYI_PLAYER_PLAYERLOCAL) )
+                ids[ n++ ] = p->dpid;
+        }
+        for ( i = 0; i < n; i++ ) DP_RemovePlayer( This, ids[ i ], FALSE );
+        DP_RemovePlayer( This, machines[ j ], FALSE );
+    }
+    LeaveCriticalSection( &This->lock );
+    return DP_OK;
+}
+
 HRESULT DP_LIFE_HandleDeletePlayer( IDirectPlayImpl *This, const void *body, DWORD size, const void *header )
 {
     const DPSP_MSG_DELETEPLAYER *msg = body;

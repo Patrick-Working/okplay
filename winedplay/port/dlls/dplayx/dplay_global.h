@@ -334,6 +334,7 @@ void DP_ResetSession( IDirectPlayImpl *This );
 
 /* lifecycle.c: leaving, keepalive, host migration */
 void DP_LIFE_Start( IDirectPlayImpl *This );
+HRESULT DP_LIFE_HandleYouAreDead( IDirectPlayImpl *This, const void *body, DWORD size, const void *header );
 void DP_LIFE_Stop( IDirectPlayImpl *This );
 void DP_LIFE_Leaving( IDirectPlayImpl *This );
 void DP_LIFE_Heard( IDirectPlayImpl *This, DPID anyPlayerOfTheMachine );

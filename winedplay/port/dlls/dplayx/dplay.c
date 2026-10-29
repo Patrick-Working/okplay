@@ -751,6 +751,9 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
     case DPMSGCMD_DELETEPLAYER:
       return DP_LIFE_HandleDeletePlayer( This, messageBody, dwMessageBodySize, messageHeader );
 
+    case DPMSGCMD_YOUAREDEAD:
+      return DP_LIFE_HandleYouAreDead( This, messageBody, dwMessageBodySize, messageHeader );
+
     case DPMSGCMD_IAMNAMESERVER:
       return DP_LIFE_HandleIAmNameServer( This, messageBody, dwMessageBodySize, messageHeader );
 
@@ -781,6 +784,24 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
       {
         LeaveCriticalSection( &This->lock );
         return DP_OK;
+      }
+
+      /* a machine we removed (it went silent past the keepalive) pings again: the host tells it it is out
+       * - YOUAREDEAD, the envelope alone, as the reply (Windows' host, okplay blackout 2026-10-28). [UNV]
+       * whether a joiner answers so too: only the host does here. */
+      if ( This->dp2->bHostInterface && msg->fromId && !DP_FindPlayer( This, msg->fromId ) )
+      {
+        DPMSG_SENDENVELOPE *dead;
+        LeaveCriticalSection( &This->lock );
+        *lpdwMsgSize = This->dp2->spData.dwSPHeaderSize + sizeof( *dead );
+        if ( !(*lplpReply = calloc( 1, *lpdwMsgSize )) )
+          return DPERR_OUTOFMEMORY;
+        dead = (DPMSG_SENDENVELOPE *)( (BYTE *)*lplpReply + This->dp2->spData.dwSPHeaderSize );
+        dead->dwMagic = DPMSGMAGIC_DPLAYMSG;
+        dead->wCommandId = DPMSGCMD_YOUAREDEAD;
+        dead->wVersion = DPMSGVER_DP6;
+        DP_NOTE( "PING from 0x%08lx, a machine no longer in the session: YOUAREDEAD\n", msg->fromId );
+        break;
       }
 
       LeaveCriticalSection( &This->lock );
