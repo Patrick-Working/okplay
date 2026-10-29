@@ -29,6 +29,22 @@ Then start the game as usual -> Multiplayer. The connection list shows only:
 The first time you host, Windows may ask to let the game through the firewall:
 click Allow (LAN games need it; online games work either way).
 
+WHAT'S NEW IN 0.8.3
+-------------------
+- DirectX 3 era games (the ones with DPLAY.DLL) now work: the old DirectPlay 1
+  interface is in, and players are numbered as those games expect. Tested
+  with Necrodome between Windows 10 and Windows 98, online.
+- Necrodome (GOG edition): its Network Game list works again. The fix is made
+  in memory while the game runs, only for that exact game file; the game's
+  files are never changed (okplay.ini game_fixes=0 turns it off).
+- Fixed: Windows 95, 98 and XP crashed in DPLAY.DLL games.
+- Games that use DirectPlay groups (teams, chat channels) now see them on
+  every PC, not just the one that made them.
+- A player whose connection dropped long enough to be removed is now told
+  the game is over when the connection comes back, as Microsoft's DirectPlay
+  does, instead of waiting in a game that has gone on without them.
+- Fixed: with trace=1, DirectX 3 era games could crash.
+
 WHAT'S NEW IN 0.8.2
 -------------------
 - The room list no longer shows a match as "between games" while it is still

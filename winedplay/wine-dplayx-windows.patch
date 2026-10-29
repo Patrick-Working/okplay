@@ -1,7 +1,7 @@
 diff -ruN src/dlls/dplayx/builtin.c port/dlls/dplayx/builtin.c
 --- src/dlls/dplayx/builtin.c	1969-12-31 17:00:00.000000000 -0700
-+++ port/dlls/dplayx/builtin.c	2026-10-16 10:50:50.805319200 -0700
-@@ -0,0 +1,1976 @@
++++ port/dlls/dplayx/builtin.c	2026-10-28 19:22:33.548052300 -0700
+@@ -0,0 +1,2048 @@
 +/*
 + * The drop-in edition: this dplayx.dll sits next to the game's exe and carries everything.
 + *
@@ -52,6 +52,7 @@ diff -ruN src/dlls/dplayx/builtin.c port/dlls/dplayx/builtin.c
 +                                          LPVOID lpAddress, LPDWORD lpdwAddressSize, BOOL bAnsiInterface );
 +/* okplay (built into this DLL) */
 +extern void okp_builtin_attach( HINSTANCE hinst );
++extern void DP_BUILTIN_GameFixes( void );
 +extern void okp_log( int level, const char *fmt, ... );
 +/* okplay compat.c: the Windows 9x paths, and hashing that is the same on every Windows */
 +extern int okp_win9x_paths( void );
@@ -1534,6 +1535,76 @@ diff -ruN src/dlls/dplayx/builtin.c port/dlls/dplayx/builtin.c
 +    else free( u );
 +}
 +
++/* ------------------------------------------------------------------ reports (okplay/src/report.c) */
++
++/* A crash report from the last run is waiting: ask before sending it. "View report" opens it in
++ * Notepad and asks again. Runs on report.c's own thread, never over a match (asked at SPInit).
++ * 0 = don't send (the report is deleted), 1 = send, 2 = send, and from now on without asking. */
++int DP_BUILTIN_AskCrashReport( const char *path )
++{
++    struct pw_dialog d;
++    WCHAR title[ 96 ];
++    INT_PTR r;
++
++    for (;;)
++    {
++        memset( &d, 0, sizeof(d) );
++        brand_w( title, ARRAY_SIZE( title ) );
++        d.title = title;
++        d.text = L"The game closed unexpectedly last time.\n\n"
++                 L"Send a crash report to oldkid.net to help fix it? It says where the crash happened and "
++                 L"which versions of the game, Windows and this add-on you have. "
++                 L"It never contains player names, chat or addresses.";
++        d.text_cy = 78;
++        d.check = L"Always send crash reports without asking";
++        d.ok = L"Send";
++        d.third = L"View Report";
++        d.cancel = L"Don't Send";
++        r = show_pw_dialog( &d );
++        if ( r != PW_THIRD ) break;
++        {
++            char cmd[ MAX_PATH + 32 ];
++            STARTUPINFOA si;
++            PROCESS_INFORMATION pi;
++            memset( &si, 0, sizeof(si) );
++            si.cb = sizeof(si);
++            snprintf( cmd, sizeof(cmd), "notepad.exe \"%s\"", path );
++            if ( CreateProcessA( NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi ) )
++            {
++                WaitForSingleObject( pi.hProcess, INFINITE );   /* ask again once it's closed */
++                CloseHandle( pi.hThread );
++                CloseHandle( pi.hProcess );
++            }
++        }
++    }
++    okp_log( 1, "report: crash report box - the player chose %s%s", r == IDOK ? "Send" : "Don't Send",
++             r == IDOK && d.checked ? " (always)" : "" );
++    return r == IDOK ? (d.checked ? 2 : 1) : 0;
++}
++
++/* The first game is over and connection reports were never asked about (connection_reports=ask):
++ * ask once. 1 = yes (report.c writes connection_reports=yes), 0 = no. */
++int DP_BUILTIN_AskConnReports( void )
++{
++    struct pw_dialog d;
++    WCHAR title[ 96 ];
++    INT_PTR r;
++
++    memset( &d, 0, sizeof(d) );
++    brand_w( title, ARRAY_SIZE( title ) );
++    d.title = title;
++    d.text = L"Help improve Online Play?\n\n"
++             L"After each game, send oldkid.net a short summary of how well it connected: whether joining "
++             L"worked, the ping, and how many messages had to be resent. "
++             L"No player names, chat or addresses. You can change this later in okplay.ini (connection_reports=).";
++    d.text_cy = 86;
++    d.ok = L"Yes, Send";
++    d.cancel = L"No Thanks";
++    r = show_pw_dialog( &d );
++    okp_log( 1, "report: connection reports box - the player chose %s", r == IDOK ? "Yes" : "No" );
++    return r == IDOK;
++}
++
 +/* ------------------------------------------------------------------ intro=0 */
 +
 +/* AoE2 skips its intro movies when its command line says NOSTARTUP. With intro=0 the game's own
@@ -1969,6 +2040,7 @@ diff -ruN src/dlls/dplayx/builtin.c port/dlls/dplayx/builtin.c
 +    okp_log( 1, "command line: %.900s", GetCommandLineA() );
 +    /* here, in DllMain: the game's own code (its C runtime reads the command line) runs only
 +     * after every DLL it imports has been initialised */
++    if ( ini_int( "game_fixes", 1 ) ) DP_BUILTIN_GameFixes();   /* shim/gamefix.c: exact exes only */
 +    if ( !ini_int( "intro", 1 ) ) skip_intro_movies();
 +    if ( ini_int( "keep_desktop_mode", 0 ) ) keep_desktop_mode();
 +    if ( ini_int( "com_redirect", 1 ) ) com_redirect();
@@ -1979,18 +2051,41 @@ diff -ruN src/dlls/dplayx/builtin.c port/dlls/dplayx/builtin.c
 +    if ( thread ) CloseHandle( thread );
 +}
 diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
---- src/dlls/dplayx/dplay.c	2026-10-14 16:15:35.256917700 -0700
-+++ port/dlls/dplayx/dplay.c	2026-10-15 13:17:23.391765500 -0700
-@@ -55,7 +55,7 @@
+--- src/dlls/dplayx/dplay.c	2026-10-28 18:30:34.236755300 -0700
++++ port/dlls/dplayx/dplay.c	2026-10-28 19:22:33.672179700 -0700
+@@ -39,6 +39,10 @@
+ 
+ WINE_DEFAULT_DEBUG_CHANNEL(dplay);
+ 
++#ifdef OKP_BUILTIN
++void okp_join_failed( IDirectPlaySP *isp, const char *step, HRESULT hr );   /* okplay/src/sp.c */
++#endif
++
+ /* FIXME: Should this be externed? */
+ extern HRESULT DPL_CreateCompoundAddress
+ ( LPCDPCOMPOUNDADDRESSELEMENT lpElements, DWORD dwElementCount,
+@@ -47,7 +51,7 @@
+ 
+ /* Local function prototypes */
+ static lpPlayerList DP_FindPlayer( IDirectPlayImpl *This, DPID dpid );
+-static DPNAME *DP_DuplicateName( const DPNAME *src, BOOL dstAnsi, BOOL srcAnsi );
++static DPNAME *DP_DuplicateName( const DPNAME *src, BOOL dstAnsi, BOOL srcAnsi, BOOL fill );
+ static void DP_SetGroupData( lpGroupData lpGData, DWORD dwFlags,
+                              LPVOID lpData, DWORD dwDataSize );
+ static BOOL CALLBACK cbDeletePlayerFromAllGroups( DPID dpId,
+@@ -55,7 +59,10 @@
                                                    LPCDPNAME lpName,
                                                    DWORD dwFlags,
                                                    LPVOID lpContext );
 -static lpGroupData DP_FindAnyGroup( IDirectPlayImpl *This, DPID dpid );
 +lpGroupData DP_FindAnyGroup( IDirectPlayImpl *This, DPID dpid );
++/* a group a game named: never the system group - Windows answers DPERR_INVALIDGROUP for id 0
++ * (DPID_SYSTEM_GROUP) in every group call (black box, 2026-10-22) */
++#define DP_FindGameGroup( This, dpid ) ( (dpid) == DPID_SYSTEM_GROUP ? NULL : DP_FindAnyGroup( (This), (dpid) ) )
  
  /* Helper methods for player/group interfaces */
  static HRESULT DP_SetSessionDesc( IDirectPlayImpl *This, const DPSESSIONDESC2 *lpSessDesc,
-@@ -71,8 +71,9 @@
+@@ -71,8 +78,9 @@
                                   LPCDPSESSIONDESC2 srcSessDesc, BOOL dstAnsi, BOOL srcAnsi );
  
  
@@ -2001,7 +2096,15 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
                                                   we don't have to change much */
  #define DPID_NAME_SERVER 0x19a9d65b  /* Don't ask me why */
  
-@@ -155,8 +156,9 @@
+@@ -83,6 +91,7 @@
+ #define DPMSG_CREATEPLAYER_DWFLAGS(x) 0
+ 
+ static LONG kludgePlayerGroupId = 1000;
++static LONG idLimit;   /* 0, or the highest id a game fix allows (DP_LimitObjectIds) */
+ 
+ 
+ static inline IDirectPlayImpl *impl_from_IDirectPlay( IDirectPlay *iface )
+@@ -155,8 +164,9 @@
    }
    This->dp2->lpSessionDesc->dwSize = sizeof( *This->dp2->lpSessionDesc );
  
@@ -2013,7 +2116,20 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
    This->dp2->spData.lpCB = calloc( 1, sizeof( *This->dp2->spData.lpCB ) );
    This->dp2->spData.lpCB->dwSize = sizeof( *This->dp2->spData.lpCB );
-@@ -247,8 +249,11 @@
+@@ -197,8 +207,12 @@
+ 
+   if( This->dp2->hEnumSessionThread != INVALID_HANDLE_VALUE )
+   {
++#ifdef OKWEB_DPLAY
++    SetEvent( This->dp2->hKillEnumSessionThreadEvent );   /* the task frees itself on its next round */
++#else
+     TerminateThread( This->dp2->hEnumSessionThread, 0 );
+     CloseHandle( This->dp2->hEnumSessionThread );
++#endif
+   }
+ 
+   /* Finish with the SP - have it shutdown */
+@@ -247,21 +261,51 @@
  
  static void dplay_destroy(IDirectPlayImpl *obj)
  {
@@ -2026,7 +2142,41 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
       DeleteCriticalSection( &obj->lock );
       free( obj );
  }
-@@ -261,7 +266,6 @@
+ 
+ static inline DPID DP_NextObjectId(void)
+ {
+-  return (DPID)InterlockedIncrement( &kludgePlayerGroupId );
++  LONG id = InterlockedIncrement( &kludgePlayerGroupId );
++  if ( idLimit && id > idLimit )
++  {
++    /* start again at 1; only a session that has made more objects than the limit gets here */
++    ERR( "more than %ld player and group ids made in this run; numbering again from 1\n", idLimit );
++    InterlockedCompareExchange( &kludgePlayerGroupId, 1, id );
++    id = 1;
++  }
++  return (DPID)id;
++}
++
++/* A game fix (shim/gamefix.c) for a game that indexes its own tables by player id: ids from 1 to
++ * limit. Windows hands out large ids (0x12cd979f on Windows 10, 2026-10-22), so this is never the
++ * default. Called once, while the DLL loads, before any object exists. */
++void DP_LimitObjectIds( DWORD limit )
++{
++  idLimit = (LONG)limit;
++  kludgePlayerGroupId = 0;
++}
++
++/* dplay.dll (shim/dplay_forward.c) calls this before its first DirectPlayCreate. The DirectPlay 1.1
++ * dplay.dll it stands in for numbers players 1, 2, 3... (GOG's Necrodome ships one, 5.00.2134.1:
++ * ids 1 and 2, okplay/tests/dp1ids.c, 2026-10-22), and games of that time index their own tables
++ * by id - Necrodome does. dplayx's own DirectPlayCreate keeps Windows' dplayx numbering (large
++ * ids there, ours from 1000). Only while this process has made no player or group yet. */
++void WINAPI OkpDplay11Numbering( void )
++{
++  if ( InterlockedCompareExchange( &kludgePlayerGroupId, 0, 1000 ) == 1000 )
++    TRACE( "players and groups numbered from 1, as DirectPlay 1.1 does\n" );
+ }
+ 
  static DWORD DP_CopyString( char **dst, const void *src, BOOL dstAnsi, BOOL srcAnsi, void *buffer, DWORD offset )
  {
      void *dstPtr = NULL;
@@ -2034,7 +2184,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      DWORD size;
  
      if ( !src )
-@@ -275,7 +279,6 @@
+@@ -275,7 +319,6 @@
      if ( buffer )
      {
          dstPtr = (char *) buffer + offset;
@@ -2042,7 +2192,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
          *dst = dstPtr;
      }
  
-@@ -291,10 +294,20 @@
+@@ -291,10 +334,20 @@
      }
      else
      {
@@ -2065,7 +2215,69 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      }
  
      return size;
-@@ -464,7 +477,7 @@
+@@ -359,6 +412,35 @@
+     return DP_OK;
+ }
+ 
++/* A group's players in the order the game sees them: the system group's (every player) newest
++ * first, as Windows enumerates them and hands out its system messages (apistate_dp1.c,
++ * 2026-10-22); other groups in the order players were added. A snapshot (free it), so a callback
++ * that creates or destroys players doesn't walk a changing list. The list itself stays oldest
++ * first: host.c and lifecycle.c build Windows' wire order from that. */
++static struct PlayerData **DP_GroupPlayersInOrder( IDirectPlayImpl *This, struct GroupData *group,
++                                                   int *count )
++{
++    struct PlayerList *plist;
++    struct PlayerData **list;
++    int n = 0, i;
++
++    for ( plist = DPQ_FIRST( group->players ); plist; plist = DPQ_NEXT( plist->players ) ) n++;
++    *count = 0;
++    if ( !(list = malloc( (n ? n : 1) * sizeof(*list) )) ) return NULL;
++    i = 0;
++    for ( plist = DPQ_FIRST( group->players ); plist; plist = DPQ_NEXT( plist->players ) )
++        list[ group == This->dp2->lpSysGroup ? n - 1 - i++ : i++ ] = plist->lpPData;
++    *count = n;
++    return list;
++}
++
++/* DPSESSION_NODATAMESSAGES: Windows then tells its players of no name, data or session desc change
++ * (DPSYS_SETPLAYERORGROUPNAME/DATA, DPSYS_SETSESSIONDESC; black box, 2026-10-22) */
++static BOOL DP_DataMessagesOff( IDirectPlayImpl *This )
++{
++    return This->dp2->lpSessionDesc && (This->dp2->lpSessionDesc->dwFlags & DPSESSION_NODATAMESSAGES);
++}
++
+ static HRESULT DP_QueueMessage( IDirectPlayImpl *This, DPID fromId, DPID toId, DPID excludeId,
+                                 void *msg, FN_COPY_MESSAGE *copyMessage, DWORD genericSize )
+ {
+@@ -374,14 +456,22 @@
+     group = DP_FindAnyGroup( This, toId );
+     if( group )
+     {
+-        for( plist = DPQ_FIRST( group->players ); plist; plist = DPQ_NEXT( plist->players ) )
++        struct PlayerData **players;
++        int n, i;
++
++        if ( !(players = DP_GroupPlayersInOrder( This, group, &n )) )
++            return DPERR_OUTOFMEMORY;
++        for( i = 0; i < n; i++ )
+         {
+-            hr = DP_QueuePlayerMessage( This, fromId, plist->lpPData, excludeId, msg, copyMessage,
++            hr = DP_QueuePlayerMessage( This, fromId, players[ i ], excludeId, msg, copyMessage,
+                                         genericSize );
+             if ( FAILED( hr ) )
++            {
++                free( players );
+                 return hr;
++            }
+         }
+-
++        free( players );
+         return DP_OK;
+     }
+ 
+@@ -464,7 +554,7 @@
      /* Name server needs to handle this request */
      case DPMSGCMD_ENUMSESSIONSREQUEST:
        /* Reply expected */
@@ -2074,7 +2286,15 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
        break;
  
      /* Name server needs to handle this request */
-@@ -527,6 +540,11 @@
+@@ -482,6 +572,7 @@
+       break;
+ 
+     case DPMSGCMD_REQUESTNEWPLAYERID:
++    case DPMSGCMD_REQUESTGROUPID:   /* a joiner's group gets its id from the host too */
+     {
+       LPCDPMSG_REQUESTNEWPLAYERID lpcMsg = messageBody;
+ 
+@@ -527,6 +618,11 @@
        if ( dwMessageBodySize - offset < 6 )
          return DPERR_GENERIC;
  
@@ -2086,7 +2306,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
        EnterCriticalSection( &This->lock );
  
        if ( !This->dp2->bConnectionOpen )
-@@ -545,6 +563,7 @@
+@@ -545,6 +641,7 @@
          LeaveCriticalSection( &This->lock );
          return hr;
        }
@@ -2094,7 +2314,39 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
        LeaveCriticalSection( &This->lock );
  
-@@ -618,8 +637,37 @@
+@@ -591,6 +688,11 @@
+       }
+ 
+       DP_SetGroupData( group, DPSET_REMOTE, data, msg->dataSize );
++      if( DP_DataMessagesOff( This ) )
++      {
++        LeaveCriticalSection( &This->lock );
++        break;
++      }
+ 
+       setPlayerOrGroupDataMsg.dwType = DPSYS_SETPLAYERORGROUPDATA;
+       setPlayerOrGroupDataMsg.dwPlayerType = DPPLAYERTYPE_GROUP;
+@@ -611,6 +713,19 @@
+       break;
+     }
+ 
++    case DPMSGCMD_CREATEGROUP:
++      return DP_GRP_HandleCreate( This, messageBody, dwMessageBodySize, messageHeader );
++
++    case DPMSGCMD_ADDPLAYERTOGROUP:
++    case DPMSGCMD_DELETEPLAYERFROMGROUP:
++    case DPMSGCMD_DELETEGROUP:
++    case DPMSGCMD_ADDSHORTCUTTOGROUP:
++    case DPMSGCMD_DELETEGROUPFROMGROUP:
++      return DP_GRP_HandleIds( This, wCommandId, messageBody, dwMessageBodySize, messageHeader );
++
++    case DPMSGCMD_GROUPNAMECHANGED:
++      return DP_GRP_HandleName( This, messageBody, dwMessageBodySize, messageHeader );
++
+     case DPMSGCMD_JUSTENVELOPE:
+       TRACE( "GOT THE SELF MESSAGE: %p -> 0x%08lx\n", messageHeader, ((const DWORD *)messageHeader)[1] );
+       NS_SetLocalAddr( This->dp2->lpNameServerData, messageHeader, 20 );
+@@ -618,8 +733,40 @@
        break;
  
      case DPMSGCMD_FORWARDADDPLAYER:
@@ -2118,6 +2370,9 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    case DPMSGCMD_DELETEPLAYER:
 +      return DP_LIFE_HandleDeletePlayer( This, messageBody, dwMessageBodySize, messageHeader );
 +
++    case DPMSGCMD_YOUAREDEAD:
++      return DP_LIFE_HandleYouAreDead( This, messageBody, dwMessageBodySize, messageHeader );
++
 +    case DPMSGCMD_IAMNAMESERVER:
 +      return DP_LIFE_HandleIAmNameServer( This, messageBody, dwMessageBodySize, messageHeader );
 +
@@ -2134,7 +2389,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
        break;
  
      case DPMSGCMD_PING: {
-@@ -628,6 +676,8 @@
+@@ -628,6 +775,8 @@
        if( dwMessageBodySize < sizeof( DPSP_MSG_PING ) )
          return DPERR_GENERIC;
        msg = (const DPSP_MSG_PING *)messageBody;
@@ -2143,7 +2398,32 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
        EnterCriticalSection( &This->lock );
  
-@@ -659,6 +709,10 @@
+@@ -637,6 +786,24 @@
+         return DP_OK;
+       }
+ 
++      /* a machine we removed (it went silent past the keepalive) pings again: the host tells it it is out
++       * - YOUAREDEAD, the envelope alone, as the reply (Windows' host, okplay blackout 2026-10-28). [UNV]
++       * whether a joiner answers so too: only the host does here. */
++      if ( This->dp2->bHostInterface && msg->fromId && !DP_FindPlayer( This, msg->fromId ) )
++      {
++        DPMSG_SENDENVELOPE *dead;
++        LeaveCriticalSection( &This->lock );
++        *lpdwMsgSize = This->dp2->spData.dwSPHeaderSize + sizeof( *dead );
++        if ( !(*lplpReply = calloc( 1, *lpdwMsgSize )) )
++          return DPERR_OUTOFMEMORY;
++        dead = (DPMSG_SENDENVELOPE *)( (BYTE *)*lplpReply + This->dp2->spData.dwSPHeaderSize );
++        dead->dwMagic = DPMSGMAGIC_DPLAYMSG;
++        dead->wCommandId = DPMSGCMD_YOUAREDEAD;
++        dead->wVersion = DPMSGVER_DP6;
++        DP_NOTE( "PING from 0x%08lx, a machine no longer in the session: YOUAREDEAD\n", msg->fromId );
++        break;
++      }
++
+       LeaveCriticalSection( &This->lock );
+ 
+       DP_MSG_SendPingReply( This, msg->fromId, This->dp2->systemPlayerId, msg->tickCount );
+@@ -659,6 +826,10 @@
        if ( FAILED( hr ) )
          return hr;
  
@@ -2154,7 +2434,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
        EnterCriticalSection( &This->lock );
  
        if ( !This->dp2->bConnectionOpen )
-@@ -676,6 +730,7 @@
+@@ -676,6 +847,7 @@
          LeaveCriticalSection( &This->lock );
          return hr;
        }
@@ -2162,7 +2442,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
        LeaveCriticalSection( &This->lock );
  
-@@ -706,6 +761,8 @@
+@@ -706,6 +878,8 @@
    msg = (DPMSG_GENERIC *) ((char *) messageBody + sizeof( DPMSG_SYSMSGENVELOPE ));
    msgSize = messageBodySize - sizeof( DPMSG_SYSMSGENVELOPE );
  
@@ -2171,7 +2451,632 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
    EnterCriticalSection( &This->lock );
  
    hr = DP_QueueMessage( This, fromId, toId, 0, msg, DP_CopyGeneric, msgSize );
-@@ -1357,6 +1414,14 @@
+@@ -744,175 +918,558 @@
+     return ref;
+ }
+ 
++/* ------------------------------------------------------------------ IDirectPlay (DirectPlay 1)
++ *
++ * The DirectX 1-3 interface (DPLAY.DLL games: Necrodome), answering as Windows' dplayx does - learned
++ * black-box only (okplay/tests/apistate_dp1.c through apidiff.sh, 2026-10-22; docs/DPLAY_CONFORMANCE.md).
++ * Each method goes to the DirectPlay 2+ code of the same object, with:
++ *   - char* names (the A side) and DPSESSIONDESC sessions, which DirectPlay 1 names by a DWORD
++ *     (dp2->dp1Sessions: the instance GUIDs its EnumSessions has shown, numbered from 1);
++ *   - the DirectX 1-3 DPCAPS sizes (see dp1_caps);
++ *   - Receive: the create/destroy system messages in their DirectPlay 1 forms, the rest as the
++ *     Unicode DirectPlay 2 messages Windows passes through.
++ */
++
++static HRESULT DP_IF_Receive( IDirectPlayImpl *This, DPID *lpidFrom, DPID *lpidTo, DWORD dwFlags,
++        void *lpData, DWORD *lpdwDataSize, BOOL bAnsi );
++static HRESULT DP_IF_GetPlayerName( IDirectPlayImpl *This, DPID idPlayer, void *lpData,
++        DWORD *lpdwDataSize, BOOL bAnsi );
++
++#define DP1_CAPS_V1   24   /* DirectX 1/2's DPCAPS (no dwLatency): Windows takes it */
++#define DP1_CAPS_DX3  28   /* DirectX 3's (dwLatency added): Windows 98 SE and 10 refuse it */
++
++/* DirectPlay 1's system messages for "created" and "destroyed" (DirectX 3 dplay.h layouts) */
++#define DP1SYS_ADDPLAYER    0x0003
++#define DP1SYS_DELETEPLAYER 0x0005
++#define DP1SYS_DELETEGROUP  0x0020
++typedef struct
++{
++    DWORD dwType;            /* DP1SYS_ADDPLAYER */
++    DWORD dwPlayerType;      /* 1 player, 0 group */
++    DPID  dpId;
++    char  szLongName[ DPLONGNAMELEN ];
++    char  szShortName[ DPSHORTNAMELEN ];
++    DWORD dwCurrentPlayers;
++} DP1MSG_ADDPLAYER;          /* 88 bytes */
++typedef struct
++{
++    DWORD dwType;            /* DP1SYS_DELETEPLAYER (a player) or DP1SYS_DELETEGROUP */
++    DPID  dpId;
++} DP1MSG_DELETEPLAYER;
++
++/* GetCaps / GetPlayerCaps: Windows takes dwSize 24 or 40 only, reads the caps' dwFlags as the
++ * DirectPlay 2 flags argument (anything but DPGETCAPS_GUARANTEED: INVALIDPARAMS), fills that many
++ * bytes and writes dwSize = 40 back - into a 24-byte one too. DirectX 3's 28-byte DPCAPS, which
++ * Windows refuses (so Necrodome stops at "No capabilities available for service" there), is taken
++ * here as DirectX 3 did: 28 bytes filled, nothing written past them (Necrodome keeps its own data
++ * right after the struct). The one place we answer differently from Windows, on purpose. */
++static HRESULT dp1_caps( IDirectPlayImpl *This, DPID player, DPCAPS *caps )
++{
++    DPCAPS full;
++    DWORD size, flags;
++    HRESULT hr;
++
++    if ( !caps ) return DPERR_INVALIDPARAMS;
++    size = caps->dwSize;
++    /* DirectX 3's GetCaps took no flags: whatever its dwFlags holds is ignored (Necrodome hands the
++     * same struct back with the provider's flags from the last call still in it) */
++    flags = size == DP1_CAPS_DX3 ? 0 : caps->dwFlags;
++    if ( (size != DP1_CAPS_V1 && size != DP1_CAPS_DX3 && size != sizeof(DPCAPS)) ||
++         (flags & ~DPGETCAPS_GUARANTEED) )
++        return DPERR_INVALIDPARAMS;
++    memset( &full, 0, sizeof(full) );
++    full.dwSize = sizeof(full);
++    hr = IDirectPlayX_GetPlayerCaps( &This->IDirectPlay4A_iface, player, &full, flags );
++    if ( FAILED(hr) ) return hr;
++    memcpy( caps, &full, size );
++    caps->dwSize = size == DP1_CAPS_DX3 ? DP1_CAPS_DX3 : sizeof(DPCAPS);
++    return DP_OK;
++}
++
++static void dp1_name( DPNAME *dpn, LPSTR name, LPSTR fullname )
++{
++    memset( dpn, 0, sizeof(*dpn) );
++    dpn->dwSize = sizeof(*dpn);
++    dpn->lpszShortNameA = name;
++    dpn->lpszLongNameA = fullname;
++}
++
++/* a DirectPlay 1 session number for an instance GUID (0: no room left) */
++static DWORD dp1_session_number( IDirectPlayImpl *This, const GUID *instance )
++{
++    DirectPlay2Data *d = This->dp2;
++    DWORD i;
++    for ( i = 0; i < d->dp1SessionCount; i++ )
++        if ( IsEqualGUID( &d->dp1Sessions[ i ], instance ) ) return i + 1;
++    if ( d->dp1SessionCount >= ARRAY_SIZE( d->dp1Sessions ) ) return 0;
++    d->dp1Sessions[ d->dp1SessionCount++ ] = *instance;
++    return d->dp1SessionCount;
++}
++
++static const GUID *dp1_session_guid( IDirectPlayImpl *This, DWORD number )
++{
++    DirectPlay2Data *d = This->dp2;
++    return number && number <= d->dp1SessionCount ? &d->dp1Sessions[ number - 1 ] : NULL;
++}
++
++static void dp1_to_sd2( const DPSESSIONDESC *sd, DPSESSIONDESC2 *sd2, char *name, char *password )
++{
++    memset( sd2, 0, sizeof(*sd2) );
++    sd2->dwSize = sizeof(*sd2);
++    /* Windows keeps DirectPlay 1's dwFlags (the DPOPEN_* bits) as the session's flags too:
++     * a session hosted through IDirectPlay::Open(create) shows dwFlags 2 to GetSessionDesc */
++    sd2->dwFlags = sd->dwFlags;
++    sd2->guidApplication = sd->guidSession;   /* DirectPlay 1's "session GUID" is the game's */
++    sd2->dwMaxPlayers = sd->dwMaxPlayers;
++    sd2->dwCurrentPlayers = sd->dwCurrentPlayers;
++    lstrcpynA( name, sd->szSessionName, DPSESSIONNAMELEN + 1 );
++    lstrcpynA( password, sd->szPassword, DPPASSWORDLEN + 1 );
++    sd2->lpszSessionNameA = name;
++    sd2->lpszPasswordA = password[ 0 ] ? password : NULL;
++    sd2->dwReserved1 = sd->dwReserved1;
++    sd2->dwReserved2 = sd->dwReserved2;
++    sd2->dwUser1 = sd->dwUser1;
++    sd2->dwUser2 = sd->dwUser2;
++    sd2->dwUser3 = sd->dwUser3;
++    sd2->dwUser4 = sd->dwUser4;
++}
++
+ static HRESULT WINAPI IDirectPlayImpl_AddPlayerToGroup( IDirectPlay *iface, DPID group,
+         DPID player )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx,0x%08lx): stub\n", This, group, player );
+-    return E_NOTIMPL;
++    TRACE( "(%p)->(0x%08lx,0x%08lx)\n", This, group, player );
++    return IDirectPlayX_AddPlayerToGroup( &This->IDirectPlay4A_iface, group, player );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_Close( IDirectPlay *iface )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p): stub\n", This );
+-    return E_NOTIMPL;
++    TRACE( "(%p)\n", This );
++    return IDirectPlayX_Close( &This->IDirectPlay4A_iface );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_CreatePlayer( IDirectPlay *iface, DPID *player,
+         LPSTR name, LPSTR fullname, HANDLE *event )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(%p,%s,%s,%p): stub\n", This, player, debugstr_a( name ), debugstr_a( fullname ),
+-            event );
+-    return E_NOTIMPL;
++    DPNAME dpn;
++    HANDLE h = NULL;
++    HRESULT hr;
++
++    TRACE( "(%p)->(%p,%s,%s,%p)\n", This, player, debugstr_a( name ), debugstr_a( fullname ), event );
++    if ( !player ) return DPERR_INVALIDPARAMS;
++    dp1_name( &dpn, name, fullname );
++    /* DirectPlay 1 makes the player's event itself and hands it back - whatever *event held
++     * (Windows: a manual-reset event, set when a message for the player arrives) */
++    if ( event && !(h = CreateEventW( NULL, TRUE, FALSE, NULL )) ) return DPERR_OUTOFMEMORY;
++    hr = IDirectPlayX_CreatePlayer( &This->IDirectPlay4A_iface, player, &dpn, h, NULL, 0, 0 );
++    if ( FAILED(hr) )
++    {
++        if ( h ) CloseHandle( h );
++        return hr;
++    }
++    if ( event ) *event = h;
++    return hr;
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_CreateGroup( IDirectPlay *iface, DPID *group, LPSTR name,
+         LPSTR fullname )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(%p,%s,%s): stub\n", This, group, debugstr_a( name ), debugstr_a( fullname ) );
+-    return E_NOTIMPL;
++    DPNAME dpn;
++    TRACE( "(%p)->(%p,%s,%s)\n", This, group, debugstr_a( name ), debugstr_a( fullname ) );
++    dp1_name( &dpn, name, fullname );
++    return IDirectPlayX_CreateGroup( &This->IDirectPlay4A_iface, group, &dpn, NULL, 0, 0 );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_DeletePlayerFromGroup( IDirectPlay *iface, DPID group,
+         DPID player )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx,0x%08lx): stub\n", This, group, player );
+-    return E_NOTIMPL;
++    TRACE( "(%p)->(0x%08lx,0x%08lx)\n", This, group, player );
++    return IDirectPlayX_DeletePlayerFromGroup( &This->IDirectPlay4A_iface, group, player );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_DestroyPlayer( IDirectPlay *iface, DPID player )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx): stub\n", This, player );
+-    return E_NOTIMPL;
++    TRACE( "(%p)->(0x%08lx)\n", This, player );
++    return IDirectPlayX_DestroyPlayer( &This->IDirectPlay4A_iface, player );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_DestroyGroup( IDirectPlay *iface, DPID group )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx): stub\n", This, group );
+-    return E_NOTIMPL;
++    TRACE( "(%p)->(0x%08lx)\n", This, group );
++    return IDirectPlayX_DestroyGroup( &This->IDirectPlay4A_iface, group );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_EnableNewPlayers( IDirectPlay *iface, BOOL enable )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(%d): stub\n", This, enable );
+-    return E_NOTIMPL;
++
++    TRACE( "(%p)->(%d)\n", This, enable );
++
++    /* as Windows answers (apistate, 2026-10-21): UNINITIALIZED without a connection, NOSESSIONS
++     * without an open session (also after Close or a failed join); hosting, it sets or clears
++     * DPSESSION_NEWPLAYERSDISABLED in the session desc. AoE2 calls it with FALSE as a game starts.
++     * [UNV] a joiner's answer, and whether Windows announces the change as SetSessionDesc does. */
++    if ( This->dp2->connectionInitialized == NO_PROVIDER )
++        return DPERR_UNINITIALIZED;
++    if ( !This->dp2->bConnectionOpen || !This->dp2->lpSessionDesc )
++        return DPERR_NOSESSIONS;
++
++    /* not through SetSessionDesc, and nothing goes out: Windows queues no DPSYS_SETSESSIONDESC for
++     * its own players (apistate, 2026-10-22) and sends the other machines nothing either - a joiner
++     * reading through IDirectPlay or IDirectPlay4 got no message for four calls that changed nothing
++     * and two that did (okplay/tests/dp1drop.c hostenp, 2026-10-22). Necrodome's host calls it four
++     * times a second in its lobby; ours used to send each joiner a SESSIONDESCCHANGED every time.
++     * Only the host's own session changes: new players are refused, and the room list (okplay reads
++     * the host's enum reply) shows it. */
++    if ( !This->dp2->bHostInterface )
++        return DPERR_ACCESSDENIED;   /* [UNV] a joiner's answer */
++    EnterCriticalSection( &This->lock );
++    if ( enable )
++        This->dp2->lpSessionDesc->dwFlags &= ~DPSESSION_NEWPLAYERSDISABLED;
++    else
++        This->dp2->lpSessionDesc->dwFlags |= DPSESSION_NEWPLAYERSDISABLED;
++    LeaveCriticalSection( &This->lock );
++    return DP_OK;
++}
++
++/* DirectPlay 2's player callbacks, handed on as DirectPlay 1's (both names as char*, may be NULL) */
++struct dp1_enum_players
++{
++    LPDPENUMPLAYERSCALLBACK cb;
++    void *context;
++};
++
++static BOOL CALLBACK dp1_enum_players_cb( DPID id, DWORD type, const DPNAME *name, DWORD flags,
++        void *context )
++{
++    struct dp1_enum_players *e = context;
++    return e->cb( id, name ? name->lpszShortNameA : NULL, name ? name->lpszLongNameA : NULL, flags,
++                  e->context );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_EnumGroupPlayers( IDirectPlay *iface, DPID group,
+         LPDPENUMPLAYERSCALLBACK enumplayercb, void *context, DWORD flags )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx,%p,%p,0x%08lx): stub\n", This, group, enumplayercb, context, flags );
+-    return E_NOTIMPL;
++    struct dp1_enum_players e = { enumplayercb, context };
++    TRACE( "(%p)->(0x%08lx,%p,%p,0x%08lx)\n", This, group, enumplayercb, context, flags );
++    if ( !enumplayercb ) return DPERR_INVALIDPARAMS;
++    return IDirectPlayX_EnumGroupPlayers( &This->IDirectPlay4A_iface, group, NULL, dp1_enum_players_cb,
++                                          &e, flags );
+ }
+ 
++/* DirectPlay 1's EnumGroups/EnumPlayers take a session number: used with the _SESSION flag */
+ static HRESULT WINAPI IDirectPlayImpl_EnumGroups( IDirectPlay *iface, DWORD session,
+         LPDPENUMPLAYERSCALLBACK enumplayercb, void *context, DWORD flags )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx,%p,%p,0x%08lx): stub\n", This, session, enumplayercb, context, flags );
+-    return E_NOTIMPL;
++    struct dp1_enum_players e = { enumplayercb, context };
++    const GUID *instance = NULL;
++    TRACE( "(%p)->(0x%08lx,%p,%p,0x%08lx)\n", This, session, enumplayercb, context, flags );
++    if ( !enumplayercb ) return DPERR_INVALIDPARAMS;
++    if ( flags & DPENUMGROUPS_SESSION )
++    {
++        if ( !(instance = dp1_session_guid( This, session )) ) return DPERR_INVALIDPARAMS;
++    }
++    return IDirectPlayX_EnumGroups( &This->IDirectPlay4A_iface, (GUID *)instance, dp1_enum_players_cb,
++                                    &e, flags );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_EnumPlayers( IDirectPlay *iface, DWORD session,
+         LPDPENUMPLAYERSCALLBACK enumplayercb, void *context, DWORD flags )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx,%p,%p,0x%08lx): stub\n", This, session, enumplayercb, context, flags );
+-    return E_NOTIMPL;
++    struct dp1_enum_players e = { enumplayercb, context };
++    const GUID *instance = NULL;
++    TRACE( "(%p)->(0x%08lx,%p,%p,0x%08lx)\n", This, session, enumplayercb, context, flags );
++    if ( !enumplayercb ) return DPERR_INVALIDPARAMS;
++    if ( flags & DPENUMPLAYERS_SESSION )
++    {
++        if ( !(instance = dp1_session_guid( This, session )) ) return DPERR_INVALIDPARAMS;
++    }
++    return IDirectPlayX_EnumPlayers( &This->IDirectPlay4A_iface, (GUID *)instance, dp1_enum_players_cb,
++                                     &e, flags );
++}
++
++/* DirectPlay 2's session callbacks, handed on as DirectPlay 1's DPSESSIONDESC */
++struct dp1_enum_sessions
++{
++    IDirectPlayImpl *This;
++    LPDPENUMSESSIONSCALLBACK cb;
++    void *context;
++};
++
++static BOOL CALLBACK dp1_enum_sessions_cb( const DPSESSIONDESC2 *sd2, DWORD *timeout, DWORD flags,
++        void *context )
++{
++    struct dp1_enum_sessions *e = context;
++    DPSESSIONDESC sd;
++
++    if ( !sd2 ) return e->cb( NULL, e->context, timeout, flags );   /* DPESC_TIMEDOUT */
++    memset( &sd, 0, sizeof(sd) );
++    sd.dwSize = sizeof(sd);
++    sd.guidSession = sd2->guidApplication;
++    sd.dwSession = dp1_session_number( e->This, &sd2->guidInstance );
++    sd.dwMaxPlayers = sd2->dwMaxPlayers;
++    sd.dwCurrentPlayers = sd2->dwCurrentPlayers;
++    sd.dwFlags = sd2->dwFlags;
++    if ( sd2->lpszSessionNameA ) lstrcpynA( sd.szSessionName, sd2->lpszSessionNameA, DPSESSIONNAMELEN );
++    if ( sd2->lpszPasswordA ) lstrcpynA( sd.szPassword, sd2->lpszPasswordA, DPPASSWORDLEN );
++    sd.dwReserved1 = sd2->dwReserved1;
++    sd.dwReserved2 = sd2->dwReserved2;
++    sd.dwUser1 = sd2->dwUser1;
++    sd.dwUser2 = sd2->dwUser2;
++    sd.dwUser3 = sd2->dwUser3;
++    sd.dwUser4 = sd2->dwUser4;
++    return e->cb( &sd, e->context, timeout, flags );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_EnumSessions( IDirectPlay *iface, DPSESSIONDESC *sdesc,
+         DWORD timeout, LPDPENUMSESSIONSCALLBACK enumsessioncb, void *context, DWORD flags )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(%p,%lu,%p,%p,0x%08lx): stub\n", This, sdesc, timeout, enumsessioncb, context,
+-            flags );
+-    return E_NOTIMPL;
++    struct dp1_enum_sessions e = { This, enumsessioncb, context };
++    DPSESSIONDESC2 sd2;
++    char name[ DPSESSIONNAMELEN + 1 ], password[ DPPASSWORDLEN + 1 ];
++
++    TRACE( "(%p)->(%p,%lu,%p,%p,0x%08lx)\n", This, sdesc, timeout, enumsessioncb, context, flags );
++    if ( !sdesc || !enumsessioncb ) return DPERR_INVALIDPARAMS;
++    dp1_to_sd2( sdesc, &sd2, name, password );
++    sd2.dwFlags = 0;   /* (asked for: the game and the password; DirectPlay 1 has no async enumeration) */
++    return IDirectPlayX_EnumSessions( &This->IDirectPlay4A_iface, &sd2, timeout, dp1_enum_sessions_cb,
++                                      &e, flags );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_GetCaps( IDirectPlay *iface, DPCAPS *caps )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(%p): stub\n", This, caps );
+-    return E_NOTIMPL;
++    TRACE( "(%p)->(%p)\n", This, caps );
++    return dp1_caps( This, DPID_ALLPLAYERS, caps );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_GetMessageCount( IDirectPlay *iface, DPID player,
+         DWORD *count )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx,%p): stub\n", This, player, count );
+-    return E_NOTIMPL;
++    TRACE( "(%p)->(0x%08lx,%p)\n", This, player, count );
++    return IDirectPlayX_GetMessageCount( &This->IDirectPlay4A_iface, player, count );
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_GetPlayerCaps( IDirectPlay *iface, DPID player, DPCAPS *caps )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx,%p): stub\n", This, player, caps );
+-    return E_NOTIMPL;
++    TRACE( "(%p)->(0x%08lx,%p)\n", This, player, caps );
++    return dp1_caps( This, player, caps );
+ }
+ 
++/* The two names into the caller's two buffers. As Windows answers: an unknown player -
++ * INVALIDPLAYER, sizes untouched; a buffer too small (or NULL with size 0) - BUFFERTOOSMALL with
++ * both sizes needed (terminating 0 counted) and nothing copied; a name not set - size 0. */
+ static HRESULT WINAPI IDirectPlayImpl_GetPlayerName( IDirectPlay *iface, DPID player, LPSTR name,
+         DWORD *size_name, LPSTR fullname, DWORD *size_fullname )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx,%p,%p,%p,%p): stub\n", This, player, name, size_name, fullname,
+-            size_fullname );
+-    return E_NOTIMPL;
++    BYTE stack[ 256 ], *buf = stack;
++    DWORD size = sizeof(stack), need_name, need_full;
++    const DPNAME *dpn;
++    HRESULT hr;
++
++    TRACE( "(%p)->(0x%08lx,%p,%p,%p,%p)\n", This, player, name, size_name, fullname, size_fullname );
++    if ( !size_name || !size_fullname ) return DPERR_INVALIDPARAMS;
++    hr = DP_IF_GetPlayerName( This, player, buf, &size, TRUE );
++    if ( hr == DPERR_BUFFERTOOSMALL )
++    {
++        if ( !(buf = malloc( size )) ) return DPERR_OUTOFMEMORY;
++        hr = DP_IF_GetPlayerName( This, player, buf, &size, TRUE );
++    }
++    if ( FAILED(hr) )
++    {
++        if ( buf != stack ) free( buf );
++        return hr;
++    }
++    dpn = (const DPNAME *)buf;
++    need_name = dpn->lpszShortNameA ? strlen( dpn->lpszShortNameA ) + 1 : 0;
++    need_full = dpn->lpszLongNameA ? strlen( dpn->lpszLongNameA ) + 1 : 0;
++    if ( *size_name < need_name || *size_fullname < need_full ||
++         (need_name && !name) || (need_full && !fullname) )
++        hr = DPERR_BUFFERTOOSMALL;
++    else
++    {
++        if ( need_name ) memcpy( name, dpn->lpszShortNameA, need_name );
++        if ( need_full ) memcpy( fullname, dpn->lpszLongNameA, need_full );
++    }
++    *size_name = need_name;
++    *size_fullname = need_full;
++    if ( buf != stack ) free( buf );
++    return hr;
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_Initialize( IDirectPlay *iface, GUID *guid )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(%p): stub\n", This, guid );
+-    return E_NOTIMPL;
++    TRACE( "(%p)->(%s)\n", This, debugstr_guid( guid ) );
++    return IDirectPlayX_Initialize( &This->IDirectPlay4A_iface, guid );
+ }
+ 
++/* DirectPlay 1's Open: DPOPEN_CREATESESSION/OPENSESSION (= DPOPEN_CREATE/JOIN) in sdesc->dwFlags;
++ * a session to join is named by the number its EnumSessions gave it */
+ static HRESULT WINAPI IDirectPlayImpl_Open( IDirectPlay *iface, DPSESSIONDESC *sdesc )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(%p): stub\n", This, sdesc );
+-    return E_NOTIMPL;
++    DPSESSIONDESC2 sd2;
++    char name[ DPSESSIONNAMELEN + 1 ], password[ DPPASSWORDLEN + 1 ];
++    const GUID *instance;
++
++    TRACE( "(%p)->(%p)\n", This, sdesc );
++    if ( !sdesc || sdesc->dwSize != sizeof(*sdesc) ) return DPERR_INVALIDPARAMS;
++    dp1_to_sd2( sdesc, &sd2, name, password );
++    if ( sdesc->dwFlags & DPOPEN_JOIN )
++    {
++        if ( !(instance = dp1_session_guid( This, sdesc->dwSession )) ) return DPERR_INVALIDPARAMS;
++        sd2.guidInstance = *instance;
++    }
++    else
++        sd2.lpszPasswordA = password;   /* a session made here keeps DirectPlay 1's char[] as a
++                                         * string, "" when empty, as Windows' GetSessionDesc shows */
++    return IDirectPlayX_Open( &This->IDirectPlay4A_iface, &sd2, sdesc->dwFlags & (DPOPEN_JOIN | DPOPEN_CREATE) );
+ }
+ 
++/* Receive: the next message as DirectPlay 1 delivers it. DirectPlay 2's "created" and "destroyed"
++ * become DirectPlay 1's DPMSG_ADDPLAYER (names as char[], long name first) and an id-only delete
++ * message (DELETEPLAYER or DELETEGROUP); everything else is DirectPlay 2's Unicode message, as Windows
++ * passes it on (names in DPNAME pointing into the caller's buffer). */
+ static HRESULT WINAPI IDirectPlayImpl_Receive( IDirectPlay *iface, DPID *from, DPID *to,
+         DWORD flags, void *data, DWORD *size )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(%p,%p,0x%08lx,%p,%p): stub\n", This, from, to, flags, data, size );
+-    return E_NOTIMPL;
++    BYTE stack[ 512 ], *buf = stack;
++    DWORD bufsize = sizeof(stack), need;
++    DPID f = 0, t = 0;
++    HRESULT hr;
++    DWORD type;
++
++    TRACE( "(%p)->(%p,%p,0x%08lx,%p,%p)\n", This, from, to, flags, data, size );
++    if ( !from || !to || !size ) return DPERR_INVALIDPARAMS;
++    /* look first: is it one of the two that change shape? (only those are copied through here) */
++    for ( ;; )
++    {
++        DWORD got = bufsize;
++        /* *from / *to are inputs too: DPRECEIVE_FROMPLAYER / TOPLAYER pick by them (Necrodome
++         * receives with TOPLAYER and its player's id) */
++        f = *from;
++        t = *to;
++        hr = DP_IF_Receive( This, &f, &t, flags | DPRECEIVE_PEEK, buf, &got, FALSE );
++        if ( hr != DPERR_BUFFERTOOSMALL ) break;
++        if ( buf != stack ) free( buf );
++        if ( !(buf = malloc( got )) ) return DPERR_OUTOFMEMORY;
++        bufsize = got;
++    }
++    if ( FAILED(hr) || f != DPID_SYSMSG ||
++         ((type = ((DPMSG_GENERIC *)buf)->dwType) != DPSYS_CREATEPLAYERORGROUP && type != DPSYS_DESTROYPLAYERORGROUP) )
++    {
++        if ( buf != stack ) free( buf );
++        if ( FAILED(hr) ) return hr;
++        hr = DP_IF_Receive( This, from, to, flags, data, size, FALSE );   /* as it is, into the caller's buffer */
++        if ( SUCCEEDED(hr) && TRACE_ON( dplay ) )
++        {
++            const BYTE *b = data;
++            DWORD n = *size < 16 ? *size : 16, i;
++            char hex[ 64 ];
++            for ( i = 0; i < n; i++ ) sprintf( hex + i * 3, "%02x ", b[ i ] );
++            hex[ n * 3 ] = 0;
++            TRACE( "dp1 received 0x%08lx -> 0x%08lx, %lu bytes: %s\n", *from, *to, *size, hex );
++        }
++        return hr;
++    }
++    need = type == DPSYS_CREATEPLAYERORGROUP ? sizeof(DP1MSG_ADDPLAYER) : sizeof(DP1MSG_DELETEPLAYER);
++    if ( !data || *size < need )
++    {
++        *size = need;
++        if ( buf != stack ) free( buf );
++        return DPERR_BUFFERTOOSMALL;
++    }
++    if ( !(flags & DPRECEIVE_PEEK) )
++    {
++        DWORD got = bufsize;
++        f = *from;
++        t = *to;
++        hr = DP_IF_Receive( This, &f, &t, flags, buf, &got, FALSE );   /* take it off the queue */
++        if ( FAILED(hr) )
++        {
++            if ( buf != stack ) free( buf );
++            return hr;
++        }
++    }
++    if ( type == DPSYS_CREATEPLAYERORGROUP )
++    {
++        const DPMSG_CREATEPLAYERORGROUP *c = (const DPMSG_CREATEPLAYERORGROUP *)buf;
++        DP1MSG_ADDPLAYER m;
++        memset( &m, 0, sizeof(m) );
++        m.dwType = DP1SYS_ADDPLAYER;
++        m.dwPlayerType = c->dwPlayerType == DPPLAYERTYPE_PLAYER ? 1 : 0;
++        m.dpId = c->dpId;
++        if ( c->dpnName.lpszLongName )
++            WideCharToMultiByte( CP_ACP, 0, c->dpnName.lpszLongName, -1, m.szLongName, DPLONGNAMELEN, NULL, NULL );
++        if ( c->dpnName.lpszShortName )
++            WideCharToMultiByte( CP_ACP, 0, c->dpnName.lpszShortName, -1, m.szShortName, DPSHORTNAMELEN, NULL, NULL );
++        m.szLongName[ DPLONGNAMELEN - 1 ] = m.szShortName[ DPSHORTNAMELEN - 1 ] = 0;
++        m.dwCurrentPlayers = c->dwCurrentPlayers;
++        memcpy( data, &m, sizeof(m) );
++    }
++    else
++    {
++        const DPMSG_DESTROYPLAYERORGROUP *d = (const DPMSG_DESTROYPLAYERORGROUP *)buf;
++        DP1MSG_DELETEPLAYER m;
++        m.dwType = d->dwPlayerType == DPPLAYERTYPE_PLAYER ? DP1SYS_DELETEPLAYER : DP1SYS_DELETEGROUP;
++        m.dpId = d->dpId;
++        memcpy( data, &m, sizeof(m) );
++    }
++    *size = need;
++    *from = f;
++    *to = t;
++    if ( buf != stack ) free( buf );
++    return DP_OK;
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_SaveSession( IDirectPlay *iface, LPSTR reserved )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(%p): stub\n", This, reserved );
+-    return E_NOTIMPL;
++    TRACE( "(%p)->(%p)\n", This, reserved );
++    return E_NOTIMPL;   /* as Windows answers */
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_Send( IDirectPlay *iface, DPID from, DPID to, DWORD flags,
+         void *data, DWORD size )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx,0x%08lx,0x%08lx,%p,%lu): stub\n", This, from, to, flags, data, size );
+-    return E_NOTIMPL;
++    TRACE( "(%p)->(0x%08lx,0x%08lx,0x%08lx,%p,%lu)\n", This, from, to, flags, data, size );
++    HRESULT hr = IDirectPlayX_Send( &This->IDirectPlay4A_iface, from, to, flags, data, size );
++    if ( TRACE_ON( dplay ) && data )
++    {
++        const BYTE *b = data;
++        DWORD n = size < 16 ? size : 16, i;
++        char hex[ 64 ];
++        for ( i = 0; i < n; i++ ) sprintf( hex + i * 3, "%02x ", b[ i ] );
++        hex[ n * 3 ] = 0;
++        TRACE( "dp1 sent 0x%08lx -> 0x%08lx flags 0x%lx, %lu bytes: %s -> 0x%08lx\n", from, to, flags, size, hex, hr );
++    }
++    return hr;
+ }
+ 
+ static HRESULT WINAPI IDirectPlayImpl_SetPlayerName( IDirectPlay *iface, DPID player, LPSTR name,
+         LPSTR fullname )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay( iface );
+-    FIXME( "(%p)->(0x%08lx,%s,%s): stub\n", This, player, debugstr_a( name ),
+-            debugstr_a ( fullname ) );
+-    return E_NOTIMPL;
++    DPNAME dpn;
++    TRACE( "(%p)->(0x%08lx,%s,%s)\n", This, player, debugstr_a( name ), debugstr_a( fullname ) );
++    dp1_name( &dpn, name, fullname );
++    return IDirectPlayX_SetPlayerName( &This->IDirectPlay4A_iface, player, &dpn, 0 );
+ }
+ 
+ static const IDirectPlayVtbl dp_vt =
+@@ -1218,7 +1775,7 @@
+     HRESULT hr;
+ 
+     /* Find the group */
+-    if ( ( gdata = DP_FindAnyGroup( This, group ) ) == NULL )
++    if ( ( gdata = DP_FindGameGroup( This, group ) ) == NULL )
+         return DPERR_INVALIDGROUP;
+ 
+     /* Find the player */
+@@ -1350,6 +1907,8 @@
+     return IDirectPlayX_Close( &This->IDirectPlay4_iface);
+ }
+ 
++static void DP_SPDeleteAllPlayers( IDirectPlayImpl *This );
++
+ static HRESULT WINAPI IDirectPlay4Impl_Close( IDirectPlay4 *iface )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
+@@ -1357,6 +1916,14 @@
  
      TRACE( "(%p)\n", This );
  
@@ -2186,7 +3091,16 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      EnterCriticalSection( &This->lock );
  
      This->dp2->bConnectionOpen = FALSE;
-@@ -1382,6 +1447,8 @@
+@@ -1367,6 +1934,8 @@
+     /* FIXME: Need to destroy all local groups */
+     /* FIXME: Need to migrate all remotely visible players to the new host */
+ 
++    DP_SPDeleteAllPlayers( This );
++
+     /* Invoke the SP callback to inform of session close */
+     if( This->dp2->spData.lpCB->CloseEx )
+     {
+@@ -1382,6 +1951,8 @@
          hr = (*This->dp2->spData.lpCB->Close)();
      }
  
@@ -2195,7 +3109,32 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      return hr;
  }
  
-@@ -1538,8 +1605,7 @@
+@@ -1415,14 +1986,14 @@
+   /* Set the desired player ID - no sanity checking to see if it exists */
+   lpGData->dpid = *lpid;
+ 
+-  lpGData->name = DP_DuplicateName( lpName, FALSE, bAnsi );
++  lpGData->name = DP_DuplicateName( lpName, FALSE, bAnsi, msgHeader != NULL );
+   if ( !lpGData->name )
+   {
+     free( lpGData );
+     return DPERR_OUTOFMEMORY;
+   }
+ 
+-  lpGData->nameA = DP_DuplicateName( lpName, TRUE, bAnsi );
++  lpGData->nameA = DP_DuplicateName( lpName, TRUE, bAnsi, msgHeader != NULL );
+   if ( !lpGData->nameA )
+   {
+     free( lpGData->name );
+@@ -1434,6 +2005,7 @@
+ 
+   /* FIXME: Should we validate the dwFlags? */
+   lpGData->dwFlags = dwFlags;
++  lpGData->bLocal = msgHeader == NULL && *lpid != DPID_SYSTEM_GROUP;
+ 
+   /* Initialize the SP data section */
+   lpGData->lpSPPlayerData = DPSP_CreateSPPlayerData();
+@@ -1538,8 +2110,7 @@
  
    if( --(lpGList->lpGData->uRef) )
    {
@@ -2205,29 +3144,155 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
    }
  
    /* Delete player */
-@@ -1553,12 +1619,17 @@
+@@ -1553,27 +2124,98 @@
  
  }
  
 -static lpGroupData DP_FindAnyGroup( IDirectPlayImpl *This, DPID dpid )
-+lpGroupData DP_FindAnyGroup( IDirectPlayImpl *This, DPID dpid )
++/* a group's flags as Windows reports them (GetGroupFlags) and puts them in its create/destroy
++ * messages: staging area and hidden as created, and DPGROUP_LOCAL for one made on this machine
++ * (black box, 2026-10-22) */
++#define DP_GROUP_FLAGS( g ) ( ((g)->dwFlags & (DPGROUP_STAGINGAREA | DPGROUP_HIDDEN)) | \
++                              ((g)->bLocal ? DPGROUP_LOCAL : 0) )
++
++/* is this entry of a group's list the group's own child (CreateGroupInGroup, or a top-level group
++ * in the system group) rather than a shortcut (AddGroupToGroup)? */
++#define DP_IS_CHILD_LINK( where, link ) ( (link)->lpGData->parent == (where)->dpid )
++
++/* depth first through the groups in a group: a group created inside another (CreateGroupInGroup)
++ * is only in its parent's list, and "any group" means any (apidiff: AddGroupToGroup of such a
++ * group answered "invalid group"). Only into children: shortcuts can make loops (a parent can be
++ * added to its own child, as Windows allows), and every group is some group's child. */
++static lpGroupData DP_FindGroupIn( lpGroupData where, DPID dpid, int depth )
  {
    lpGroupList lpGroups;
++  lpGroupData found;
  
-   TRACE( "(%p)->(0x%08lx)\n", This, dpid );
+-  TRACE( "(%p)->(0x%08lx)\n", This, dpid );
++  if( !where || depth > 64 )
++    return NULL;
  
+-  if( dpid == DPID_SYSTEM_GROUP )
+-  {
+-    return This->dp2->lpSysGroup;
+-  }
+-  else
++  DPQ_FIND_ENTRY( where->groups, groups, lpGData->dpid, ==, dpid, lpGroups );
++  if( lpGroups )
++    return lpGroups->lpGData;
++
++  for( lpGroups = DPQ_FIRST( where->groups ); lpGroups; lpGroups = DPQ_NEXT( lpGroups->groups ) )
+   {
+-    DPQ_FIND_ENTRY( This->dp2->lpSysGroup->groups, groups, lpGData->dpid, ==, dpid, lpGroups );
++    if( !DP_IS_CHILD_LINK( where, lpGroups ) )
++      continue;
++    found = DP_FindGroupIn( lpGroups->lpGData, dpid, depth + 1 );
++    if( found )
++      return found;
+   }
+ 
+-  if( lpGroups == NULL )
+-  {
++  return NULL;
++}
++
++lpGroupData DP_FindAnyGroup( IDirectPlayImpl *This, DPID dpid )
++{
++  TRACE( "(%p)->(0x%08lx)\n", This, dpid );
++
 +  /* no session (never opened, a failed Open, or closed): nothing to find - and nothing to
 +   * dereference (DP_FindPlayer had this check, this one didn't) */
 +  if( !This->dp2->lpSysGroup )
-+    return NULL;
+     return NULL;
+-  }
+ 
+-  return lpGroups->lpGData;
++  if( dpid == DPID_SYSTEM_GROUP )
++    return This->dp2->lpSysGroup;
 +
-   if( dpid == DPID_SYSTEM_GROUP )
-   {
-     return This->dp2->lpSysGroup;
-@@ -1686,6 +1757,10 @@
++  return DP_FindGroupIn( This->dp2->lpSysGroup, dpid, 0 );
++}
++
++/* every player on this machine hears of a group made here, as of a player (Windows,
++ * apistate_dp1.c: dwCurrentPlayers is the session's player count) - a group made inside another
++ * one too, with its parent (CreateGroupInGroup, 2026-10-22) */
++static void DP_QueueGroupCreated( IDirectPlayImpl *This, DPID id, void *data, DWORD dataSize,
++                                  DWORD flags, DPID parent )
++{
++    lpGroupData gdata = DP_FindAnyGroup( This, id );
++    DPMSG_CREATEPLAYERORGROUP msg;
++
++    memset( &msg, 0, sizeof(msg) );
++    msg.dwType           = DPSYS_CREATEPLAYERORGROUP;
++    msg.dwPlayerType     = DPPLAYERTYPE_GROUP;
++    msg.dpId             = id;
++    msg.dwCurrentPlayers = This->dp2->lpSessionDesc ? This->dp2->lpSessionDesc->dwCurrentPlayers : 0;
++    msg.lpData           = data;
++    msg.dwDataSize       = dataSize;
++    if( gdata && gdata->name ) msg.dpnName = *gdata->name;
++    msg.dpIdParent       = parent;
++    msg.dwFlags          = gdata ? DP_GROUP_FLAGS( gdata ) : DPMSG_CREATEGROUP_DWFLAGS( flags );
++    DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, 0, &msg, DP_CopyCreatePlayerOrGroup, 0 );
++}
++
++void DP_QueueGroupCreatedFromWire( IDirectPlayImpl *This, DPID id, void *data, DWORD dataSize, DWORD flags,
++                                   DPID parent )
++{
++    DP_QueueGroupCreated( This, id, data, dataSize, flags, parent );
++}
++
++/* a joiner's new group: the host hands out the id (REQUESTGROUPID, groups.c); asked before the lock is
++ * taken, as CreatePlayer does, since the reply comes in on the provider's thread */
++static HRESULT DP_GroupIdFromHost( IDirectPlayImpl *This, void *lpMsgHdr, DPID *lpidGroup )
++{
++  HRESULT hr;
++  if( lpMsgHdr || DPID_UNKNOWN != *lpidGroup || This->dp2->bHostInterface || !This->dp2->bConnectionOpen )
++    return DP_OK;
++  hr = DP_MSG_SendRequestGroupId( This, DPLAYI_PLAYER_PLAYERLOCAL, lpidGroup );
++  if( FAILED( hr ) )
++    ERR( "group id from the host: %s\n", DPLAYX_HresultToString( hr ) );
++  return hr;
+ }
+ 
+ static HRESULT DP_IF_CreateGroup( IDirectPlayImpl *This, void *lpMsgHdr, DPID *lpidGroup,
+@@ -1590,6 +2232,16 @@
+     return DPERR_UNINITIALIZED;
+   }
+ 
++  /* a game can ask for a staging area and hidden, nothing else (Windows: DPGROUP_LOCAL or an
++   * unknown bit is DPERR_INVALIDFLAGS, black box 2026-10-22) */
++  if( lpMsgHdr == NULL && (dwFlags & ~(DPGROUP_STAGINGAREA | DPGROUP_HIDDEN)) )
++  {
++    return DPERR_INVALIDFLAGS;
++  }
++
++  if( FAILED( hr = DP_GroupIdFromHost( This, lpMsgHdr, lpidGroup ) ) )
++    return hr;
++
+   EnterCriticalSection( &This->lock );
+ 
+   /* If the name is not specified, we must provide one */
+@@ -1617,6 +2269,13 @@
+     return hr;
+   }
+ 
++  if( lpMsgHdr == NULL )
++  {
++    lpGroupData g = DP_FindAnyGroup( This, *lpidGroup );
++    DP_QueueGroupCreated( This, *lpidGroup, lpData, dwDataSize, dwFlags, DPID_NOPARENT_GROUP );
++    DP_GRP_SendCreate( This, *lpidGroup, DPID_NOPARENT_GROUP, dwFlags, g ? g->name : NULL, lpData, dwDataSize );
++  }
++
+   /* Inform all other peers of the creation of a new group. If there are
+    * no peers keep this event quiet.
+    * Also if this message was sent to us, don't rebroadcast.
+@@ -1686,6 +2345,13 @@
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
  
++    /* no provider yet: Windows says so before anything else (apidiff, fresh state) */
++    if ( This->dp2->connectionInitialized == NO_PROVIDER )
++        return DPERR_UNINITIALIZED;
 +    /* no session to create it in: Windows refuses the call outright (apidiff) */
 +    if ( !This->dp2->bConnectionOpen )
 +        return DPERR_INVALIDPARAMS;
@@ -2235,10 +3300,13 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      *lpidGroup = DPID_UNKNOWN;
  
      return DP_IF_CreateGroup( This, NULL, lpidGroup, lpGroupName, lpData, dwDataSize, dwFlags,
-@@ -1697,6 +1772,10 @@
+@@ -1697,6 +2363,13 @@
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
  
++    /* no provider yet: Windows says so before anything else (apidiff, fresh state) */
++    if ( This->dp2->connectionInitialized == NO_PROVIDER )
++        return DPERR_UNINITIALIZED;
 +    /* no session to create it in: Windows refuses the call outright (apidiff) */
 +    if ( !This->dp2->bConnectionOpen )
 +        return DPERR_INVALIDPARAMS;
@@ -2246,7 +3314,23 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      *lpidGroup = DPID_UNKNOWN;
  
      return DP_IF_CreateGroup( This, NULL, lpidGroup, lpGroupName, lpData, dwDataSize, dwFlags,
-@@ -1821,6 +1900,18 @@
+@@ -1801,6 +2474,15 @@
+   return DP_OK;
+ }
+ 
++/* the flags of a provider DeletePlayer: the player's own, without "in group", and 0x10000 - a bit
++ * no header we have names; Windows always sets it there (S3 tap, 2026-10-16: 0x10000, 0x10001,
++ * 0x10003, 0x10008, 0x10009, 0x1000b for players created with 0, 1, 7, 8, 9, 0xb) */
++#define DP_SPDELETE_BIT 0x00010000
++DWORD DP_SPDeleteFlags( DWORD playerFlags )
++{
++    return DP_SPDELETE_BIT | (playerFlags & ~DPLAYI_PLAYER_PLAYERINGROUP);
++}
++
+ static void DP_DeleteSPPlayer( IDirectPlayImpl *This, DPID dpid )
+ {
+     if ( This->dp2->spData.lpCB->RemovePlayerFromGroup )
+@@ -1821,6 +2503,18 @@
      }
  }
  
@@ -2265,7 +3349,24 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  HRESULT DP_CreatePlayer( IDirectPlayImpl *This, void *msgHeader, DPID *lpid, DPNAME *lpName,
          void *data, DWORD dataSize, void *spData, DWORD spDataSize, DWORD dwFlags, HANDLE hEvent,
          struct PlayerData **playerData, BOOL bAnsi )
-@@ -1855,6 +1946,10 @@
+@@ -1839,14 +2533,14 @@
+   /* Set the desired player ID */
+   lpPData->dpid = *lpid;
+ 
+-  lpPData->name = DP_DuplicateName( lpName, FALSE, bAnsi );
++  lpPData->name = DP_DuplicateName( lpName, FALSE, bAnsi, msgHeader != NULL );
+   if ( !lpPData->name )
+   {
+     free( lpPData );
+     return DPERR_OUTOFMEMORY;
+   }
+ 
+-  lpPData->nameA = DP_DuplicateName( lpName, TRUE, bAnsi );
++  lpPData->nameA = DP_DuplicateName( lpName, TRUE, bAnsi, msgHeader != NULL );
+   if ( !lpPData->nameA )
+   {
+     free( lpPData->name );
+@@ -1855,6 +2549,10 @@
    }
  
    lpPData->dwFlags = dwFlags;
@@ -2276,7 +3377,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
    /* If we were given an event handle, duplicate it */
    if( hEvent != 0 )
-@@ -1985,8 +2080,7 @@
+@@ -1985,8 +2683,7 @@
    /* Verify that this is the last reference to the data */
    if( --(lpPList->lpPData->uRef) )
    {
@@ -2286,13 +3387,16 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
    }
  
    /* Delete player */
-@@ -2016,28 +2110,26 @@
+@@ -2014,46 +2711,47 @@
+   return lpPlayers;
+ }
  
- static DWORD DP_CopyName( DPNAME *dst, const DPNAME *src, BOOL dstAnsi, BOOL srcAnsi )
+-static DWORD DP_CopyName( DPNAME *dst, const DPNAME *src, BOOL dstAnsi, BOOL srcAnsi )
++static DWORD DP_CopyName( DPNAME *dst, const DPNAME *src, BOOL dstAnsi, BOOL srcAnsi, BOOL fill )
  {
 +    static const WCHAR emptyW[] = { 0 };
 +    static const char emptyA[] = "";
-+    const void *empty = srcAnsi ? (const void *) emptyA : (const void *) emptyW;
++    const void *empty = fill ? (srcAnsi ? (const void *) emptyA : (const void *) emptyW) : NULL;
 +    const void *shortName = src && src->lpszShortNameA ? (const void *) src->lpszShortNameA : empty;
 +    const void *longName = src && src->lpszLongNameA ? (const void *) src->lpszLongNameA : empty;
      DWORD offset = sizeof( DPNAME );
@@ -2307,8 +3411,11 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 -        return offset;
 -    }
 -
-+    /* Never hand out a NULL name: a missing one becomes "". AoE2 copies both names with no NULL
-+     * check, and a joiner without a long name crashed a real AoE2 host (age2_x1.5.exe+0x1db37f). */
++    /* fill: a missing name becomes "" - for names from other machines. AoE2 copies both names
++     * with no NULL check, and a joiner without a long name crashed a real AoE2 host
++     * (age2_x1.5.exe+0x1db37f); the wire carries no empty names (host.c), so a remote player's
++     * missing name arrives as none. A name set here stays as given, NULL included, as Windows
++     * keeps it (apistate_dp1.c: GetPlayerName sizes 0, a 28-byte name message). */
      if ( dst )
      {
 -        *dst = *src;
@@ -2328,7 +3435,26 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      return offset;
  }
-@@ -2138,10 +2230,7 @@
+ 
+-static DPNAME *DP_DuplicateName( const DPNAME *src, BOOL dstAnsi, BOOL srcAnsi )
++static DPNAME *DP_DuplicateName( const DPNAME *src, BOOL dstAnsi, BOOL srcAnsi, BOOL fill )
+ {
+     DPNAME *dst;
+     DWORD size;
+ 
+-    size = DP_CopyName( NULL, src, dstAnsi, srcAnsi );
++    size = DP_CopyName( NULL, src, dstAnsi, srcAnsi, fill );
+ 
+     dst = malloc( size );
+     if ( !dst )
+         return NULL;
+ 
+-    DP_CopyName( dst, src, dstAnsi, srcAnsi );
++    DP_CopyName( dst, src, dstAnsi, srcAnsi, fill );
+ 
+     return dst;
+ }
+@@ -2138,10 +2836,7 @@
    dwCreateFlags = dwFlags | DPLAYI_PLAYER_PLAYERLOCAL;
  
    /* Verify we know how to handle all the flags */
@@ -2340,7 +3466,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
    {
      /* Assume non fatal failure */
      ERR( "unknown dwFlags = 0x%08lx\n", dwFlags );
-@@ -2301,6 +2390,9 @@
+@@ -2301,10 +2996,13 @@
  
      TRACE( "(%p)->(0x%08lx,0x%08lx)\n", This, group, player );
  
@@ -2350,7 +3476,212 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      EnterCriticalSection( &This->lock );
  
      /* Find the group */
-@@ -2399,7 +2491,7 @@
+-    if ( ( gdata = DP_FindAnyGroup( This, group ) ) == NULL )
++    if ( ( gdata = DP_FindGameGroup( This, group ) ) == NULL )
+     {
+         LeaveCriticalSection( &This->lock );
+         return DPERR_INVALIDGROUP;
+@@ -2344,54 +3042,169 @@
+         hr = (*This->dp2->spData.lpCB->RemovePlayerFromGroup)( &data );
+     }
+ 
+-    /* Need to send a DELETEPLAYERFROMGROUP message */
+-    FIXME( "Need to send a message\n" );
++    /* every player on this machine hears of it, the one taken out too (Windows, apistate_dp1.c) */
++    if ( SUCCEEDED( hr ) )
++    {
++        DPMSG_DELETEPLAYERFROMGROUP msg;
++        msg.dwType = DPSYS_DELETEPLAYERFROMGROUP;
++        msg.dpIdGroup = group;
++        msg.dpIdPlayer = player;
++        DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, 0, &msg, DP_CopyGeneric, sizeof( msg ) );
++        DP_GRP_SendIds( This, DPMSGCMD_DELETEPLAYERFROMGROUP, player, group );   /* every machine (Windows) */
++    }
+ 
+     LeaveCriticalSection( &This->lock );
+ 
+     return hr;
+ }
+ 
+-typedef struct _DPRGOPContext
++static DWORD DP_CopyDestroyPlayerOrGroup( DPMSG_GENERIC *genericDst, DPMSG_GENERIC *genericSrc,
++                                          DWORD genericSize, BOOL ansi );
++static DWORD DP_CopySetPlayerOrGroupName( DPMSG_GENERIC *genericDst, DPMSG_GENERIC *genericSrc,
++                                          DWORD genericSize, BOOL ansi );
++
++/* take out every shortcut to g (AddGroupToGroup links in other groups), walking the groups through
++ * their children only; each one as DeleteGroupFromGroup announces it */
++static void DP_UnlinkShortcutsTo( IDirectPlayImpl *This, lpGroupData where, lpGroupData g, int depth )
+ {
+-  IDirectPlayImpl   *This;
+-  BOOL              bAnsi;
+-  DPID              idGroup;
+-} DPRGOPContext, *lpDPRGOPContext;
++  lpGroupList link, next;
+ 
+-static BOOL CALLBACK
+-cbRemoveGroupOrPlayer(
+-    DPID            dpId,
+-    DWORD           dwPlayerType,
+-    LPCDPNAME       lpName,
+-    DWORD           dwFlags,
+-    LPVOID          lpContext )
+-{
+-  lpDPRGOPContext lpCtxt = (lpDPRGOPContext)lpContext;
++  if( !where || depth > 64 )
++    return;
++  for( link = DPQ_FIRST( where->groups ); link; link = next )
++  {
++    next = DPQ_NEXT( link->groups );
++    if( DP_IS_CHILD_LINK( where, link ) )
++      DP_UnlinkShortcutsTo( This, link->lpGData, g, depth + 1 );
++    else if( link->lpGData == g )
++    {
++      DPMSG_DELETEGROUPFROMGROUP msg;
++      DPQ_REMOVE( where->groups, link, groups );
++      g->uRef--;
++      free( link );
++      msg.dwType = DPSYS_DELETEGROUPFROMGROUP;
++      msg.dpIdParentGroup = where->dpid;
++      msg.dpIdGroup = g->dpid;
++      DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, 0, &msg, DP_CopyGeneric, sizeof( msg ) );
++    }
++  }
++}
+ 
+-  TRACE( "Removing element:0x%08lx (type:0x%08lx) from element:0x%08lx\n",
+-           dpId, dwPlayerType, lpCtxt->idGroup );
++/* DestroyGroup, in Windows' order (black box, 2026-10-22: a group with players, shortcuts in and
++ * out and three children, one with a child of its own):
++ *   1. the shortcuts other groups hold to it are taken out (DPSYS_DELETEGROUPFROMGROUP each)
++ *   2. its players leave it, the last one added first (DPSYS_DELETEPLAYERFROMGROUP each)
++ *   3. the shortcuts it holds are taken out, the last one added first
++ *   4. its children are destroyed the same way, the newest first
++ *   5. DPSYS_DESTROYPLAYERORGROUP for the group itself, with its parent and flags
++ * then it is gone from its parent (or the system group) and from the provider. */
++static void DP_DestroyGroupTree( IDirectPlayImpl *This, lpGroupData g, int depth )
++{
++  lpGroupList link;
++  lpPlayerList plist;
++  lpGroupData container;
++  DPID id = g->dpid, parent = g->parent, *ids = NULL;
++  lpGroupData *children = NULL;
++  int n = 0, i;
+ 
+-  if( dwPlayerType == DPPLAYERTYPE_GROUP )
++  if( depth > 64 )
++    return;
++
++  DP_UnlinkShortcutsTo( This, This->dp2->lpSysGroup, g, 0 );
++
++  for( plist = DPQ_FIRST( g->players ); plist; plist = DPQ_NEXT( plist->players ) ) n++;
++  if( n && (ids = malloc( n * sizeof(*ids) )) )
+   {
+-    if ( FAILED( IDirectPlayX_DeleteGroupFromGroup( &lpCtxt->This->IDirectPlay4_iface,
+-                    lpCtxt->idGroup, dpId ) ) )
+-      ERR( "Unable to delete group 0x%08lx from group 0x%08lx\n", dpId, lpCtxt->idGroup );
+-  }
+-  else if ( FAILED( IDirectPlayX_DeletePlayerFromGroup( &lpCtxt->This->IDirectPlay4_iface,
+-                                                        lpCtxt->idGroup, dpId ) ) )
+-      ERR( "Unable to delete player 0x%08lx from grp 0x%08lx\n", dpId, lpCtxt->idGroup );
++    i = 0;
++    for( plist = DPQ_FIRST( g->players ); plist; plist = DPQ_NEXT( plist->players ) )
++      ids[ i++ ] = plist->lpPData->dpid;
++    for( i = n - 1; i >= 0; i-- )
++      IDirectPlayX_DeletePlayerFromGroup( &This->IDirectPlay4_iface, id, ids[ i ] );
++  }
++  free( ids );
++  ids = NULL;
++
++  n = 0;
++  for( link = DPQ_FIRST( g->groups ); link; link = DPQ_NEXT( link->groups ) ) n++;
++  if( n && (ids = malloc( n * sizeof(*ids) )) && (children = malloc( n * sizeof(*children) )) )
++  {
++    int ns = 0, nc = 0;
++    for( link = DPQ_FIRST( g->groups ); link; link = DPQ_NEXT( link->groups ) )
++    {
++      if( DP_IS_CHILD_LINK( g, link ) )
++        children[ nc++ ] = link->lpGData;
++      else
++        ids[ ns++ ] = link->lpGData->dpid;
++    }
++    for( i = ns - 1; i >= 0; i-- )
++      IDirectPlayX_DeleteGroupFromGroup( &This->IDirectPlay4_iface, id, ids[ i ] );
++    for( i = nc - 1; i >= 0; i-- )
++      DP_DestroyGroupTree( This, children[ i ], depth + 1 );
++  }
++  free( ids );
++  free( children );
+ 
+-  return TRUE; /* Continue enumeration */
++  {
++    DPMSG_DESTROYPLAYERORGROUP msg;
++    memset( &msg, 0, sizeof(msg) );
++    msg.dwType       = DPSYS_DESTROYPLAYERORGROUP;
++    msg.dwPlayerType = DPPLAYERTYPE_GROUP;
++    msg.dpId         = id;
++    if( g->name ) msg.dpnName = *g->name;
++    msg.dpIdParent   = parent;
++    msg.dwFlags      = DP_GROUP_FLAGS( g );
++    DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, 0, &msg, DP_CopyDestroyPlayerOrGroup, 0 );
++  }
++  DP_GRP_SendIds( This, DPMSGCMD_DELETEGROUP, 0, id );   /* after DELETEPLAYERFROMGROUP for its players (Windows) */
++
++  /* out of its parent's list (a top-level group's parent is the system group) */
++  container = parent == DPID_NOPARENT_GROUP ? This->dp2->lpSysGroup : DP_FindAnyGroup( This, parent );
++  if( container )
++  {
++    DPQ_REMOVE_ENTRY( container->groups, groups, lpGData->dpid, ==, id, link );
++    if( link )
++      free( link );
++    else
++      ERR( "group 0x%08lx not in its parent 0x%08lx\n", id, parent );
++  }
++
++  /* what's left of the group itself: anything still in it was taken out above */
++  while( (plist = DPQ_FIRST( g->players )) )
++  {
++    DPQ_REMOVE( g->players, plist, players );
++    plist->lpPData->uRef--;
++    free( plist );
++  }
++  while( (link = DPQ_FIRST( g->groups )) )
++  {
++    DPQ_REMOVE( g->groups, link, groups );
++    link->lpGData->uRef--;
++    free( link );
++  }
++  free( g->lpSPPlayerData );
++  free( g->nameA );
++  free( g->name );
++  free( g );
++
++  if( This->dp2->spData.lpCB->DeleteGroup )
++  {
++    DPSP_DELETEGROUPDATA data;
++    data.idGroup = id;
++    data.dwFlags = 0;
++    data.lpISP   = This->dp2->spData.lpISP;
++    (*This->dp2->spData.lpCB->DeleteGroup)( &data );
++  }
+ }
+ 
+ static HRESULT DP_IF_DestroyGroup( IDirectPlayImpl *This, void *lpMsgHdr, DPID idGroup, BOOL bAnsi )
+ {
+   lpGroupData lpGData;
+-  DPRGOPContext context;
+ 
+-  FIXME( "(%p)->(%p,0x%08lx,%u): semi stub\n",
+-         This, lpMsgHdr, idGroup, bAnsi );
++  TRACE( "(%p)->(%p,0x%08lx,%u)\n", This, lpMsgHdr, idGroup, bAnsi );
++
++  /* no provider yet: Windows says so before looking at the id (apidiff, fresh state) */
++  if( This->dp2->connectionInitialized == NO_PROVIDER )
++    return DPERR_UNINITIALIZED;
+ 
+   EnterCriticalSection( &This->lock );
+ 
+@@ -2399,43 +3212,16 @@
    if( ( lpGData = DP_FindAnyGroup( This, idGroup ) ) == NULL )
    {
      LeaveCriticalSection( &This->lock );
@@ -2358,8 +3689,48 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    return DPERR_INVALIDGROUP;   /* Windows: a group id nobody has is an invalid group */
    }
  
-   context.This    = This;
-@@ -2500,14 +2592,28 @@
+-  context.This    = This;
+-  context.bAnsi   = bAnsi;
+-  context.idGroup = idGroup;
+-
+-  /* Remove all players that this group has */
+-  IDirectPlayX_EnumGroupPlayers( &This->IDirectPlay4_iface, idGroup, NULL, cbRemoveGroupOrPlayer,
+-          &context, 0 );
+-
+-  /* Remove all links to groups that this group has since this is dp3 */
+-  IDirectPlayX_EnumGroupsInGroup( &This->IDirectPlay4_iface, idGroup, NULL, cbRemoveGroupOrPlayer,
+-          (void*)&context, 0 );
+-
+-  /* Remove this group from the parent group - if it has one */
+-  if( ( idGroup != DPID_SYSTEM_GROUP ) && ( lpGData->parent != DPID_SYSTEM_GROUP ) )
+-    IDirectPlayX_DeleteGroupFromGroup( &This->IDirectPlay4_iface, lpGData->parent, idGroup );
+-
+-  /* Now delete this group data and list from the system group */
+-  DP_DeleteGroup( This, idGroup );
+-
+-  /* Let the SP know that we've destroyed this group */
+-  if( This->dp2->spData.lpCB->DeleteGroup )
++  if( idGroup == DPID_SYSTEM_GROUP )
+   {
+-    DPSP_DELETEGROUPDATA data;
+-
+-    FIXME( "data.dwFlags is incorrect\n" );
+-
+-    data.idGroup = idGroup;
+-    data.dwFlags = 0;
+-    data.lpISP   = This->dp2->spData.lpISP;
+-
+-    (*This->dp2->spData.lpCB->DeleteGroup)( &data );
++    LeaveCriticalSection( &This->lock );
++    return DPERR_INVALIDGROUP;   /* [UNV] Windows' answer; the system group is never destroyed */
+   }
+ 
+-  FIXME( "Send out a DESTORYPLAYERORGROUP message\n" );
++  DP_DestroyGroupTree( This, lpGData, 0 );
+ 
+   LeaveCriticalSection( &This->lock );
+ 
+@@ -2500,14 +3286,28 @@
  
    EnterCriticalSection( &This->lock );
  
@@ -2391,51 +3762,205 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
    cbContext.This     = This;
    cbContext.idPlayer = idPlayer;
    cbContext.bAnsi    = bAnsi;
-@@ -2741,6 +2847,10 @@
+@@ -2659,42 +3459,57 @@
+         return DPERR_INVALIDGROUP;
+     }
+ 
+-    /* Walk the players in this group */
+-    for( plist = DPQ_FIRST( gdata->players ); plist; plist = DPQ_NEXT( plist->players ) )
++    /* Walk the players in this group (the system group's newest first, as Windows does) */
++    {
++    struct PlayerData **players;
++    int n, i;
++
++    if ( !(players = DP_GroupPlayersInOrder( This, gdata, &n )) )
++    {
++        LeaveCriticalSection( &This->lock );
++        return DPERR_OUTOFMEMORY;
++    }
++    for( i = 0; i < n; i++ )
+     {
++        struct PlayerData *p = players[ i ];
+         DWORD playerFlags;
+ 
+         /* We do not enum the name server or app server as they are of no
+          * consequence to the end user.
+          */
+-        if ( plist->lpPData->dwFlags & DPLAYI_PLAYER_SYSPLAYER )
++        if ( p->dwFlags & DPLAYI_PLAYER_SYSPLAYER )
+             continue;
+ 
+-        if ( (plist->lpPData->dwFlags & flags) != (flags & ~DPENUMPLAYERS_REMOTE) )
++        if ( (p->dwFlags & flags) != (flags & ~DPENUMPLAYERS_REMOTE) )
+             continue;
+-        if ( (plist->lpPData->dwFlags & DPENUMPLAYERS_LOCAL) && (flags & DPENUMPLAYERS_REMOTE) )
++        if ( (p->dwFlags & DPENUMPLAYERS_LOCAL) && (flags & DPENUMPLAYERS_REMOTE) )
+             continue;
+ 
+-        playerFlags = plist->lpPData->dwFlags;
++        playerFlags = p->dwFlags;
+         playerFlags &= ~(DPENUMPLAYERS_GROUP | DPENUMPLAYERS_LOCAL | DPENUMPLAYERS_OWNER);
+         playerFlags |= flags;
+ 
+-        if ( !enumplayercb( plist->lpPData->dpid, DPPLAYERTYPE_PLAYER,
+-                    ansi ? plist->lpPData->nameA : plist->lpPData->name,
++        if ( !enumplayercb( p->dpid, DPPLAYERTYPE_PLAYER, ansi ? p->nameA : p->name,
+                     playerFlags, context ) )
+             /* User requested break */
+             break;
+     }
++    free( players );
++    }
+ 
+     LeaveCriticalSection( &This->lock );
+ 
+     return DP_OK;
+ }
+ 
++/* (EnumPlayers is the system group's list; a game asking for group 0 gets INVALIDGROUP, as from
++ * Windows - black box, 2026-10-22) */
+ static HRESULT WINAPI IDirectPlay4AImpl_EnumGroupPlayers( IDirectPlay4A *iface, DPID group,
+         GUID *instance, LPDPENUMPLAYERSCALLBACK2 enumplayercb, void *context, DWORD flags )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
++    if ( group == DPID_SYSTEM_GROUP && This->dp2->connectionInitialized != NO_PROVIDER )
++        return DPERR_INVALIDGROUP;
+     return DP_IF_EnumGroupPlayers( This, group, instance, enumplayercb, context, flags, TRUE );
+ }
+ 
+@@ -2702,6 +3517,8 @@
+         GUID *instance, LPDPENUMPLAYERSCALLBACK2 enumplayercb, void *context, DWORD flags )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
++    if ( group == DPID_SYSTEM_GROUP && This->dp2->connectionInitialized != NO_PROVIDER )
++        return DPERR_INVALIDGROUP;
+     return DP_IF_EnumGroupPlayers( This, group, instance, enumplayercb, context, flags, FALSE );
+ }
+ 
+@@ -2738,18 +3555,29 @@
+             flags );
+ }
+ 
++static HRESULT DP_IF_EnumGroupsInGroup( IDirectPlayImpl *This, DPID group, GUID *instance,
++        LPDPENUMPLAYERSCALLBACK2 enumplayercb, void *context, DWORD flags, BOOL ansi );
++
  static HRESULT WINAPI IDirectPlay4AImpl_EnumGroups( IDirectPlay4A *iface, GUID *instance,
          LPDPENUMPLAYERSCALLBACK2 enumplayercb, void *context, DWORD flags )
  {
+-    return IDirectPlayX_EnumGroupsInGroup( iface, DPID_SYSTEM_GROUP, instance, enumplayercb,
+-            context, flags );
 +    IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
 +    if ( This->dp2->connectionInitialized != NO_PROVIDER && !This->dp2->bConnectionOpen &&
 +         !(flags & DPENUMGROUPS_SESSION) )
 +        return DPERR_NOSESSIONS;
-     return IDirectPlayX_EnumGroupsInGroup( iface, DPID_SYSTEM_GROUP, instance, enumplayercb,
-             context, flags );
++    return DP_IF_EnumGroupsInGroup( This, DPID_SYSTEM_GROUP, instance, enumplayercb,
++            context, flags, TRUE );
  }
-@@ -2748,6 +2858,10 @@
+ 
  static HRESULT WINAPI IDirectPlay4Impl_EnumGroups ( IDirectPlay4 *iface, GUID *instance,
          LPDPENUMPLAYERSCALLBACK2 enumplayercb, void *context, DWORD flags )
  {
+-    return IDirectPlayX_EnumGroupsInGroup( iface, DPID_SYSTEM_GROUP, instance, enumplayercb,
+-            context, flags );
 +    IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
 +    if ( This->dp2->connectionInitialized != NO_PROVIDER && !This->dp2->bConnectionOpen &&
 +         !(flags & DPENUMGROUPS_SESSION) )
 +        return DPERR_NOSESSIONS;
-     return IDirectPlayX_EnumGroupsInGroup( iface, DPID_SYSTEM_GROUP, instance, enumplayercb,
-             context, flags );
++    return DP_IF_EnumGroupsInGroup( This, DPID_SYSTEM_GROUP, instance, enumplayercb,
++            context, flags, FALSE );
  }
-@@ -2787,6 +2901,10 @@
+ 
+ static HRESULT WINAPI IDirectPlay2AImpl_EnumPlayers( IDirectPlay2A *iface, GUID *instance,
+@@ -2787,15 +3615,23 @@
  static HRESULT WINAPI IDirectPlay4AImpl_EnumPlayers( IDirectPlay4A *iface, GUID *instance,
          LPDPENUMPLAYERSCALLBACK2 enumplayercb, void *context, DWORD flags )
  {
+-    return IDirectPlayX_EnumGroupPlayers( iface, DPID_SYSTEM_GROUP, instance, enumplayercb,
+-            context, flags );
 +    IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
 +    if ( This->dp2->connectionInitialized != NO_PROVIDER && !This->dp2->bConnectionOpen &&
 +         !(flags & DPENUMPLAYERS_SESSION) )
 +        return DPERR_NOSESSIONS;
-     return IDirectPlayX_EnumGroupPlayers( iface, DPID_SYSTEM_GROUP, instance, enumplayercb,
-             context, flags );
++    return DP_IF_EnumGroupPlayers( This, DPID_SYSTEM_GROUP, instance, enumplayercb,
++            context, flags, TRUE );
  }
-@@ -2794,6 +2912,10 @@
+ 
  static HRESULT WINAPI IDirectPlay4Impl_EnumPlayers( IDirectPlay4 *iface, GUID *instance,
          LPDPENUMPLAYERSCALLBACK2 enumplayercb, void *context, DWORD flags )
  {
+-    return IDirectPlayX_EnumGroupPlayers( iface, DPID_SYSTEM_GROUP, instance, enumplayercb,
+-            context, flags );
 +    IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
 +    if ( This->dp2->connectionInitialized != NO_PROVIDER && !This->dp2->bConnectionOpen &&
 +         !(flags & DPENUMPLAYERS_SESSION) )
 +        return DPERR_NOSESSIONS;
-     return IDirectPlayX_EnumGroupPlayers( iface, DPID_SYSTEM_GROUP, instance, enumplayercb,
++    return DP_IF_EnumGroupPlayers( This, DPID_SYSTEM_GROUP, instance, enumplayercb,
++            context, flags, FALSE );
+ }
+ 
+ /* This function should call the registered callback function that the user
+@@ -2875,6 +3711,29 @@
+   return 1;
+ }
+ 
++#ifdef OKWEB_DPLAY
++/* the same loop for the browser build (okweb/dplay/winweb.c): one round per call, every dwTimeout */
++void winweb_every( DWORD ms, void (*fn)( void * ), void *arg );
++static void DP_EnumSessionsSendAsyncRequestTask( void *lpContext )
++{
++  EnumSessionAsyncCallbackData *data = lpContext;
++  HRESULT hr;
++
++  if( WaitForSingleObject( data->hSuicideRequest, 0 ) == WAIT_OBJECT_0 )
++  {
++    winweb_every( 0, DP_EnumSessionsSendAsyncRequestTask, data );
++    CloseHandle( data->hSuicideRequest );
++    free( data->password );
++    free( data );
++    return;
++  }
++  hr = NS_SendSessionRequestBroadcast( &data->requestGuid, data->dwEnumSessionFlags, data->password,
++                                       data->lpSpData );
++  if( FAILED(hr) )
++    ERR( "Enum broadcast request failed: %s\n", DPLAYX_HresultToString(hr) );
++}
++#endif
++
+ static void DP_KillEnumSessionThread( IDirectPlayImpl *This )
+ {
+   /* Does a thread exist? If so we were doing an async enum session */
+@@ -2926,10 +3785,30 @@
              context, flags );
  }
-@@ -2951,6 +3073,11 @@
+ 
++static HRESULT DP_IF_EnumSessionsHeld( IDirectPlayImpl *This, DPSESSIONDESC2 *sdesc,
++        DWORD timeout, LPDPENUMSESSIONSCALLBACK2 enumsessioncb, void *context, DWORD flags,
++        BOOL ansi );
++
++/* A synchronous enumeration waits (timeout) on the caller's thread. Some games enumerate on a
++ * thread of their own and release the object from another meanwhile - Necrodome does, when the
++ * player leaves its session list: the waiting call then woke up in freed memory (a Windows 98
++ * crash in EnterCriticalSection, 2026-10-22). The call holds a reference while it runs; the last
++ * Release, the caller's or this one, frees the object. */
+ static HRESULT DP_IF_EnumSessions( IDirectPlayImpl *This, DPSESSIONDESC2 *sdesc,
+         DWORD timeout, LPDPENUMSESSIONSCALLBACK2 enumsessioncb, void *context, DWORD flags,
+         BOOL ansi )
+ {
++    HRESULT hr;
++    InterlockedIncrement( &This->ref );
++    hr = DP_IF_EnumSessionsHeld( This, sdesc, timeout, enumsessioncb, context, flags, ansi );
++    IDirectPlayX_Release( &This->IDirectPlay4_iface );
++    return hr;
++}
++
++static HRESULT DP_IF_EnumSessionsHeld( IDirectPlayImpl *This, DPSESSIONDESC2 *sdesc,
++        DWORD timeout, LPDPENUMSESSIONSCALLBACK2 enumsessioncb, void *context, DWORD flags,
++        BOOL ansi )
++{
+     EnumSessionAsyncCallbackData *data;
+     WCHAR *password = NULL;
+     DWORD defaultTimeout;
+@@ -2951,6 +3830,11 @@
      if ( sdesc->dwSize != sizeof( DPSESSIONDESC2 ) )
          return DPERR_INVALIDPARAM;
  
@@ -2447,7 +3972,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      /* Can't enumerate if the interface is already open */
      EnterCriticalSection( &This->lock );
      if ( This->dp2->bConnectionOpen )
-@@ -2997,6 +3124,9 @@
+@@ -2997,7 +3881,14 @@
  
      if ( flags & DPENUMSESSIONS_STOPASYNC )
      {
@@ -2455,9 +3980,29 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +        if ( This->dp2->hEnumSessionThread == INVALID_HANDLE_VALUE )
 +            return DPERR_GENERIC;
          DP_KillEnumSessionThread( This );
++        /* Windows tells the callback the enumeration is over: one DPESC_TIMEDOUT call and no
++         * sessions (tests/dplayx.c check_EnumSessions_async, its last step) */
++        if ( enumsessioncb )
++            enumsessioncb( NULL, &timeout, DPESC_TIMEDOUT, context );
          return DP_OK;
      }
-@@ -3192,6 +3322,9 @@
+ 
+@@ -3089,8 +3980,14 @@
+         ERR( "Can't duplicate thread killing handle\n" );
+ 
+     TRACE( ": creating EnumSessionsRequest thread\n" );
++#ifdef OKWEB_DPLAY
++    /* the browser build has no threads: the resend loop runs as a task of the page's pump */
++    winweb_every( data->dwTimeout, DP_EnumSessionsSendAsyncRequestTask, data );
++    This->dp2->hEnumSessionThread = (HANDLE)1;   /* "running" (the stop event ends the task) */
++#else
+     This->dp2->hEnumSessionThread = CreateThread( NULL, 0, DP_EnumSessionsSendAsyncRequestThread,
+                                                   data, 0, &tid );
++#endif
+     if ( !This->dp2->hEnumSessionThread )
+         free( password );
+ 
+@@ -3192,9 +4089,12 @@
  
      TRACE( "(%p)->(0x%08lx,%p,%p,0x%08lx)\n", This, group, data, size, flags );
  
@@ -2466,8 +4011,37 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +
      EnterCriticalSection( &This->lock );
  
-     if ( ( gdata = DP_FindAnyGroup( This, group ) ) == NULL )
-@@ -3295,6 +3428,8 @@
+-    if ( ( gdata = DP_FindAnyGroup( This, group ) ) == NULL )
++    if ( ( gdata = DP_FindGameGroup( This, group ) ) == NULL )
+     {
+         LeaveCriticalSection( &This->lock );
+         return DPERR_INVALIDGROUP;
+@@ -3239,13 +4139,13 @@
+ 
+   EnterCriticalSection( &This->lock );
+ 
+-  if( ( lpGData = DP_FindAnyGroup( This, idGroup ) ) == NULL )
++  if( ( lpGData = DP_FindGameGroup( This, idGroup ) ) == NULL )
+   {
+     LeaveCriticalSection( &This->lock );
+     return DPERR_INVALIDGROUP;
+   }
+ 
+-  dwRequiredDataSize = DP_CopyName( NULL, bAnsi ? lpGData->nameA : lpGData->name, bAnsi, bAnsi );
++  dwRequiredDataSize = DP_CopyName( NULL, bAnsi ? lpGData->nameA : lpGData->name, bAnsi, bAnsi, FALSE );
+ 
+   if( ( lpData == NULL ) ||
+       ( *lpdwDataSize < dwRequiredDataSize )
+@@ -3256,7 +4156,7 @@
+     return DPERR_BUFFERTOOSMALL;
+   }
+ 
+-  DP_CopyName( lpData, bAnsi ? lpGData->nameA : lpGData->name, bAnsi, bAnsi );
++  DP_CopyName( lpData, bAnsi ? lpGData->nameA : lpGData->name, bAnsi, bAnsi, FALSE );
+ 
+   LeaveCriticalSection( &This->lock );
+ 
+@@ -3295,6 +4195,8 @@
          void *lpData, DWORD *lpdwDataSize )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
@@ -2476,7 +4050,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      return DP_IF_GetGroupName( This, idGroup, lpData, lpdwDataSize, TRUE );
  }
  
-@@ -3302,6 +3437,8 @@
+@@ -3302,6 +4204,8 @@
          void *lpData, DWORD *lpdwDataSize )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
@@ -2485,7 +4059,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      return DP_IF_GetGroupName( This, idGroup, lpData, lpdwDataSize, FALSE );
  }
  
-@@ -3377,15 +3514,41 @@
+@@ -3377,15 +4281,41 @@
          void *data, DWORD *size )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
@@ -2530,7 +4104,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      return DP_OK;
  }
  
-@@ -3429,6 +3592,8 @@
+@@ -3429,6 +4359,8 @@
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
      DPSP_GETCAPSDATA data;
@@ -2539,7 +4113,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      TRACE( "(%p)->(0x%08lx,%p,0x%08lx)\n", This, player, caps, flags);
  
-@@ -3441,13 +3606,39 @@
+@@ -3441,13 +4373,39 @@
      if( caps->dwSize != sizeof(DPCAPS) )
          return DPERR_INVALIDPARAMS;
  
@@ -2580,7 +4154,25 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  }
  
  static HRESULT WINAPI IDirectPlay2AImpl_GetPlayerData( IDirectPlay2A *iface, DPID player,
-@@ -3633,9 +3824,14 @@
+@@ -3556,7 +4514,7 @@
+   }
+ 
+   dwRequiredDataSize = DP_CopyName( NULL, bAnsi ? lpPList->lpPData->nameA : lpPList->lpPData->name,
+-                                    bAnsi, bAnsi );
++                                    bAnsi, bAnsi, FALSE );
+ 
+   if( ( lpData == NULL ) ||
+       ( *lpdwDataSize < dwRequiredDataSize )
+@@ -3567,7 +4525,7 @@
+     return DPERR_BUFFERTOOSMALL;
+   }
+ 
+-  DP_CopyName( lpData, bAnsi ? lpPList->lpPData->nameA : lpPList->lpPData->name, bAnsi, bAnsi );
++  DP_CopyName( lpData, bAnsi ? lpPList->lpPData->nameA : lpPList->lpPData->name, bAnsi, bAnsi, FALSE );
+ 
+   LeaveCriticalSection( &This->lock );
+ 
+@@ -3633,9 +4591,14 @@
      return DPERR_INVALIDPARAMS;
    }
  
@@ -2596,7 +4188,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
    if ( ( lpData == NULL ) ||
         ( *lpdwDataSize < dwRequiredSize )
-@@ -3646,7 +3842,7 @@
+@@ -3646,7 +4609,7 @@
      return DPERR_BUFFERTOOSMALL;
    }
  
@@ -2605,20 +4197,20 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
    LeaveCriticalSection( &This->lock );
  
-@@ -3740,6 +3936,12 @@
+@@ -3740,6 +4703,12 @@
  {
    void *spMessageHeader = NULL;
    HRESULT hr;
 +  /* the caller gave a password of its own (AoE2 never does: it has no password box) */
 +  BOOL appPassword = lpsd->lpszPassword && ((const BYTE *)lpsd->lpszPassword)[ 0 ];
-+#ifdef OKP_BUILTIN
++#if defined(OKP_BUILTIN) || defined(OKWEB_DPLAY)
 +  WCHAR okpPassword[ 80 ];   /* joining a password game: the hash of what the player typed */
 +  BOOL useOkpPassword = FALSE;
 +#endif
  
    FIXME( "(%p)->(%p,0x%08lx,%p,%p): partial stub\n",
           This, lpsd, dwFlags, lpSecurity, lpCredentials );
-@@ -3749,7 +3951,6 @@
+@@ -3749,7 +4718,6 @@
      TRACE( ": rejecting invalid dpsd size (%ld).\n", lpsd->dwSize );
      return DPERR_INVALIDPARAMS;
    }
@@ -2626,7 +4218,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
    if( This->dp2->connectionInitialized == NO_PROVIDER )
    {
      return DPERR_UNINITIALIZED;
-@@ -3764,6 +3965,13 @@
+@@ -3764,6 +4732,13 @@
    }
    LeaveCriticalSection( &This->lock );
  
@@ -2640,7 +4232,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
    /* If we're enumerating, kill the thread */
    DP_KillEnumSessionThread( This );
  
-@@ -3781,6 +3989,28 @@
+@@ -3781,6 +4756,29 @@
        ERR( "Unable to set session desc: %s\n", DPLAYX_HresultToString( hr ) );
        return hr;
      }
@@ -2648,8 +4240,9 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +       Windows treats that as no password, and our listing would show it as [PW] */
 +    if( !appPassword && (This->dp2->lpSessionDesc->dwFlags & DPSESSION_PASSWORDREQUIRED) )
 +      This->dp2->lpSessionDesc->dwFlags &= ~DPSESSION_PASSWORDREQUIRED;
-+#ifdef OKP_BUILTIN
-+    /* Online/LAN Play: ask the host for an optional password (the session now has its GUID) */
++#if defined(OKP_BUILTIN) || defined(OKWEB_DPLAY)
++    /* Online/LAN Play: ask the host for an optional password (the session now has its GUID); in the
++       browser the page asks (okweb/dplay/okweb_password.c) */
 +    if( This->dp2->okpConnection && !appPassword )
 +    {
 +      WCHAR hashed[ 80 ];
@@ -2669,7 +4262,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
    }
    else
    {
-@@ -3805,9 +4035,28 @@
+@@ -3805,9 +4803,30 @@
       * while bConnectionOpen is FALSE. */
  
      free( This->dp2->lpSessionDesc );
@@ -2685,6 +4278,8 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +      if ( FAILED( hr ) )
 +        return hr;
 +    }
++#endif
++#if defined(OKP_BUILTIN) || defined(OKWEB_DPLAY)
 +    /* a password game on Online/LAN Play: ask now, before anything is opened (Cancel = no join) */
 +    if ( (dwFlags & DPOPEN_JOIN) && This->dp2->okpConnection && !appPassword &&
 +         (This->dp2->lpSessionDesc->dwFlags & DPSESSION_PASSWORDREQUIRED) )
@@ -2699,7 +4294,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
    }
  
    /* Invoke the conditional callback for the service provider */
-@@ -3825,6 +4074,8 @@
+@@ -3825,6 +4844,8 @@
      data.dwSessionFlags    = This->dp2->lpSessionDesc->dwFlags;
  
      hr = (*This->dp2->spData.lpCB->Open)(&data);
@@ -2708,11 +4303,11 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      if( FAILED( hr ) )
      {
        ERR( "Unable to open session: %s\n", DPLAYX_HresultToString( hr ) );
-@@ -3854,6 +4105,11 @@
+@@ -3854,6 +4875,11 @@
      DWORD createFlags = DPLAYI_PLAYER_SYSPLAYER | DPLAYI_PLAYER_PLAYERLOCAL;
      WCHAR *password;
  
-+#ifdef OKP_BUILTIN
++#if defined(OKP_BUILTIN) || defined(OKWEB_DPLAY)
 +    if ( useOkpPassword )
 +      password = DP_DuplicateString( okpPassword, FALSE, FALSE );
 +    else
@@ -2720,17 +4315,30 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      password = DP_DuplicateString( lpsd->lpszPassword, FALSE, bAnsi );
      if ( !password && lpsd->lpszPassword )
      {
-@@ -3912,6 +4168,9 @@
+@@ -3879,6 +4905,9 @@
+     if( FAILED( hr ) )
+     {
+       ERR( "Request for ID failed: %s\n", DPLAYX_HresultToString( hr ) );
++#ifdef OKP_BUILTIN
++      okp_join_failed( This->dp2->spData.lpISP, "request_id", hr );   /* the connection report */
++#endif
+       free( password );
+       DP_IF_DestroyGroup( This, NULL, DPID_SYSTEM_GROUP, TRUE );
+       if( This->dp2->spData.lpCB->CloseEx )
+@@ -3912,6 +4941,12 @@
      free( password );
      if( FAILED( hr ) )
      {
-+#ifdef OKP_BUILTIN
++#if defined(OKP_BUILTIN) || defined(OKWEB_DPLAY)
 +      if ( useOkpPassword ) DP_BUILTIN_JoinFailed( hr );   /* "wrong password" for the player */
++#endif
++#ifdef OKP_BUILTIN
++      okp_join_failed( This->dp2->spData.lpISP, "refused", hr );   /* the connection report */
 +#endif
        DP_DeletePlayer( This, This->dp2->systemPlayerId );
        DP_IF_DestroyGroup( This, NULL, DPID_SYSTEM_GROUP, TRUE );
        if( This->dp2->spData.lpCB->CloseEx )
-@@ -3925,7 +4184,10 @@
+@@ -3925,7 +4960,10 @@
    }
    else if( dwFlags & DPOPEN_CREATE )
    {
@@ -2742,7 +4350,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      This->dp2->systemPlayerId = DP_NextObjectId();
  
-@@ -3947,6 +4209,7 @@
+@@ -3947,6 +4985,7 @@
    EnterCriticalSection( &This->lock );
  
    This->dp2->bConnectionOpen = TRUE;
@@ -2750,7 +4358,34 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
    LeaveCriticalSection( &This->lock );
  
-@@ -4181,13 +4444,16 @@
+@@ -4122,16 +5161,24 @@
+     return IDirectPlayX_Send( &This->IDirectPlay4_iface, from, to, flags, data, size );
+ }
+ 
++static HRESULT DP_SendExCore( IDirectPlay4 *iface, DPID from, DPID to, DWORD flags, void *data,
++        DWORD size, DWORD priority, DWORD timeout, void *context, DWORD *msgid );
++
++/* Send: SendEx's way out, but without a message id (Windows' next SendEx id shows none was taken).
++ * DPSEND_ASYNC still means SendEx's asynchronous send [UNV whether Send takes it]. */
+ static HRESULT WINAPI IDirectPlay4AImpl_Send( IDirectPlay4A *iface, DPID from, DPID to,
+         DWORD flags, void *data, DWORD size )
+ {
+-    return IDirectPlayX_SendEx( iface, from, to, flags, data, size, 0, 0, NULL, NULL );
++    IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
++    return IDirectPlayX_Send( &This->IDirectPlay4_iface, from, to, flags, data, size );
+ }
+ 
+ static HRESULT WINAPI IDirectPlay4Impl_Send( IDirectPlay4 *iface, DPID from, DPID to,
+         DWORD flags, void *data, DWORD size )
+ {
+-    return IDirectPlayX_SendEx( iface, from, to, flags, data, size, 0, 0, NULL, NULL );
++    if ( flags & DPSEND_ASYNC )
++        return IDirectPlayX_SendEx( iface, from, to, flags, data, size, 0, 0, NULL, NULL );
++    return DP_SendExCore( iface, from, to, flags, data, size, 0, 0, NULL, NULL );
+ }
+ 
+ static HRESULT WINAPI IDirectPlay2AImpl_SetGroupData( IDirectPlay2A *iface, DPID group, void *data,
+@@ -4181,13 +5228,16 @@
      if ( !data && size )
          return DPERR_INVALIDPARAMS;
  
@@ -2760,8 +4395,9 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      EnterCriticalSection( &This->lock );
  
 -    /* Find the pointer to the data for this player */
+-    if ( ( gdata = DP_FindAnyGroup( This, group ) ) == NULL )
 +    /* Find the pointer to the data for this group */
-     if ( ( gdata = DP_FindAnyGroup( This, group ) ) == NULL )
++    if ( ( gdata = DP_FindGameGroup( This, group ) ) == NULL )
      {
          LeaveCriticalSection( &This->lock );
 -        return DPERR_INVALIDOBJECT;
@@ -2769,7 +4405,87 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      }
  
      if ( !(flags & DPSET_LOCAL) )
-@@ -4287,6 +4553,8 @@
+@@ -4200,11 +5250,22 @@
+ 
+     DP_SetGroupData( gdata, flags, data, size );
+ 
+-    /* FIXME: Only send a message if this group is local to the session otherwise
+-     * it will have been rejected above
+-     */
+-    if ( !(flags & DPSET_LOCAL) )
+-        FIXME( "Send msg?\n" );
++    /* remote data: every player on this machine hears of it, as of a player's (Windows, black box
++     * 2026-10-22; guaranteed or not). [UNV] other machines: groups don't travel between machines
++     * here so far */
++    if ( !(flags & DPSET_LOCAL) && !DP_DataMessagesOff( This ) )
++    {
++        DPMSG_SETPLAYERORGROUPDATA msg;
++        memset( &msg, 0, sizeof(msg) );
++        msg.dwType = DPSYS_SETPLAYERORGROUPDATA;
++        msg.dwPlayerType = DPPLAYERTYPE_GROUP;
++        msg.dpId = group;
++        msg.lpData = gdata->lpRemoteData;
++        msg.dwDataSize = gdata->dwRemoteDataSize;
++        DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, 0, &msg, DP_CopySetPlayerOrGroupData, 0 );
++    }
++    if ( !(flags & DPSET_LOCAL) )   /* and every machine: GROUPDATACHANGED (Windows, S3 tap 2026-10-28) */
++        DP_GRP_SendData( This, group, gdata->lpRemoteData, gdata->dwRemoteDataSize );
+ 
+     LeaveCriticalSection( &This->lock );
+ 
+@@ -4223,20 +5284,20 @@
+ 
+   EnterCriticalSection( &This->lock );
+ 
+-  if( ( lpGData = DP_FindAnyGroup( This, idGroup ) ) == NULL )
++  if( ( lpGData = DP_FindGameGroup( This, idGroup ) ) == NULL )
+   {
+     LeaveCriticalSection( &This->lock );
+     return DPERR_INVALIDGROUP;
+   }
+ 
+-  name = DP_DuplicateName( lpGroupName, FALSE, bAnsi );
++  name = DP_DuplicateName( lpGroupName, FALSE, bAnsi, FALSE );
+   if ( !name )
+   {
+     LeaveCriticalSection( &This->lock );
+     return DPERR_OUTOFMEMORY;
+   }
+ 
+-  nameA = DP_DuplicateName( lpGroupName, TRUE, bAnsi );
++  nameA = DP_DuplicateName( lpGroupName, TRUE, bAnsi, FALSE );
+   if ( !nameA )
+   {
+     free( name );
+@@ -4244,11 +5305,25 @@
+     return DPERR_OUTOFMEMORY;
+   }
+ 
++  free( lpGData->name );
++  free( lpGData->nameA );
+   lpGData->name = name;
+   lpGData->nameA = nameA;
+ 
+-  /* Should send a DPMSG_SETPLAYERORGROUPNAME message */
+-  FIXME( "Message not sent and dwFlags ignored\n" );
++  /* every player on this machine hears of it (Windows, apistate: SetGroupName in state open).
++   * [UNV] other machines: not sent yet - groups don't travel between machines here so far */
++  if( !DP_DataMessagesOff( This ) )
++  {
++    DPMSG_SETPLAYERORGROUPNAME msg;
++    memset( &msg, 0, sizeof(msg) );
++    msg.dwType = DPSYS_SETPLAYERORGROUPNAME;
++    msg.dwPlayerType = DPPLAYERTYPE_GROUP;
++    msg.dpId = idGroup;
++    msg.dpnName = *name;
++    DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, 0, &msg, DP_CopySetPlayerOrGroupName, 0 );
++  }
++  if( !(dwFlags & DPSET_LOCAL) )   /* and every machine: GROUPNAMECHANGED (Windows, S3 tap 2026-10-28) */
++    DP_GRP_SendName( This, idGroup, name );
+ 
+   LeaveCriticalSection( &This->lock );
+ 
+@@ -4287,6 +5362,8 @@
          DPNAME *lpGroupName, DWORD dwFlags )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
@@ -2778,7 +4494,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      return DP_IF_SetGroupName( This, idGroup, lpGroupName, dwFlags, TRUE );
  }
  
-@@ -4294,6 +4562,8 @@
+@@ -4294,6 +5371,8 @@
          DPNAME *lpGroupName, DWORD dwFlags )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
@@ -2787,7 +4503,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      return DP_IF_SetGroupName( This, idGroup, lpGroupName, dwFlags, FALSE );
  }
  
-@@ -4367,7 +4637,7 @@
+@@ -4367,7 +5446,7 @@
      DP_SetPlayerData( plist->lpPData, flags, data, size );
  
      if ( !(flags & DPSET_LOCAL) )
@@ -2796,7 +4512,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      LeaveCriticalSection( &This->lock );
  
-@@ -4394,7 +4664,7 @@
+@@ -4394,17 +5473,17 @@
    if( ( lpPList = DP_FindPlayer( This, idPlayer ) ) == NULL )
    {
      LeaveCriticalSection( &This->lock );
@@ -2804,8 +4520,20 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    return DPERR_INVALIDPLAYER;
    }
  
-   name = DP_DuplicateName( lpPlayerName, FALSE, bAnsi );
-@@ -4412,11 +4682,12 @@
+-  name = DP_DuplicateName( lpPlayerName, FALSE, bAnsi );
++  name = DP_DuplicateName( lpPlayerName, FALSE, bAnsi, FALSE );
+   if ( !name )
+   {
+     LeaveCriticalSection( &This->lock );
+     return DPERR_OUTOFMEMORY;
+   }
+ 
+-  nameA = DP_DuplicateName( lpPlayerName, TRUE, bAnsi );
++  nameA = DP_DuplicateName( lpPlayerName, TRUE, bAnsi, FALSE );
+   if ( !nameA )
+   {
+     free( name );
+@@ -4412,11 +5491,12 @@
      return DPERR_OUTOFMEMORY;
    }
  
@@ -2820,19 +4548,50 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
    LeaveCriticalSection( &This->lock );
  
-@@ -4483,6 +4754,11 @@
-     return DPERR_INVALIDPARAMS;
+@@ -4465,6 +5545,17 @@
+     return DP_IF_SetPlayerName( This, idPlayer, lpPlayerName, dwFlags, FALSE );
+ }
+ 
++/* SetSessionDesc and the session flags, as Windows' dplayx takes them (black box, 2026-10-22):
++ * bits 0-17 are accepted (any other: DPERR_INVALIDFLAGS); these are fixed once the session exists
++ * (a change is DPERR_INVALIDPARAMS) - the rest (new players/join disabled, no data messages,
++ * private, no preserve order, 0x2, 0x10, 0x10000, 0x20000) can change */
++#define DPSESSION_SETTABLEBITS 0x0003ffff
++#define DPSESSION_FIXEDFLAGS   ( DPSESSION_MIGRATEHOST | DPSESSION_NOMESSAGEID | DPSESSION_KEEPALIVE | \
++                                 DPSESSION_SECURESERVER | DPSESSION_MULTICASTSERVER | \
++                                 DPSESSION_CLIENTSERVER | DPSESSION_DIRECTPLAYPROTOCOL | \
++                                 DPSESSION_OPTIMIZELATENCY )
++#define DPSESSION_STICKYBIT    0x00010000
++
+ static HRESULT DP_SetSessionDesc( IDirectPlayImpl *This, const DPSESSIONDESC2 *lpSessDesc,
+         DWORD dwFlags, BOOL bInitial, BOOL bAnsi  )
+ {
+@@ -4478,7 +5569,23 @@
+     return DPERR_UNINITIALIZED;
    }
  
-+  if( !bInitial && !This->dp2->bConnectionOpen )
+-  if( dwFlags )
++  if( !bInitial )
 +  {
-+    return DPERR_NOSESSIONS;
++    /* Windows' checks, in its order (black box, 2026-10-22): no session first, then the desc
++     * itself (NULL or a wrong dwSize), flag bits it doesn't know (INVALIDFLAGS), the call's own
++     * flags, and last a change to a flag that is fixed when the session is created */
++    if( !This->dp2->bConnectionOpen || !This->dp2->lpSessionDesc )
++      return DPERR_NOSESSIONS;
++    if( !lpSessDesc || lpSessDesc->dwSize != sizeof( DPSESSIONDESC2 ) )
++      return DPERR_INVALIDPARAMS;
++    if( lpSessDesc->dwFlags & ~DPSESSION_SETTABLEBITS )
++      return DPERR_INVALIDFLAGS;
++    if( dwFlags )
++      return DPERR_INVALIDPARAMS;
++    if( (lpSessDesc->dwFlags ^ This->dp2->lpSessionDesc->dwFlags) & DPSESSION_FIXEDFLAGS )
++      return DPERR_INVALIDPARAMS;
 +  }
-+
-   /* Only the host is allowed to update the session desc */
-   if( !This->dp2->bHostInterface )
++  else if( dwFlags )
    {
-@@ -4491,7 +4767,10 @@
+     return DPERR_INVALIDPARAMS;
+   }
+@@ -4491,7 +5598,10 @@
  
    EnterCriticalSection( &This->lock );
  
@@ -2844,10 +4603,14 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
    if( lpTempSessDesc == NULL )
    {
-@@ -4499,6 +4778,25 @@
+@@ -4499,18 +5609,63 @@
      return DPERR_OUTOFMEMORY;
    }
  
+-  /* Free the old */
+-  free( This->dp2->lpSessionDesc );
+-
+-  This->dp2->lpSessionDesc = lpTempSessDesc;
 +  /* the application can't change these (Windows keeps its own player count). A new session starts
 +   * empty whatever the caller says: AoE2 hosts with dwCurrentPlayers = 1, which made every game
 +   * count one player too many (a solo host listed 2/8) */
@@ -2859,27 +4622,62 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +     * games at once overwrote each other (only one ever listed) and a join could reach the wrong
 +     * one. */
 +    CoCreateGuid( &lpTempSessDesc->guidInstance );
++    /* and a random dwReserved1, which goes out in every session description and comes back in
++     * each join request (S3 tap, 2026-10-16: Windows' host sends a fresh value per session, ours
++     * sent the caller's 0) */
++    {
++      GUID r;
++      CoCreateGuid( &r );
++      lpTempSessDesc->dwReserved1 = r.Data1 ? r.Data1 : 0x2b5e3c71;
++    }
 +  }
 +  else if( This->dp2->lpSessionDesc )
 +  {
-+    lpTempSessDesc->dwCurrentPlayers = This->dp2->lpSessionDesc->dwCurrentPlayers;
-+    lpTempSessDesc->guidInstance     = This->dp2->lpSessionDesc->guidInstance;
-+    lpTempSessDesc->guidApplication  = This->dp2->lpSessionDesc->guidApplication;
++    const DPSESSIONDESC2 *cur = This->dp2->lpSessionDesc;
++    lpTempSessDesc->dwCurrentPlayers = cur->dwCurrentPlayers;
++    lpTempSessDesc->guidInstance     = cur->guidInstance;
++    lpTempSessDesc->guidApplication  = cur->guidApplication;
++    /* as Windows keeps them (black box, 2026-10-22): the session key and dwReserved2 are the
++     * session's own (the caller's are ignored - a 0 here sent every later session description
++     * out keyless); "password required" follows the password (set when there is a non-empty
++     * one, whatever the caller's flags say); and 0x10000, once set, stays */
++    lpTempSessDesc->dwReserved1      = cur->dwReserved1;
++    lpTempSessDesc->dwReserved2      = cur->dwReserved2;
++    lpTempSessDesc->dwFlags = (lpTempSessDesc->dwFlags & ~DPSESSION_PASSWORDREQUIRED) |
++                              (cur->dwFlags & DPSESSION_STICKYBIT);
++    if( lpTempSessDesc->lpszPassword && lpTempSessDesc->lpszPassword[ 0 ] )
++      lpTempSessDesc->dwFlags |= DPSESSION_PASSWORDREQUIRED;
 +  }
-+
-   /* Free the old */
-   free( This->dp2->lpSessionDesc );
  
-@@ -4510,7 +4808,7 @@
-    */
-   if( !bInitial )
+-  /* If this is an external invocation of the interface, we should be
+-   * letting everyone know that things have changed. Otherwise this is
+-   * just an initialization and it doesn't need to be propagated.
+-   */
+-  if( !bInitial )
++  /* no DPSYS_SETSESSIONDESC for our own players when the session had or now has
++   * DPSESSION_NODATAMESSAGES (Windows: neither setting it nor clearing it is announced) */
    {
 -    FIXME( "Need to send a DPMSG_SETSESSIONDESC msg to everyone\n" );
-+    DP_LOBBY_SessionDescChanged( This );   /* our players and every machine hear about it */
++    BOOL quiet = ( (This->dp2->lpSessionDesc ? This->dp2->lpSessionDesc->dwFlags : 0) |
++                   lpTempSessDesc->dwFlags ) & DPSESSION_NODATAMESSAGES;
++
++    /* Free the old */
++    free( This->dp2->lpSessionDesc );
++
++    This->dp2->lpSessionDesc = lpTempSessDesc;
++
++    /* If this is an external invocation of the interface, we should be
++     * letting everyone know that things have changed. Otherwise this is
++     * just an initialization and it doesn't need to be propagated.
++     */
++    if( !bInitial )
++    {
++      DP_LOBBY_SessionDescChangedEx( This, !quiet );   /* our players and every machine hear about it */
++    }
    }
  
    LeaveCriticalSection( &This->lock );
-@@ -4557,7 +4855,7 @@
+@@ -4557,7 +5712,7 @@
          DPSESSIONDESC2 *lpSessDesc, DWORD dwFlags )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
@@ -2888,7 +4686,124 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  }
  
  static DWORD DP_CopySessionDesc( LPDPSESSIONDESC2 lpSessionDest,
-@@ -4785,6 +5083,9 @@
+@@ -4617,7 +5772,7 @@
+         DPID group )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
+-    lpGroupData gdata;
++    lpGroupData gdata, gparent;
+     lpGroupList glist;
+ 
+     TRACE( "(%p)->(0x%08lx,0x%08lx)\n", This, parent, group );
+@@ -4627,18 +5782,34 @@
+ 
+     EnterCriticalSection( &This->lock );
+ 
+-    if ( !DP_FindAnyGroup(This, parent ) )
++    if ( ( gparent = DP_FindGameGroup(This, parent ) ) == NULL )
+     {
+         LeaveCriticalSection( &This->lock );
+         return DPERR_INVALIDGROUP;
+     }
+ 
+-    if ( ( gdata = DP_FindAnyGroup(This, group ) ) == NULL )
++    if ( ( gdata = DP_FindGameGroup(This, group ) ) == NULL )
+     {
+         LeaveCriticalSection( &This->lock );
+         return DPERR_INVALIDGROUP;
+     }
+ 
++    /* a group in itself: Windows refuses it as an invalid group (black box, 2026-10-22) */
++    if ( gdata == gparent )
++    {
++        LeaveCriticalSection( &This->lock );
++        return DPERR_INVALIDGROUP;
++    }
++
++    /* already in there - its own child, or a shortcut added before: Windows answers DP_OK and
++     * adds nothing (apidiff: AddGroupToGroup of a group created in that group) */
++    DPQ_FIND_ENTRY( gparent->groups, groups, lpGData->dpid, ==, group, glist );
++    if ( glist )
++    {
++        LeaveCriticalSection( &This->lock );
++        return DP_OK;
++    }
++
+     /* Create a player list (ie "shortcut" ) */
+     glist = calloc( 1, sizeof( *glist ) );
+     if ( !glist )
+@@ -4651,11 +5822,19 @@
+     gdata->uRef++;
+     glist->lpGData = gdata;
+ 
+-    /* Add the player to the list of players for this group */
+-    DPQ_INSERT( gdata->groups, glist, groups );
+-
+-    /* Send a ADDGROUPTOGROUP message */
+-    FIXME( "Not sending message\n" );
++    /* into the parent's list (Wine put it in the group's own list: the group then held itself
++     * and DeleteGroupFromGroup never found the shortcut) */
++    DPQ_INSERT( gparent->groups, glist, groups );
++
++    /* every player on this machine hears of it, as Windows sends it (black box, 2026-10-22) */
++    {
++        DPMSG_ADDGROUPTOGROUP msg;
++        msg.dwType = DPSYS_ADDGROUPTOGROUP;
++        msg.dpIdParentGroup = parent;
++        msg.dpIdGroup = group;
++        DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, 0, &msg, DP_CopyGeneric, sizeof( msg ) );
++    }
++    DP_GRP_SendIds( This, DPMSGCMD_ADDSHORTCUTTOGROUP, group, parent );   /* every machine (Windows) */
+ 
+     LeaveCriticalSection( &This->lock );
+ 
+@@ -4677,8 +5856,31 @@
+     return DPERR_UNINITIALIZED;
+   }
+ 
++  if( lpMsgHdr == NULL && (dwFlags & ~(DPGROUP_STAGINGAREA | DPGROUP_HIDDEN)) )
++  {
++    return DPERR_INVALIDFLAGS;   /* as CreateGroup */
++  }
++
++  if( lpMsgHdr == NULL && idParentGroup == DPID_SYSTEM_GROUP )
++  {
++    return DPERR_INVALIDGROUP;   /* group 0 is no game's group (Windows) - CreateGroup makes top-level ones */
++  }
++
++  if( FAILED( hr = DP_GroupIdFromHost( This, lpMsgHdr, lpidGroup ) ) )
++    return hr;
++
+   EnterCriticalSection( &This->lock );
+ 
++  /* a group of its own id, as CreateGroup gives one (every group made in a group got
++   * DPID_UNKNOWN: two of them were the same group to every later call) */
++  if( DPID_UNKNOWN == *lpidGroup )
++  {
++    if( This->dp2->bHostInterface )
++      *lpidGroup = DP_NextObjectId();
++    else
++      *lpidGroup = DP_GetRemoteNextObjectId();
++  }
++
+   hr = DP_CreateGroup(This, lpMsgHdr, lpidGroup, lpGroupName, lpData, dwDataSize, dwFlags,
+                       idParentGroup, bAnsi );
+ 
+@@ -4688,6 +5890,13 @@
+     return hr;
+   }
+ 
++  if( lpMsgHdr == NULL )
++  {
++    lpGroupData g = DP_FindAnyGroup( This, *lpidGroup );
++    DP_QueueGroupCreated( This, *lpidGroup, lpData, dwDataSize, dwFlags, idParentGroup );
++    DP_GRP_SendCreate( This, *lpidGroup, idParentGroup, dwFlags, g ? g->name : NULL, lpData, dwDataSize );
++  }
++
+   /* Inform all other peers of the creation of a new group. If there are
+    * no peers keep this quiet.
+    */
+@@ -4785,6 +5994,9 @@
  
      TRACE("(%p)->(0x%08lx,0x%08lx)\n", This, parent, group );
  
@@ -2898,7 +4813,51 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      EnterCriticalSection( &This->lock );
  
      /* Is the parent group valid? */
-@@ -4817,6 +5118,25 @@
+@@ -4794,29 +6006,64 @@
+         return DPERR_INVALIDGROUP;
+     }
+ 
+-    /* Remove the group from the parent group queue */
+-    DPQ_REMOVE_ENTRY( parentdata->groups, groups, lpGData->dpid, ==, group, glist );
+-
++    DPQ_FIND_ENTRY( parentdata->groups, groups, lpGData->dpid, ==, group, glist );
+     if ( glist == NULL )
+     {
+         LeaveCriticalSection( &This->lock );
+         return DPERR_INVALIDGROUP;
+     }
+ 
++    /* the group's own child (CreateGroupInGroup) is not a shortcut: Windows refuses to take it
++     * out this way - DestroyGroup does that (apidiff) */
++    if ( glist->lpGData->parent == parent )
++    {
++        LeaveCriticalSection( &This->lock );
++        return DPERR_ACCESSDENIED;
++    }
++
++    /* Remove the group from the parent group queue */
++    DPQ_REMOVE_ENTRY( parentdata->groups, groups, lpGData->dpid, ==, group, glist );
++
+     /* Decrement the ref count */
+     glist->lpGData->uRef--;
+ 
+     /* Free up the list item */
+     free( glist );
+ 
+-    /* Should send a DELETEGROUPFROMGROUP message */
+-    FIXME( "message not sent\n" );
++    /* every player on this machine hears of it (Windows, black box 2026-10-22) */
++    {
++        DPMSG_DELETEGROUPFROMGROUP msg;
++        msg.dwType = DPSYS_DELETEGROUPFROMGROUP;
++        msg.dpIdParentGroup = parent;
++        msg.dpIdGroup = group;
++        DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, 0, &msg, DP_CopyGeneric, sizeof( msg ) );
++    }
++    DP_GRP_SendIds( This, DPMSGCMD_DELETEGROUPFROMGROUP, group, parent );   /* every machine (Windows) */
+ 
+     LeaveCriticalSection( &This->lock );
+ 
      return DP_OK;
  }
  
@@ -2924,7 +4883,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  static BOOL DP_BuildSPCompoundAddr( LPGUID lpcSpGuid, LPVOID* lplpAddrBuf,
                                      LPDWORD lpdwBufSize )
  {
-@@ -4920,6 +5240,47 @@
+@@ -4920,6 +6167,47 @@
      return DP_GetRegString( key, name, defaultValue, (void **) outValue, TRUE );
  }
  
@@ -2972,7 +4931,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  static BOOL DP_GetRegDword( HKEY key, const WCHAR *name, DWORD *value )
  {
      DWORD size = sizeof( DWORD );
-@@ -5009,6 +5370,15 @@
+@@ -5009,6 +6297,15 @@
      }
      CLSIDFromString( spGuid, &connection->spGuid );
      free( spGuid );
@@ -2988,7 +4947,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      /* Fill in the DPNAME struct for the service provider */
  
-@@ -5031,6 +5401,9 @@
+@@ -5031,6 +6328,9 @@
        continue;
      }
  
@@ -2998,7 +4957,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      if( !DP_GetRegDword( hkServiceProvider, L"dwReserved1", &connection->reserved1 ) )
      {
        free( connection->nameA.lpszShortNameA );
-@@ -5099,6 +5472,7 @@
+@@ -5099,6 +6399,7 @@
        continue;
      }
  
@@ -3006,7 +4965,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      list_add_tail( connections, &connection->entry );
    }
  }
-@@ -5109,6 +5483,11 @@
+@@ -5109,6 +6410,11 @@
  {
      struct list *connections = param;
  
@@ -3018,7 +4977,25 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      DP_ReadConnections( "SOFTWARE\\Microsoft\\DirectPlay\\Service Providers",
                          DPCONNECTION_DIRECTPLAY, &DPAID_ServiceProvider, connections );
  
-@@ -5298,20 +5677,24 @@
+@@ -5272,6 +6578,8 @@
+         GUID *instance, LPDPENUMPLAYERSCALLBACK2 enumplayercb, void *context, DWORD flags )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
++    if ( group == DPID_SYSTEM_GROUP && This->dp2->connectionInitialized != NO_PROVIDER )
++        return DPERR_INVALIDGROUP;   /* as EnumGroupPlayers: group 0 is no game's group */
+     return DP_IF_EnumGroupsInGroup( This, group, instance, enumplayercb, context, flags, TRUE );
+ }
+ 
+@@ -5279,6 +6587,8 @@
+         GUID *instance, LPDPENUMPLAYERSCALLBACK2 enumplayercb, void *context, DWORD flags )
+ {
+     IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
++    if ( group == DPID_SYSTEM_GROUP && This->dp2->connectionInitialized != NO_PROVIDER )
++        return DPERR_INVALIDGROUP;
+     return DP_IF_EnumGroupsInGroup( This, group, instance, enumplayercb, context, flags, FALSE );
+ }
+ 
+@@ -5298,20 +6608,24 @@
              data, size );
  }
  
@@ -3047,7 +5024,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  }
  
  static BOOL CALLBACK DP_GetSpLpGuidFromCompoundAddress(
-@@ -5478,15 +5861,42 @@
+@@ -5478,15 +6792,42 @@
      return IDirectPlayX_InitializeConnection( &This->IDirectPlay4_iface, connection, flags );
  }
  
@@ -3091,7 +5068,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      TRACE( "(%p)->(%p,0x%08lx)\n", This, connection, flags );
  
-@@ -5499,6 +5909,20 @@
+@@ -5499,6 +6840,20 @@
      if ( This->dp2->connectionInitialized != NO_PROVIDER )
          return DPERR_ALREADYINITIALIZED;
  
@@ -3112,7 +5089,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      /* Find out what the requested SP is and how large this buffer is */
      hr = DPL_EnumAddress( DP_GetSpLpGuidFromCompoundAddress, connection, size, &sp );
  
-@@ -5507,6 +5931,11 @@
+@@ -5507,6 +6862,11 @@
          ERR( "Invalid compound address?\n" );
          return DPERR_UNAVAILABLE;
      }
@@ -3124,7 +5101,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      /* Load the service provider */
      servprov = DP_LoadSP( &sp, &This->dp2->spData, &is_dp_sp );
-@@ -5524,8 +5953,14 @@
+@@ -5524,8 +6884,16 @@
            */
           This->dp2->spData.lpAddress = connection;
           This->dp2->spData.dwAddressSize = size;
@@ -3133,6 +5110,8 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +         This->dp2->spData.lpGuid = &This->dp2->spGuid;
 +#ifdef OKP_BUILTIN
 +         This->dp2->okpConnection = DP_BUILTIN_IsOurs( &sp );
++#elif defined(OKWEB_DPLAY)
++         This->dp2->okpConnection = TRUE;   /* the browser build's only connection: Oldkid.net Online Play */
 +#endif
           hr = DP_InitializeDPSP( This, servprov );
 +         if ( SUCCEEDED( hr ) )
@@ -3140,7 +5119,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      }
      else
      {
-@@ -5591,16 +6026,14 @@
+@@ -5591,16 +6959,14 @@
          DPID to, DWORD flags, DPCHAT *chatmsg )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
@@ -3159,7 +5138,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  }
  
  static HRESULT WINAPI IDirectPlay3AImpl_SetGroupConnectionSettings( IDirectPlay3A *iface,
-@@ -5623,16 +6056,20 @@
+@@ -5623,16 +6989,20 @@
          DWORD flags, DPID group, DPLCONNECTION *connection )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
@@ -3184,7 +5163,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  }
  
  static HRESULT WINAPI IDirectPlay3AImpl_StartSession( IDirectPlay3A *iface, DWORD flags,
-@@ -5659,8 +6096,11 @@
+@@ -5659,8 +7029,11 @@
  static HRESULT WINAPI IDirectPlay4Impl_StartSession( IDirectPlay4 *iface, DWORD flags, DPID group )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
@@ -3198,7 +5177,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  }
  
  static HRESULT WINAPI IDirectPlay3AImpl_GetGroupFlags( IDirectPlay3A *iface, DPID group,
-@@ -5688,7 +6128,23 @@
+@@ -5688,7 +7061,23 @@
          DWORD *flags )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
@@ -3213,17 +5192,17 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +        return DPERR_INVALIDPARAMS;
 +
 +    EnterCriticalSection( &This->lock );
-+    if ( !(gdata = DP_FindAnyGroup( This, group )) )
++    if ( !(gdata = DP_FindGameGroup( This, group )) )
 +    {
 +        LeaveCriticalSection( &This->lock );
 +        return DPERR_INVALIDGROUP;
 +    }
-+    *flags = gdata->dwFlags & (DPGROUP_STAGINGAREA | DPGROUP_HIDDEN | DPGROUP_LOCAL);
++    *flags = DP_GROUP_FLAGS( gdata );
 +    LeaveCriticalSection( &This->lock );
      return DP_OK;
  }
  
-@@ -5721,6 +6177,9 @@
+@@ -5721,9 +7110,12 @@
  
      TRACE( "(%p)->(0x%08lx,%p)\n", This, group, parent );
  
@@ -3232,8 +5211,12 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +
      EnterCriticalSection( &This->lock );
  
-     if ( ( gdata = DP_FindAnyGroup( This, group ) ) == NULL )
-@@ -5754,16 +6213,19 @@
+-    if ( ( gdata = DP_FindAnyGroup( This, group ) ) == NULL )
++    if ( ( gdata = DP_FindGameGroup( This, group ) ) == NULL )
+     {
+         LeaveCriticalSection( &This->lock );
+         return DPERR_INVALIDGROUP;
+@@ -5754,16 +7146,19 @@
          DWORD flags, void *data, DWORD *size )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4A( iface );
@@ -3257,7 +5240,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  }
  
  static HRESULT WINAPI IDirectPlay3AImpl_GetPlayerFlags( IDirectPlay3A *iface, DPID player,
-@@ -5791,7 +6253,23 @@
+@@ -5791,7 +7186,23 @@
          DWORD *flags )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
@@ -3282,7 +5265,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
      return DP_OK;
  }
  
-@@ -5806,8 +6284,16 @@
+@@ -5806,8 +7217,16 @@
          DPID *owner )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
@@ -3294,14 +5277,14 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    if ( This->dp2->connectionInitialized == NO_PROVIDER )
 +        return DPERR_UNINITIALIZED;
 +    EnterCriticalSection( &This->lock );
-+    known = DP_FindAnyGroup( This, group ) != NULL;
++    known = DP_FindGameGroup( This, group ) != NULL;
 +    LeaveCriticalSection( &This->lock );
 +    /* group ownership is a lobby-session feature; Windows answers the same way */
 +    return known ? DPERR_UNSUPPORTED : DPERR_INVALIDGROUP;
  }
  
  static HRESULT WINAPI IDirectPlay4AImpl_SetGroupOwner( IDirectPlay4A *iface, DPID group,
-@@ -5821,8 +6307,15 @@
+@@ -5821,8 +7240,15 @@
          DPID owner )
  {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
@@ -3313,13 +5296,13 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    if ( This->dp2->connectionInitialized == NO_PROVIDER )
 +        return DPERR_UNINITIALIZED;
 +    EnterCriticalSection( &This->lock );
-+    known = DP_FindAnyGroup( This, group ) != NULL;
++    known = DP_FindGameGroup( This, group ) != NULL;
 +    LeaveCriticalSection( &This->lock );
 +    return known ? DPERR_UNSUPPORTED : DPERR_INVALIDGROUP;
  }
  
  static HRESULT WINAPI IDirectPlay4AImpl_SendEx( IDirectPlay4A *iface, DPID from, DPID to,
-@@ -5834,6 +6327,21 @@
+@@ -5834,13 +7260,31 @@
              timeout, context, msgid );
  }
  
@@ -3338,18 +5321,22 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    return FALSE;
 +}
 +
++/* Message ids, as Windows hands them out (black box, 2026-10-22): n << 16, one for every SendEx
++ * that goes out - synchronous ones too - and none for a refused SendEx, a plain Send or a chat
++ * message; the count goes on across Close and Open. */
++static LONG dp_msgid_counter;
++
  static HRESULT WINAPI IDirectPlay4Impl_SendEx( IDirectPlay4 *iface, DPID from, DPID to,
          DWORD flags, void *data, DWORD size, DWORD priority, DWORD timeout, void *context,
          DWORD *msgid )
-@@ -5841,6 +6349,7 @@
+ {
      IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
-     DPMSG_SYSMSGENVELOPE envelope;
-     SGBUFFER buffers[ 3 ] = { 0 };
-+    lpPlayerList playerTo;
+-    DPMSG_SYSMSGENVELOPE envelope;
+-    SGBUFFER buffers[ 3 ] = { 0 };
      HRESULT hr;
  
      TRACE( "(%p)->(0x%08lx,0x%08lx,0x%08lx,%p,0x%08lx,0x%08lx,0x%08lx,%p,%p)\n",
-@@ -5849,6 +6358,44 @@
+@@ -5849,6 +7293,66 @@
      if ( This->dp2->connectionInitialized == NO_PROVIDER )
          return DPERR_UNINITIALIZED;
  
@@ -3360,19 +5347,21 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +     * goes to the provider synchronously. */
 +    if ( flags & DPSEND_ASYNC )
 +    {
-+        static LONG counter;
 +        DPMSG_SENDCOMPLETE done;
-+        DWORD id = (DWORD)InterlockedIncrement( &counter ) << 16;
++        DWORD id;
 +        BOOL remote;
 +
 +        EnterCriticalSection( &This->lock );
 +        remote = DP_HasRemoteRecipient( This, to );
 +        LeaveCriticalSection( &This->lock );
-+        hr = IDirectPlayX_SendEx( iface, from, to, flags & ~DPSEND_ASYNC, data, size, priority, timeout,
-+                                  NULL, NULL );
-+        if ( msgid ) *msgid = id;
++        hr = DP_SendExCore( iface, from, to, flags & ~DPSEND_ASYNC, data, size, priority, timeout,
++                            NULL, NULL );
 +        if ( FAILED( hr ) )
 +            return hr;
++        id = (DWORD)InterlockedIncrement( &dp_msgid_counter ) << 16;
++        /* the id goes back only for a send still under way (Windows leaves *msgid as it was when
++         * the send was done at once, to players on this machine only) */
++        if ( msgid && remote ) *msgid = id;
 +        memset( &done, 0, sizeof(done) );
 +        done.dwType = DPSYS_SENDCOMPLETE;
 +        done.idFrom = from;
@@ -3391,10 +5380,30 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +        return remote ? DPERR_PENDING : DP_OK;
 +    }
 +
++    hr = DP_SendExCore( iface, from, to, flags, data, size, priority, timeout, context, msgid );
++    if ( SUCCEEDED( hr ) )
++        InterlockedIncrement( &dp_msgid_counter );
++    return hr;
++}
++
++/* the send itself (Send, and SendEx without DPSEND_ASYNC) */
++static HRESULT DP_SendExCore( IDirectPlay4 *iface, DPID from, DPID to,
++        DWORD flags, void *data, DWORD size, DWORD priority, DWORD timeout, void *context,
++        DWORD *msgid )
++{
++    IDirectPlayImpl *This = impl_from_IDirectPlay4( iface );
++    DPMSG_SYSMSGENVELOPE envelope;
++    SGBUFFER buffers[ 3 ] = { 0 };
++    lpPlayerList playerTo;
++    HRESULT hr;
++
++    if ( This->dp2->connectionInitialized == NO_PROVIDER )
++        return DPERR_UNINITIALIZED;
++
      /* FIXME: Add parameter checking */
      /* FIXME: First call to this needs to acquire a message id which will be
       *        used for multiple sends
-@@ -5888,9 +6435,16 @@
+@@ -5888,9 +7392,16 @@
      /* Verify that the message is being sent to a valid player, group or to
       * everyone. If it's valid, send it to those players.
       */
@@ -3413,7 +5422,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
          {
              DPSP_SENDEXDATA sendData;
  
-@@ -5908,19 +6462,16 @@
+@@ -5908,19 +7419,16 @@
              sendData.lpdwSPMsgID = msgid;
              sendData.bSystemMessage = FALSE;
  
@@ -3435,7 +5444,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
          {
              DPSP_SENDTOGROUPEXDATA sendData;
  
-@@ -5937,16 +6488,12 @@
+@@ -5937,16 +7445,12 @@
              sendData.lpDPContext = context;
              sendData.lpdwSPMsgID = msgid;
  
@@ -3453,7 +5462,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      }
      else
-@@ -6073,7 +6620,10 @@
+@@ -6073,7 +7577,10 @@
  {
      HRESULT hr = DP_OK;
  
@@ -3465,7 +5474,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      if ( This->dp2->spData.lpCB->Cancel )
      {
-@@ -6093,7 +6643,11 @@
+@@ -6093,7 +7600,11 @@
          hr = (*This->dp2->spData.lpCB->Cancel)( &data );
      }
      else
@@ -3478,7 +5487,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      return hr;
  }
-@@ -6446,8 +7000,7 @@
+@@ -6446,8 +7957,7 @@
      obj->IDirectPlay4_iface.lpVtbl = &dp4_vt;
      obj->ref = 1;
  
@@ -3488,7 +5497,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
  
      if ( DP_CreateDirectPlay2( obj ) )
          hr = IDirectPlayX_QueryInterface( &obj->IDirectPlay4_iface, riid, ppv );
-@@ -6709,3 +7262,615 @@
+@@ -6709,3 +8219,717 @@
  
    return DP_OK;
  }
@@ -3515,8 +5524,29 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    return offset;
 +}
 +
-+/* Remove a player completely: the application hears DPSYS_DESTROYPLAYERORGROUP, the player
-+ * leaves its groups and the SP forgets it. tellOthers: it's ours - tell the other machines. */
++/* the player out of every group it is in: the groups in creation order, each before its own
++ * children (Windows: three groups, the player added to them in another order - they came in
++ * creation order) */
++static void DP_RemovePlayerFromGroups( IDirectPlayImpl *This, lpGroupData where, DPID idPlayer, int depth )
++{
++    lpGroupList link;
++    lpPlayerList member;
++
++    if ( !where || depth > 64 )
++        return;
++    for ( link = DPQ_FIRST( where->groups ); link; link = DPQ_NEXT( link->groups ) )
++    {
++        if ( !DP_IS_CHILD_LINK( where, link ) )
++            continue;
++        DPQ_FIND_ENTRY( link->lpGData->players, players, lpPData->dpid, ==, idPlayer, member );
++        if ( member )
++            IDirectPlayX_DeletePlayerFromGroup( &This->IDirectPlay4_iface, link->lpGData->dpid, idPlayer );
++        DP_RemovePlayerFromGroups( This, link->lpGData, idPlayer, depth + 1 );
++    }
++}
++
++/* Remove a player completely: the player leaves its groups, the application hears
++ * DPSYS_DESTROYPLAYERORGROUP and the SP forgets it. tellOthers: it's ours - tell the other machines. */
 +void DP_RemovePlayer( IDirectPlayImpl *This, DPID idPlayer, BOOL tellOthers )
 +{
 +    struct PlayerList *plist;
@@ -3531,6 +5561,14 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +        return;
 +    }
 +    p = plist->lpPData;
++    (void)cbContext;
++
++    /* first out of every group it is in, then gone - Windows' order (black box, 2026-10-22: each
++     * group's DPSYS_DELETEPLAYERFROMGROUP, the player itself hearing it too, then the
++     * DPSYS_DESTROYPLAYERORGROUP to the others). (Through the groups' children only: Wine's walk
++     * followed shortcuts too, and a group added to its own child made it recurse until the stack
++     * ran out.) */
++    DP_RemovePlayerFromGroups( This, This->dp2->lpSysGroup, idPlayer, 0 );
 +
 +    if ( !(p->dwFlags & DPLAYI_PLAYER_SYSPLAYER) )
 +    {
@@ -3541,7 +5579,9 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +        msg.dwPlayerType = DPPLAYERTYPE_PLAYER;
 +        msg.dpId = idPlayer;
 +        if ( p->name ) msg.dpnName = *p->name;
-+        msg.dwFlags = p->dwFlags & ~(DPLAYI_PLAYER_PLAYERLOCAL | DPLAYI_PLAYER_SYSPLAYER);
++        /* DPPLAYER_LOCAL (the same bit as DPLAYI_PLAYER_PLAYERLOCAL) for a player of this machine,
++         * as Windows sends it; the internal bits stay out */
++        msg.dwFlags = p->dwFlags & ~(DPLAYI_PLAYER_SYSPLAYER | DPLAYI_PLAYER_NAMESRVR | DPLAYI_PLAYER_PLAYERINGROUP);
 +        DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, idPlayer, &msg, DP_CopyDestroyPlayerOrGroup, 0 );
 +        if ( This->dp2->lpSessionDesc && This->dp2->lpSessionDesc->dwCurrentPlayers )
 +            This->dp2->lpSessionDesc->dwCurrentPlayers--;
@@ -3550,22 +5590,51 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    if ( tellOthers && (p->dwFlags & DPLAYI_PLAYER_PLAYERLOCAL) && This->dp2->bConnectionOpen )
 +        DP_MSG_SendDeletePlayer( This, idPlayer );
 +
-+    cbContext.This     = This;
-+    cbContext.idPlayer = idPlayer;
-+    cbContext.bAnsi    = FALSE;
-+    IDirectPlayX_EnumGroups( &This->IDirectPlay4_iface, NULL, cbDeletePlayerFromAllGroups, &cbContext,
-+                             DPENUMGROUPS_ALL );
-+
-+    DP_DeletePlayer( This, idPlayer );
-+
-+    if ( This->dp2->spData.lpCB->DeletePlayer )
 +    {
-+        DPSP_DELETEPLAYERDATA data;
-+        data.idPlayer = idPlayer;
-+        data.dwFlags = 0;
-+        data.lpISP = This->dp2->spData.lpISP;
-+        This->dp2->spData.lpCB->DeletePlayer( &data );
++        DWORD spFlags = DP_SPDeleteFlags( p->dwFlags );   /* (p goes with DP_DeletePlayer) */
++
++        DP_DeletePlayer( This, idPlayer );
++
++        if ( This->dp2->spData.lpCB->DeletePlayer )
++        {
++            DPSP_DELETEPLAYERDATA data;
++            data.idPlayer = idPlayer;
++            data.dwFlags = spFlags;
++            data.lpISP = This->dp2->spData.lpISP;
++            This->dp2->spData.lpCB->DeletePlayer( &data );
++        }
 +    }
++    LeaveCriticalSection( &This->lock );
++}
++
++/* Close: the provider hears about every player before CloseEx, in Windows' order - this machine's
++ * game players newest first, its system player, then the other machines' players in list order
++ * (S3 tap, 2026-10-16; ours told it nothing and went straight to CloseEx) */
++static void DP_SPDeleteAllPlayers( IDirectPlayImpl *This )
++{
++    struct PlayerList *plist;
++    struct PlayerData *order[ 256 ];
++    DPSP_DELETEPLAYERDATA data;
++    int count = 0, pass, k;
++
++    if ( !This->dp2->spData.lpCB->DeletePlayer || !This->dp2->lpSysGroup )
++        return;
++    EnterCriticalSection( &This->lock );
++    for ( plist = DPQ_FIRST( This->dp2->lpSysGroup->players ); plist && count < ARRAYSIZE( order );
++          plist = DPQ_NEXT( plist->players ) )
++        order[ count++ ] = plist->lpPData;
++    data.lpISP = This->dp2->spData.lpISP;
++    for ( pass = 0; pass < 3; pass++ )
++        for ( k = 0; k < count; k++ )
++        {
++            struct PlayerData *p = order[ pass == 2 ? k : count - 1 - k ];
++            BOOL local = !!(p->dwFlags & DPLAYI_PLAYER_PLAYERLOCAL), sys = !!(p->dwFlags & DPLAYI_PLAYER_SYSPLAYER);
++            if ( pass == 0 ? !(local && !sys) : pass == 1 ? !(local && sys) : local )
++                continue;
++            data.idPlayer = p->dpid;
++            data.dwFlags = DP_SPDeleteFlags( p->dwFlags );
++            This->dp2->spData.lpCB->DeletePlayer( &data );
++        }
 +    LeaveCriticalSection( &This->lock );
 +}
 +
@@ -3641,7 +5710,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +}
 +
 +/* a NUL-terminated WCHAR string inside a received message, or NULL */
-+static const WCHAR *DP_WireString( const void *body, DWORD size, DWORD offset )
++const WCHAR *DP_WireString( const void *body, DWORD size, DWORD offset )
 +{
 +    const WCHAR *s;
 +    DWORD n, i;
@@ -3731,6 +5800,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +{
 +    DPMSG_SETPLAYERORGROUPNAME msg;
 +
++    if ( DP_DataMessagesOff( This ) ) return;
 +    memset( &msg, 0, sizeof(msg) );
 +    msg.dwType = DPSYS_SETPLAYERORGROUPNAME;
 +    msg.dwPlayerType = DPPLAYERTYPE_PLAYER;
@@ -3743,6 +5813,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +{
 +    DPMSG_SETPLAYERORGROUPDATA msg;
 +
++    if ( DP_DataMessagesOff( This ) ) return;
 +    memset( &msg, 0, sizeof(msg) );
 +    msg.dwType = DPSYS_SETPLAYERORGROUPDATA;
 +    msg.dwPlayerType = DPPLAYERTYPE_PLAYER;
@@ -3843,6 +5914,13 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +
 +void DP_LOBBY_SessionDescChanged( IDirectPlayImpl *This )
 +{
++    DP_LOBBY_SessionDescChangedEx( This, TRUE );
++}
++
++/* tellLocalPlayers FALSE: only the other machines hear it (IDirectPlay::EnableNewPlayers - Windows
++ * changes the flags without a DPSYS_SETSESSIONDESC to its own players, apistate 2026-10-22) */
++void DP_LOBBY_SessionDescChangedEx( IDirectPlayImpl *This, BOOL tellLocalPlayers )
++{
 +    DPSESSIONDESC2 *w;
 +
 +    EnterCriticalSection( &This->lock );
@@ -3852,6 +5930,7 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +        LeaveCriticalSection( &This->lock );
 +        return;
 +    }
++    if ( tellLocalPlayers )
 +    {
 +        DPMSG_SETSESSIONDESC msg;
 +        memset( &msg, 0, sizeof(msg) );
@@ -3954,8 +6033,8 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    if ( This->dp2->bConnectionOpen && plist && !(plist->lpPData->dwFlags & DPLAYI_PLAYER_PLAYERLOCAL) &&
 +         DP_SenderOwns( This, header, m->playerId, "PLAYERNAMECHANGED" ) )   /* a player renames itself */
 +    {
-+        w = DP_DuplicateName( &name, FALSE, FALSE );
-+        a = DP_DuplicateName( &name, TRUE, FALSE );
++        w = DP_DuplicateName( &name, FALSE, FALSE, TRUE );
++        a = DP_DuplicateName( &name, TRUE, FALSE, TRUE );
 +        if ( w && a )
 +        {
 +            free( plist->lpPData->name );
@@ -4015,12 +6094,15 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    if ( (stored = DP_DuplicateSessionDesc( &desc, FALSE, FALSE )) )   /* stored WCHAR */
 +    {
 +        DPMSG_SETSESSIONDESC msg;
++        /* as on the host: none while the session had or now has DPSESSION_NODATAMESSAGES [INF] */
++        BOOL quiet = ( This->dp2->lpSessionDesc->dwFlags | stored->dwFlags ) & DPSESSION_NODATAMESSAGES;
 +        free( This->dp2->lpSessionDesc );
 +        This->dp2->lpSessionDesc = stored;
 +        memset( &msg, 0, sizeof(msg) );
 +        msg.dwType = DPSYS_SETSESSIONDESC;
 +        msg.dpDesc = desc;
-+        DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, 0, &msg, DP_CopySetSessionDescMsg, 0 );
++        if ( !quiet )
++            DP_QueueMessage( This, DPID_SYSMSG, DPID_ALLPLAYERS, 0, &msg, DP_CopySetSessionDescMsg, 0 );
 +        DP_NOTE( "SESSIONDESCCHANGED applied: the host set max %lu players\n", desc.dwMaxPlayers );
 +    }
 +    LeaveCriticalSection( &This->lock );
@@ -4044,6 +6126,53 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +/* ------------------------------------------------------------------ Windows port: Close() */
 +/* Forget the session - players, groups, who hosted it - so the object can host or join again
 + * cleanly. (Wine kept them: a second Open inherited the first session's players.) */
++/* the shortcut links (AddGroupToGroup) out of every group, while all groups still exist */
++static void DP_DropShortcuts( struct GroupData *g, int depth )
++{
++    struct GroupList *sub, *next;
++
++    for ( sub = DPQ_FIRST( g->groups ); sub; sub = next )
++    {
++        next = DPQ_NEXT( sub->groups );
++        if ( DP_IS_CHILD_LINK( g, sub ) )
++        {
++            if ( depth < 64 ) DP_DropShortcuts( sub->lpGData, depth + 1 );
++        }
++        else
++        {
++            DPQ_REMOVE( g->groups, sub, groups );
++            free( sub );
++        }
++    }
++}
++
++/* free a group and the groups made inside it (DP_DropShortcuts first: then every link left is a
++ * child, and each group is exactly one group's child) */
++static void DP_FreeGroupTree( struct GroupData *g, int depth )
++{
++    struct GroupList *sub;
++    struct PlayerList *member;
++
++    while ( (member = DPQ_FIRST( g->players )) )
++    {
++        DPQ_REMOVE( g->players, member, players );
++        if ( member->lpPData->uRef > 1 ) member->lpPData->uRef--;
++        free( member );
++    }
++    while ( (sub = DPQ_FIRST( g->groups )) )
++    {
++        DPQ_REMOVE( g->groups, sub, groups );
++        if ( depth < 64 )
++            DP_FreeGroupTree( sub->lpGData, depth + 1 );
++        free( sub );
++    }
++    free( g->lpSPPlayerData );
++    free( g->lpRemoteData );
++    free( g->nameA );
++    free( g->name );
++    free( g );
++}
++
 +void DP_ResetSession( IDirectPlayImpl *This )
 +{
 +    lpGroupData sys;
@@ -4057,30 +6186,12 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    sys = This->dp2->lpSysGroup;
 +    if ( sys )
 +    {
-+        /* groups first (they hold references to players) */
++        /* groups first (they hold references to players), each with the groups made inside it */
++        DP_DropShortcuts( sys, 0 );
 +        while ( (glist = DPQ_FIRST( sys->groups )) )
 +        {
-+            struct GroupData *g = glist->lpGData;
-+            struct GroupList *sub;
-+            struct PlayerList *member;
-+
 +            DPQ_REMOVE( sys->groups, glist, groups );
-+            while ( (member = DPQ_FIRST( g->players )) )
-+            {
-+                DPQ_REMOVE( g->players, member, players );
-+                if ( member->lpPData->uRef > 1 ) member->lpPData->uRef--;
-+                free( member );
-+            }
-+            while ( (sub = DPQ_FIRST( g->groups )) )   /* shortcuts to other groups */
-+            {
-+                DPQ_REMOVE( g->groups, sub, groups );
-+                free( sub );
-+            }
-+            free( g->lpSPPlayerData );
-+            free( g->lpRemoteData );
-+            free( g->nameA );
-+            free( g->name );
-+            free( g );
++            DP_FreeGroupTree( glist->lpGData, 0 );
 +            free( glist );
 +        }
 +        while ( (plist = DPQ_FIRST( sys->players )) )
@@ -4105,8 +6216,8 @@ diff -ruN src/dlls/dplayx/dplay.c port/dlls/dplayx/dplay.c
 +    LeaveCriticalSection( &This->lock );
 +}
 diff -ruN src/dlls/dplayx/dplay_global.h port/dlls/dplayx/dplay_global.h
---- src/dlls/dplayx/dplay_global.h	2026-10-14 16:15:35.265590600 -0700
-+++ port/dlls/dplayx/dplay_global.h	2026-10-15 13:17:23.389763600 -0700
+--- src/dlls/dplayx/dplay_global.h	2026-10-28 18:30:34.236755300 -0700
++++ port/dlls/dplayx/dplay_global.h	2026-10-28 19:22:33.673180600 -0700
 @@ -96,6 +96,11 @@
    LPVOID lpSPPlayerData;
  
@@ -4119,7 +6230,18 @@ diff -ruN src/dlls/dplayx/dplay_global.h port/dlls/dplayx/dplay_global.h
  };
  typedef struct PlayerData* lpPlayerData;
  
-@@ -193,6 +198,7 @@
+@@ -135,6 +140,10 @@
+ 
+   /* SP data on a per player basis */
+   LPVOID lpSPPlayerData;
++
++  /* created on this machine: DPGROUP_LOCAL in GetGroupFlags and the system messages - kept
++   * apart from dwFlags, which goes out on the wire in the player list */
++  BOOL bLocal;
+ };
+ typedef struct GroupData  GroupData;
+ typedef struct GroupData* lpGroupData;
+@@ -193,6 +202,7 @@
  
    /* Information about the service provider active on this connection */
    SPINITDATA spData;
@@ -4127,7 +6249,7 @@ diff -ruN src/dlls/dplayx/dplay_global.h port/dlls/dplayx/dplay_global.h
    BOOL       bSPInitialized;
  
    /* Information about the lobby server that's attached to this DP object */
-@@ -209,6 +215,16 @@
+@@ -209,6 +219,22 @@
  
    /* Expected messages queue */
    DPQ_HEAD( tagDP_MSG_REPLY_STRUCT_LIST ) repliesExpected;
@@ -4141,10 +6263,16 @@ diff -ruN src/dlls/dplayx/dplay_global.h port/dlls/dplayx/dplay_global.h
 +
 +  /* builtin.c: the connection in use is one of okplay's (Online/LAN Play) - game passwords apply */
 +  BOOL   okpConnection;
++
++  /* IDirectPlay (DirectPlay 1) names sessions by a DWORD (DPSESSIONDESC.dwSession), not a GUID:
++   * the instance GUIDs its EnumSessions has shown, numbered from 1 */
++  GUID   dp1Sessions[ 64 ];
++  DWORD  dp1SessionCount;
++  int    groupFromWire;   /* applying another machine's group change: send nothing on (groups.c) */
  } DirectPlay2Data;
  
  typedef struct IDirectPlayImpl
-@@ -253,4 +269,94 @@
+@@ -253,4 +279,109 @@
  extern HRESULT dplaysp_create( REFIID riid, void **ppv, IDirectPlayImpl *dp );
  extern HRESULT dplobbysp_create( REFIID riid, void **ppv, IDirectPlayImpl *dp );
  
@@ -4195,12 +6323,15 @@ diff -ruN src/dlls/dplayx/dplay_global.h port/dlls/dplayx/dplay_global.h
 +
 +/* dplay.c helpers for the lifecycle code */
 +void DP_RemovePlayer( IDirectPlayImpl *This, DPID id, BOOL tellOthers );
++DWORD DP_SPDeleteFlags( DWORD playerFlags );   /* a provider DeletePlayer's flags, as Windows' */
 +void DP_BumpObjectIds( DPID above );
++void DP_LimitObjectIds( DWORD limit );
 +void DP_QueueSystemMessage( IDirectPlayImpl *This, DWORD type );
 +void DP_ResetSession( IDirectPlayImpl *This );
 +
 +/* lifecycle.c: leaving, keepalive, host migration */
 +void DP_LIFE_Start( IDirectPlayImpl *This );
++HRESULT DP_LIFE_HandleYouAreDead( IDirectPlayImpl *This, const void *body, DWORD size, const void *header );
 +void DP_LIFE_Stop( IDirectPlayImpl *This );
 +void DP_LIFE_Leaving( IDirectPlayImpl *This );
 +void DP_LIFE_Heard( IDirectPlayImpl *This, DPID anyPlayerOfTheMachine );
@@ -4209,11 +6340,23 @@ diff -ruN src/dlls/dplayx/dplay_global.h port/dlls/dplayx/dplay_global.h
 +HRESULT DP_LIFE_HandleIAmNameServer( IDirectPlayImpl *This, const void *body, DWORD size, const void *header );
 +HRESULT DP_MSG_SendDeletePlayer( IDirectPlayImpl *This, DPID playerId );
 +void DP_SendToAllMachines( IDirectPlayImpl *This, void *msg, DWORD size, const void *extra, DWORD extraSize );
++const WCHAR *DP_WireString( const void *body, DWORD size, DWORD offset );
++void DP_QueueGroupCreatedFromWire( IDirectPlayImpl *This, DPID id, void *data, DWORD dataSize, DWORD flags, DPID parent );
++/* groups.c: group changes between machines */
++void DP_GRP_SendIds( IDirectPlayImpl *This, WORD cmd, DPID player, DPID group );
++void DP_GRP_SendCreate( IDirectPlayImpl *This, DPID id, DPID parent, DWORD flags, const DPNAME *name,
++                        const void *data, DWORD dataSize );
++void DP_GRP_SendName( IDirectPlayImpl *This, DPID id, const DPNAME *name );
++void DP_GRP_SendData( IDirectPlayImpl *This, DPID id, const void *data, DWORD dataSize );
++HRESULT DP_GRP_HandleCreate( IDirectPlayImpl *This, const void *body, DWORD size, void *header );
++HRESULT DP_GRP_HandleIds( IDirectPlayImpl *This, WORD cmd, const void *body, DWORD size, void *header );
++HRESULT DP_GRP_HandleName( IDirectPlayImpl *This, const void *body, DWORD size, void *header );
 +
 +/* dplay.c, Windows port: lobby changes reach every machine */
 +void DP_LOBBY_PlayerNameChanged( IDirectPlayImpl *This, DPID id );
 +void DP_LOBBY_PlayerDataChanged( IDirectPlayImpl *This, DPID id );
 +void DP_LOBBY_SessionDescChanged( IDirectPlayImpl *This );
++void DP_LOBBY_SessionDescChangedEx( IDirectPlayImpl *This, BOOL tellLocalPlayers );
 +HRESULT DP_LOBBY_SendChat( IDirectPlayImpl *This, DPID from, DPID to, DWORD flags, DPCHAT *chat, BOOL ansi );
 +HRESULT DP_LOBBY_HandlePlayerNameChanged( IDirectPlayImpl *This, const void *body, DWORD size, const void *header );
 +HRESULT DP_LOBBY_HandlePlayerDataChanged( IDirectPlayImpl *This, const void *body, DWORD size, const void *header );
@@ -4240,8 +6383,8 @@ diff -ruN src/dlls/dplayx/dplay_global.h port/dlls/dplayx/dplay_global.h
 +
  #endif /* __WINE_DPLAY_GLOBAL_INCLUDED */
 diff -ruN src/dlls/dplayx/dplaysp.c port/dlls/dplayx/dplaysp.c
---- src/dlls/dplayx/dplaysp.c	2026-10-14 16:15:35.257918500 -0700
-+++ port/dlls/dplayx/dplaysp.c	2026-10-14 17:38:10.697789800 -0700
+--- src/dlls/dplayx/dplaysp.c	2026-10-28 18:30:34.237756300 -0700
++++ port/dlls/dplayx/dplaysp.c	2026-10-28 18:30:34.192716000 -0700
 @@ -198,7 +198,11 @@
      *lpdwDataSize = lpPlayerData->dwPlayerRemoteDataSize;
    }
@@ -4264,8 +6407,8 @@ diff -ruN src/dlls/dplayx/dplaysp.c port/dlls/dplayx/dplaysp.c
      if( FAILED(hr) )
      {
 diff -ruN src/dlls/dplayx/dplayx_global.c port/dlls/dplayx/dplayx_global.c
---- src/dlls/dplayx/dplayx_global.c	2026-10-14 16:15:35.260586000 -0700
-+++ port/dlls/dplayx/dplayx_global.c	2026-10-16 12:33:37.519988600 -0700
+--- src/dlls/dplayx/dplayx_global.c	2026-10-28 18:30:34.239758400 -0700
++++ port/dlls/dplayx/dplayx_global.c	2026-10-28 18:30:34.194717200 -0700
 @@ -438,6 +438,13 @@
      {
        TRACE( "File mapped to %p\n", lpSharedStaticData );
@@ -4482,8 +6625,8 @@ diff -ruN src/dlls/dplayx/dplayx_global.c port/dlls/dplayx/dplayx_global.c
  
    DPLAYX_ReleaseSemaphore();
 diff -ruN src/dlls/dplayx/dplayx_main.c port/dlls/dplayx/dplayx_main.c
---- src/dlls/dplayx/dplayx_main.c	2026-10-14 16:15:35.262587900 -0700
-+++ port/dlls/dplayx/dplayx_main.c	2026-10-14 16:15:35.213374200 -0700
+--- src/dlls/dplayx/dplayx_main.c	2026-10-28 18:30:34.240758900 -0700
++++ port/dlls/dplayx/dplayx_main.c	2026-10-28 18:30:34.195718200 -0700
 @@ -82,10 +82,16 @@
    {
      case DLL_PROCESS_ATTACH:
@@ -4502,9 +6645,41 @@ diff -ruN src/dlls/dplayx/dplayx_main.c port/dlls/dplayx/dplayx_main.c
          /* Last instance performs destruction of global processor data */
          return DPLAYX_DestructData();
 diff -ruN src/dlls/dplayx/dplayx_messages.c port/dlls/dplayx/dplayx_messages.c
---- src/dlls/dplayx/dplayx_messages.c	2026-10-14 16:15:35.263588800 -0700
-+++ port/dlls/dplayx/dplayx_messages.c	2026-10-14 18:59:13.363146200 -0700
-@@ -390,6 +390,7 @@
+--- src/dlls/dplayx/dplayx_messages.c	2026-10-28 18:30:34.241759800 -0700
++++ port/dlls/dplayx/dplayx_messages.c	2026-10-28 18:30:34.196719300 -0700
+@@ -228,8 +228,22 @@
+   return size;
+ }
+ 
++/* a joiner asks the host for an id: REQUESTPLAYERID 5 for a player, REQUESTGROUPID 6 for a group
++ * (the same 12 bytes, the same REQUESTPLAYERREPLY 7 back - S3 tap, 2026-10-28) */
++static HRESULT DP_MSG_SendRequestId( IDirectPlayImpl *This, WORD cmd, DWORD dwFlags, DPID *lpdpidAllocatedId );
++
+ HRESULT DP_MSG_SendRequestPlayerId( IDirectPlayImpl *This, DWORD dwFlags, DPID *lpdpidAllocatedId )
+ {
++  return DP_MSG_SendRequestId( This, DPMSGCMD_REQUESTNEWPLAYERID, dwFlags, lpdpidAllocatedId );
++}
++
++HRESULT DP_MSG_SendRequestGroupId( IDirectPlayImpl *This, DWORD dwFlags, DPID *lpdpidAllocatedId )
++{
++  return DP_MSG_SendRequestId( This, DPMSGCMD_REQUESTGROUPID, dwFlags, lpdpidAllocatedId );
++}
++
++static HRESULT DP_MSG_SendRequestId( IDirectPlayImpl *This, WORD cmd, DWORD dwFlags, DPID *lpdpidAllocatedId )
++{
+   LPVOID                     lpMsg;
+   void                      *msgHeader;
+   DPMSG_REQUESTNEWPLAYERID   msgBody;
+@@ -238,7 +252,7 @@
+ 
+   /* Compose dplay message envelope */
+   msgBody.envelope.dwMagic    = DPMSGMAGIC_DPLAYMSG;
+-  msgBody.envelope.wCommandId = DPMSGCMD_REQUESTNEWPLAYERID;
++  msgBody.envelope.wCommandId = cmd;
+   msgBody.envelope.wVersion   = DPMSGVER_DP6;
+ 
+   /* Compose the body of the message */
+@@ -390,6 +404,7 @@
    playerInfo->flags = packedPlayer->flags;
    playerInfo->id = packedPlayer->id;
    playerInfo->versionOrSystemPlayerId = packedPlayer->version;
@@ -4512,7 +6687,7 @@ diff -ruN src/dlls/dplayx/dplayx_messages.c port/dlls/dplayx/dplayx_messages.c
    playerInfo->playerDataLength = packedPlayer->playerDataLength;
    playerInfo->spDataLength = packedPlayer->spDataLength;
    playerInfo->playerCount = packedPlayer->playerCount;
-@@ -459,6 +460,8 @@
+@@ -459,6 +474,8 @@
    playerInfo->flags = packedPlayer->flags;
    playerInfo->id = packedPlayer->id;
    playerInfo->versionOrSystemPlayerId = packedPlayer->versionOrSystemPlayerId;
@@ -4521,7 +6696,7 @@ diff -ruN src/dlls/dplayx/dplayx_messages.c port/dlls/dplayx/dplayx_messages.c
  
    if( packedPlayer->infoMask & DPLAYI_SUPERPACKEDPLAYER_SHORT_NAME_PRESENT )
    {
-@@ -648,6 +651,26 @@
+@@ -648,6 +665,26 @@
        }
        enumPlayersReply = (DPSP_MSG_SUPERENUMPLAYERSREPLY *) envelope;
  
@@ -4548,7 +6723,7 @@ diff -ruN src/dlls/dplayx/dplayx_messages.c port/dlls/dplayx/dplayx_messages.c
        offset = enumPlayersReply->packedOffset;
        for( i = 0; i < enumPlayersReply->playerCount; ++i )
        {
-@@ -675,6 +698,9 @@
+@@ -675,6 +712,9 @@
            free( lpMsg );
            return hr;
          }
@@ -4558,7 +6733,7 @@ diff -ruN src/dlls/dplayx/dplayx_messages.c port/dlls/dplayx/dplayx_messages.c
        }
        for( i = 0; i < enumPlayersReply->groupCount; ++i )
        {
-@@ -821,7 +847,7 @@
+@@ -821,7 +861,7 @@
    sendData.lpDPContext = NULL;
    sendData.lpdwSPMsgID = NULL;
  
@@ -4567,7 +6742,7 @@ diff -ruN src/dlls/dplayx/dplayx_messages.c port/dlls/dplayx/dplayx_messages.c
    if( FAILED( hr ) )
    {
      ERR( "SendToGroupEx failed: %s\n", DPLAYX_HresultToString( hr ) );
-@@ -864,7 +890,7 @@
+@@ -864,7 +904,7 @@
    sendData.lpDPContext = NULL;
    sendData.lpdwSPMsgID = NULL;
  
@@ -4576,7 +6751,7 @@ diff -ruN src/dlls/dplayx/dplayx_messages.c port/dlls/dplayx/dplayx_messages.c
    if( FAILED( hr ) )
    {
      ERR( "SendToGroupEx failed: %s\n", DPLAYX_HresultToString( hr ) );
-@@ -905,7 +931,7 @@
+@@ -905,7 +945,7 @@
    sendData.lpdwSPMsgID = NULL;
    sendData.bSystemMessage = TRUE;
  
@@ -4585,7 +6760,7 @@ diff -ruN src/dlls/dplayx/dplayx_messages.c port/dlls/dplayx/dplayx_messages.c
    if( FAILED( hr ) )
    {
      ERR( "Send failed: %s\n", DPLAYX_HresultToString( hr ) );
-@@ -945,7 +971,7 @@
+@@ -945,7 +985,7 @@
    sendData.lpdwSPMsgID = NULL;
    sendData.bSystemMessage = TRUE;
  
@@ -4594,7 +6769,7 @@ diff -ruN src/dlls/dplayx/dplayx_messages.c port/dlls/dplayx/dplayx_messages.c
    if( FAILED( hr ) )
    {
      ERR( "Send failed: %s\n", DPLAYX_HresultToString( hr ) );
-@@ -975,7 +1001,7 @@
+@@ -975,7 +1015,7 @@
                                                  replyCommandIds, replyCommandIdCount );
  
    TRACE( "Sending msg and expecting reply within %lu ticks\n", dwWaitTime );
@@ -4604,8 +6779,8 @@ diff -ruN src/dlls/dplayx/dplayx_messages.c port/dlls/dplayx/dplayx_messages.c
    if( FAILED(hr) )
    {
 diff -ruN src/dlls/dplayx/dplayx_messages.h port/dlls/dplayx/dplayx_messages.h
---- src/dlls/dplayx/dplayx_messages.h	2026-10-14 16:15:35.264589500 -0700
-+++ port/dlls/dplayx/dplayx_messages.h	2026-10-14 17:44:08.446199600 -0700
+--- src/dlls/dplayx/dplayx_messages.h	2026-10-28 18:30:34.242760800 -0700
++++ port/dlls/dplayx/dplayx_messages.h	2026-10-28 19:22:33.673180600 -0700
 @@ -43,6 +43,7 @@
    DPID parentId;
    DWORD shortcutCount;
@@ -4614,7 +6789,45 @@ diff -ruN src/dlls/dplayx/dplayx_messages.h port/dlls/dplayx/dplayx_messages.h
  } DPPLAYERINFO;
  
  DWORD CreateLobbyMessageReceptionThread( HANDLE hNotifyEvent, HANDLE hStart,
-@@ -121,13 +122,22 @@
+@@ -51,6 +52,7 @@
+ DWORD DP_MSG_ComputeMessageSize( SGBUFFER *buffers, DWORD bufferCount );
+ HRESULT DP_MSG_SendRequestPlayerId( IDirectPlayImpl *This, DWORD dwFlags,
+                                     LPDPID lpdipidAllocatedId );
++HRESULT DP_MSG_SendRequestGroupId( IDirectPlayImpl *This, DWORD dwFlags, LPDPID lpdipidAllocatedId );
+ HRESULT DP_MSG_ReadPackedPlayer( char *data, DWORD *offset, DWORD maxSize,
+                                  DPPLAYERINFO *playerInfo );
+ HRESULT DP_MSG_ForwardPlayerCreation( IDirectPlayImpl *This, DPID dpidServer, WCHAR *password );
+@@ -98,36 +100,52 @@
+ #define DPMSGCMD_GETNAMETABLEREPLY    3  /* Contains all existing players in session */
+ 
+ #define DPMSGCMD_REQUESTNEWPLAYERID   5
++#define DPMSGCMD_REQUESTGROUPID       6   /* groups.c */
+ 
+ #define DPMSGCMD_NEWPLAYERIDREPLY     7
+ #define DPMSGCMD_CREATESESSION        8 /* Might be a create nameserver or new player msg */
+ #define DPMSGCMD_CREATENEWPLAYER      9
++#define DPMSGCMD_CREATEGROUP          9   /* the spec's name for it (groups.c) */
+ #define DPMSGCMD_SYSTEMMESSAGE        10
+ #define DPMSGCMD_DELETEPLAYER         11
+ #define DPMSGCMD_DELETEGROUP          12
+ #define DPMSGCMD_ADDPLAYERTOGROUP     13
++#define DPMSGCMD_DELETEPLAYERFROMGROUP 14
+ 
+ #define DPMSGCMD_GROUPDATACHANGED     17
++#define DPMSGCMD_GROUPNAMECHANGED     18
+ 
+ #define DPMSGCMD_FORWARDADDPLAYER     19
+ 
+ #define DPMSGCMD_PING                 22
+ #define DPMSGCMD_PINGREPLY            23
++#define DPMSGCMD_YOUAREDEAD           24   /* 8 bytes, the envelope only (lifecycle.c) */
+ 
+ #define DPMSGCMD_FORWARDADDPLAYERNACK 36
+ 
++#define DPMSGCMD_ADDSHORTCUTTOGROUP   39
++#define DPMSGCMD_DELETEGROUPFROMGROUP 40
+ #define DPMSGCMD_SUPERENUMPLAYERSREPLY 41
+ 
  #define DPMSGCMD_ADDFORWARD           46
  #define DPMSGCMD_ADDFORWARDACK        47
  
@@ -4638,7 +6851,7 @@ diff -ruN src/dlls/dplayx/dplayx_messages.h port/dlls/dplayx/dplayx_messages.h
  
  /* MAGIC number at the start of all dplay packets ("play" in ASCII) */
  #define DPMSGMAGIC_DPLAYMSG  0x79616c70
-@@ -333,6 +343,63 @@
+@@ -333,6 +351,73 @@
    DPID id;
  } DPSP_MSG_ADDFORWARDACK;
  
@@ -4681,6 +6894,16 @@ diff -ruN src/dlls/dplayx/dplayx_messages.h port/dlls/dplayx/dplayx_messages.h
 +  DWORD longNameOffset;
 +} DPSP_MSG_PLAYERNAMECHANGED;
 +
++/* GROUPNAMECHANGED 18: the same layout, the group's id where the player's is */
++typedef struct
++{
++  DPMSG_SENDENVELOPE envelope;
++  DPID toId;
++  DPID groupId;
++  DWORD shortNameOffset;
++  DWORD longNameOffset;
++} DPSP_MSG_GROUPNAMECHANGED;
++
 +typedef struct
 +{
 +  DPMSG_SENDENVELOPE envelope;
@@ -4703,8 +6926,8 @@ diff -ruN src/dlls/dplayx/dplayx_messages.h port/dlls/dplayx/dplayx_messages.h
  
  #endif
 diff -ruN src/dlls/dplayx/dplobby.c port/dlls/dplayx/dplobby.c
---- src/dlls/dplayx/dplobby.c	2026-10-14 16:15:35.266591500 -0700
-+++ port/dlls/dplayx/dplobby.c	2026-10-16 12:29:10.043048900 -0700
+--- src/dlls/dplayx/dplobby.c	2026-10-28 18:30:34.244762300 -0700
++++ port/dlls/dplayx/dplobby.c	2026-10-28 18:30:34.198721000 -0700
 @@ -88,7 +88,6 @@
          FIXME( "Should kill the msg thread\n" );
  
@@ -4947,7 +7170,37 @@ diff -ruN src/dlls/dplayx/dplobby.c port/dlls/dplayx/dplobby.c
    FIXME(":stub\n");
    return DPERR_OUTOFMEMORY;
  }
-@@ -1415,8 +1566,7 @@
+@@ -1176,7 +1327,9 @@
+     }
+     else
+     {
+-      WARN( "Skipping Unknown GUID %s\n", debugstr_guid(&lpElements->guidDataType) );
++      /* an element type we don't know (a provider's own, or a test's): Windows keeps it as given
++       * (tests/dplayx.c test_EnumAddresses counts it back) */
++      dwSizeRequired += sizeof( DPADDRESS ) + lpElements->dwDataSize;
+     }
+   }
+ 
+@@ -1269,6 +1422,18 @@
+       CopyMemory( lpAddress, lpElements->lpData, sizeof( DPADDRESS ) );
+       lpAddress = (char *) lpAddress + sizeof( DPADDRESS );
+     }
++    else
++    {
++      /* unknown element type: copied as given (see the size pass) */
++      LPDPADDRESS lpdpAddress = lpAddress;
++
++      lpdpAddress->guidDataType = lpElements->guidDataType;
++      lpdpAddress->dwDataSize = lpElements->dwDataSize;
++      lpAddress = (char *) lpAddress + sizeof( DPADDRESS );
++
++      CopyMemory( lpAddress, lpElements->lpData, lpElements->dwDataSize );
++      lpAddress = (char *) lpAddress + lpElements->dwDataSize;
++    }
+   }
+ 
+   return DP_OK;
+@@ -1415,8 +1580,7 @@
      obj->msgtid = 0;
      obj->ref = 1;
  
@@ -4957,10 +7210,286 @@ diff -ruN src/dlls/dplayx/dplobby.c port/dlls/dplayx/dplobby.c
      DPQ_INIT( obj->msgs );
  
      hr = IDirectPlayLobby_QueryInterface( &obj->IDirectPlayLobby3_iface, riid, ppv );
+diff -ruN src/dlls/dplayx/groups.c port/dlls/dplayx/groups.c
+--- src/dlls/dplayx/groups.c	1969-12-31 17:00:00.000000000 -0700
++++ port/dlls/dplayx/groups.c	2026-10-28 18:30:34.199722000 -0700
+@@ -0,0 +1,272 @@
++/*
++ * Groups between machines.
++ *
++ * Wine's dplayx kept groups on the machine that made them: no other machine heard of a group, its
++ * players, its name or data, and a joiner numbered its groups itself (ids that could clash with the
++ * host's). Windows sends every change to every machine (S3 wire tap, dptest --groups, 2026-10-28):
++ *
++ *   CreateGroup / CreateGroupInGroup  a joiner first asks the host for an id (REQUESTGROUPID 6,
++ *                     12 bytes, the creation flags; the host answers REQUESTPLAYERREPLY 7), then
++ *                     CREATEGROUP 9: CREATEPLAYER's layout, the packed group with flags 0x48
++ *                     (DPLAYI_GROUP_DPLAYOWNS | DPLAYI_PLAYER_PLAYERLOCAL), the creating machine's
++ *                     system player, the parent for a group in a group, 6 reserved bytes at the end
++ *   AddPlayerToGroup / DeletePlayerFromGroup   ADDPLAYERTOGROUP 13 / DELETEPLAYERFROMGROUP 14
++ *   DestroyGroup      DELETEPLAYERFROMGROUP for each player in it, then DELETEGROUP 12
++ *   AddGroupToGroup / DeleteGroupFromGroup     ADDSHORTCUTTOGROUP 39 / DELETEGROUPFROMGROUP 40,
++ *                     the group in the player field and the parent in the group field
++ *   SetGroupName / SetGroupData (remote)       GROUPNAMECHANGED 18 / GROUPDATACHANGED 17
++ *
++ * The fixed ones are 28 bytes: envelope, to (0), player, group, two offsets (0). Receivers apply the
++ * change through the same code a local call uses, with This->dp2->groupFromWire set so nothing is
++ * sent on again, and their players get the same system messages as for a local change.
++ *
++ * Part of the Windows port for Classic Netplay for AoE2. LGPL 2.1+, like the rest of dplayx.
++ */
++
++#include <stdarg.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "windef.h"
++#include "winbase.h"
++#include "winerror.h"
++#include "wine/debug.h"
++
++#include "dplay_global.h"
++#include "dplayx_global.h"
++#include "dplayx_messages.h"
++
++WINE_DEFAULT_DEBUG_CHANNEL(dplay);
++
++#define GROUP_PACKED_FLAGS  ( DPLAYI_GROUP_DPLAYOWNS | DPLAYI_PLAYER_PLAYERLOCAL )   /* 0x48, Windows */
++#define GROUP_STAGING_BIT   0x00000200   /* DPLAYI_GROUP_STAGINGAREA [UNV on the wire: only plain groups captured] */
++
++/* may a group change go out now? (a session with other machines, and not a change that came in) */
++static BOOL grp_may_send( IDirectPlayImpl *This )
++{
++    return This->dp2->bConnectionOpen && This->dp2->lpSysGroup && !This->dp2->groupFromWire;
++}
++
++static void grp_envelope( DPMSG_SENDENVELOPE *e, WORD cmd )
++{
++    e->dwMagic = DPMSGMAGIC_DPLAYMSG;
++    e->wCommandId = cmd;
++    e->wVersion = DPMSGVER_DP6;
++}
++
++/* the 28-byte ones: DELETEGROUP, ADD/DELETEPLAYERTOGROUP, ADDSHORTCUTTOGROUP, DELETEGROUPFROMGROUP */
++void DP_GRP_SendIds( IDirectPlayImpl *This, WORD cmd, DPID player, DPID group )
++{
++    DPSP_MSG_DELETEPLAYER msg = { 0 };   /* the same layout */
++
++    EnterCriticalSection( &This->lock );
++    if ( grp_may_send( This ) )
++    {
++        grp_envelope( &msg.envelope, cmd );
++        msg.playerId = player;
++        msg.groupId = group;
++        TRACE( "group message %u: player 0x%08lx group 0x%08lx\n", cmd, player, group );
++        DP_SendToAllMachines( This, &msg, sizeof(msg), NULL, 0 );
++    }
++    LeaveCriticalSection( &This->lock );
++}
++
++static DWORD grp_wstr_size( const WCHAR *s )
++{
++    return s ? ( lstrlenW( s ) + 1 ) * sizeof(WCHAR) : 0;
++}
++
++void DP_GRP_SendCreate( IDirectPlayImpl *This, DPID id, DPID parent, DWORD flags, const DPNAME *name,
++                        const void *data, DWORD dataSize )
++{
++    DPMSG_CREATESESSION *msg;   /* CREATEPLAYER's header (Wine's name for command 8) */
++    DPLAYI_PACKEDPLAYER *packed;
++    DWORD ns, ls, size;
++    BYTE *p;
++
++    EnterCriticalSection( &This->lock );
++    if ( !grp_may_send( This ) )
++    {
++        LeaveCriticalSection( &This->lock );
++        return;
++    }
++    ns = name ? grp_wstr_size( name->lpszShortName ) : 0;
++    ls = name ? grp_wstr_size( name->lpszLongName ) : 0;
++    size = sizeof(*msg) + sizeof(*packed) + ns + ls + dataSize + 6;
++    if ( !(p = calloc( 1, size )) )
++    {
++        LeaveCriticalSection( &This->lock );
++        return;
++    }
++    msg = (DPMSG_CREATESESSION *)p;
++    grp_envelope( &msg->envelope, DPMSGCMD_CREATEGROUP );
++    msg->playerId = id;
++    msg->createOffset = sizeof(*msg);
++    packed = (DPLAYI_PACKEDPLAYER *)(msg + 1);
++    packed->size = sizeof(*packed) + ns + ls + dataSize;
++    packed->flags = GROUP_PACKED_FLAGS | ((flags & DPGROUP_HIDDEN) ? DPLAYI_GROUP_HIDDEN : 0) |
++                    ((flags & DPGROUP_STAGINGAREA) ? GROUP_STAGING_BIT : 0);
++    packed->id = id;
++    packed->shortNameLength = ns;
++    packed->longNameLength = ls;
++    packed->playerDataLength = dataSize;
++    packed->systemPlayerId = This->dp2->systemPlayerId;
++    packed->fixedSize = sizeof(*packed);
++    packed->version = DPMSGVER_DP6;
++    packed->parentId = parent == DPID_NOPARENT_GROUP ? 0 : parent;
++    p = (BYTE *)(packed + 1);
++    if ( ns ) memcpy( p, name->lpszShortName, ns );
++    p += ns;
++    if ( ls ) memcpy( p, name->lpszLongName, ls );
++    p += ls;
++    if ( dataSize ) memcpy( p, data, dataSize );
++    TRACE( "CREATEGROUP 0x%08lx parent 0x%08lx, %lu bytes\n", id, parent, size );
++    DP_SendToAllMachines( This, msg, size, NULL, 0 );
++    free( msg );
++    LeaveCriticalSection( &This->lock );
++}
++
++void DP_GRP_SendName( IDirectPlayImpl *This, DPID id, const DPNAME *name )
++{
++    DPSP_MSG_GROUPNAMECHANGED *msg;
++    DWORD ns, ls, size;
++
++    EnterCriticalSection( &This->lock );
++    if ( !grp_may_send( This ) )
++    {
++        LeaveCriticalSection( &This->lock );
++        return;
++    }
++    ns = name ? grp_wstr_size( name->lpszShortName ) : 0;
++    ls = name ? grp_wstr_size( name->lpszLongName ) : 0;
++    size = sizeof(*msg) + ns + ls;
++    if ( (msg = calloc( 1, size )) )
++    {
++        grp_envelope( &msg->envelope, DPMSGCMD_GROUPNAMECHANGED );
++        msg->groupId = id;
++        msg->shortNameOffset = ns ? sizeof(*msg) : 0;
++        msg->longNameOffset = ls ? sizeof(*msg) + ns : 0;
++        if ( ns ) memcpy( (BYTE *)(msg + 1), name->lpszShortName, ns );
++        if ( ls ) memcpy( (BYTE *)(msg + 1) + ns, name->lpszLongName, ls );
++        DP_SendToAllMachines( This, msg, size, NULL, 0 );
++        free( msg );
++    }
++    LeaveCriticalSection( &This->lock );
++}
++
++void DP_GRP_SendData( IDirectPlayImpl *This, DPID id, const void *data, DWORD dataSize )
++{
++    DPSP_MSG_GROUPDATACHANGED *msg;
++    DWORD size;
++
++    EnterCriticalSection( &This->lock );
++    if ( !grp_may_send( This ) )
++    {
++        LeaveCriticalSection( &This->lock );
++        return;
++    }
++    size = sizeof(*msg) + dataSize;
++    if ( (msg = calloc( 1, size )) )
++    {
++        grp_envelope( &msg->envelope, DPMSGCMD_GROUPDATACHANGED );
++        msg->groupId = id;
++        msg->dataSize = dataSize;
++        msg->dataOffset = sizeof(*msg);
++        if ( dataSize ) memcpy( msg + 1, data, dataSize );
++        DP_SendToAllMachines( This, msg, size, NULL, 0 );
++        free( msg );
++    }
++    LeaveCriticalSection( &This->lock );
++}
++
++/* ---- receiving */
++
++HRESULT DP_GRP_HandleCreate( IDirectPlayImpl *This, const void *body, DWORD size, void *header )
++{
++    const DPMSG_CREATESESSION *msg = body;
++    DPPLAYERINFO info;
++    DWORD offset = sizeof(*msg), flags = 0;
++    DPID id, parent;
++    HRESULT hr;
++
++    if ( size < sizeof(*msg) )
++        return DPERR_GENERIC;
++    memset( &info, 0, sizeof(info) );
++    hr = DP_MSG_ReadPackedPlayer( (char *)body, &offset, size, &info );
++    if ( FAILED( hr ) )
++        return hr;
++    /* a machine announces its own groups only */
++    if ( info.systemPlayerId && !DP_SenderOwns( This, header, info.systemPlayerId, "CREATEGROUP" ) )
++        return DP_OK;
++    if ( info.flags & DPLAYI_GROUP_HIDDEN ) flags |= DPGROUP_HIDDEN;
++    if ( info.flags & GROUP_STAGING_BIT ) flags |= DPGROUP_STAGINGAREA;
++    id = msg->playerId;
++    parent = info.parentId ? info.parentId : DPID_NOPARENT_GROUP;
++
++    EnterCriticalSection( &This->lock );
++    if ( This->dp2->bConnectionOpen && !DP_FindAnyGroup( This, id ) )
++    {
++        hr = DP_CreateGroup( This, header, &id, &info.name, info.playerData, info.playerDataLength,
++                             flags, parent, FALSE );
++        if ( SUCCEEDED( hr ) )
++            DP_QueueGroupCreatedFromWire( This, id, info.playerData, info.playerDataLength, flags, parent );
++        else
++            WARN( "CREATEGROUP 0x%08lx (parent 0x%08lx): 0x%08lx\n", id, parent, hr );
++    }
++    LeaveCriticalSection( &This->lock );
++    return DP_OK;
++}
++
++HRESULT DP_GRP_HandleIds( IDirectPlayImpl *This, WORD cmd, const void *body, DWORD size, void *header )
++{
++    const DPSP_MSG_DELETEPLAYER *msg = body;
++    IDirectPlay4 *dp = &This->IDirectPlay4_iface;
++    HRESULT hr = DP_OK;
++
++    if ( size < sizeof(*msg) )
++        return DPERR_GENERIC;
++
++    EnterCriticalSection( &This->lock );
++    if ( !This->dp2->bConnectionOpen )
++    {
++        LeaveCriticalSection( &This->lock );
++        return DP_OK;
++    }
++    This->dp2->groupFromWire++;
++    switch ( cmd )
++    {
++    case DPMSGCMD_ADDPLAYERTOGROUP:     hr = DP_AddPlayerToGroup( This, msg->groupId, msg->playerId ); break;
++    case DPMSGCMD_DELETEPLAYERFROMGROUP: hr = IDirectPlayX_DeletePlayerFromGroup( dp, msg->groupId, msg->playerId ); break;
++    case DPMSGCMD_DELETEGROUP:          hr = IDirectPlayX_DestroyGroup( dp, msg->groupId ); break;
++    case DPMSGCMD_ADDSHORTCUTTOGROUP:   hr = IDirectPlayX_AddGroupToGroup( dp, msg->groupId, msg->playerId ); break;
++    case DPMSGCMD_DELETEGROUPFROMGROUP: hr = IDirectPlayX_DeleteGroupFromGroup( dp, msg->groupId, msg->playerId ); break;
++    }
++    This->dp2->groupFromWire--;
++    LeaveCriticalSection( &This->lock );
++    if ( FAILED( hr ) )
++        TRACE( "group message %u (player 0x%08lx, group 0x%08lx): 0x%08lx\n", cmd, msg->playerId, msg->groupId, hr );
++    return DP_OK;
++}
++
++HRESULT DP_GRP_HandleName( IDirectPlayImpl *This, const void *body, DWORD size, void *header )
++{
++    const DPSP_MSG_GROUPNAMECHANGED *msg = body;
++    DPNAME name;
++
++    if ( size < sizeof(*msg) )
++        return DPERR_GENERIC;
++    memset( &name, 0, sizeof(name) );
++    name.dwSize = sizeof(name);
++    name.lpszShortName = (WCHAR *)DP_WireString( body, size, msg->shortNameOffset );
++    name.lpszLongName = (WCHAR *)DP_WireString( body, size, msg->longNameOffset );
++
++    EnterCriticalSection( &This->lock );
++    if ( This->dp2->bConnectionOpen )
++    {
++        This->dp2->groupFromWire++;
++        IDirectPlayX_SetGroupName( &This->IDirectPlay4_iface, msg->groupId, &name, 0 );
++        This->dp2->groupFromWire--;
++    }
++    LeaveCriticalSection( &This->lock );
++    return DP_OK;
++}
 diff -ruN src/dlls/dplayx/host.c port/dlls/dplayx/host.c
 --- src/dlls/dplayx/host.c	1969-12-31 17:00:00.000000000 -0700
-+++ port/dlls/dplayx/host.c	2026-10-14 16:15:35.219379900 -0700
-@@ -0,0 +1,326 @@
++++ port/dlls/dplayx/host.c	2026-10-28 18:30:34.200722900 -0700
+@@ -0,0 +1,339 @@
 +/*
 + * Hosting: letting other machines join a session this dplayx created.
 + *
@@ -5239,17 +7768,30 @@ diff -ruN src/dlls/dplayx/host.c port/dlls/dplayx/host.c
 +    add_wstr( &b, sd->lpszSessionName ? sd->lpszSessionName : L"" );   /* byte for byte, as Windows */
 +    {
 +        DWORD packedOffset = b.size - headerSize;
++        struct PlayerData *order[ 256 ];
++        int count = 0, pass, k;
 +
-+        for ( plist = DPQ_FIRST( This->dp2->lpSysGroup->players ); plist; plist = DPQ_NEXT( plist->players ) )
-+        {
-+            struct PlayerData *p = plist->lpPData;
-+            DWORD flags = p->dwFlags;
-+            if ( p->dpid == This->dp2->systemPlayerId )
-+                flags |= DPLAYI_PLAYER_NAMESRVR;
-+            add_super_packed( This, &b, p->dpid, flags, p->name, p->lpRemoteData, p->dwRemoteDataSize,
-+                              p->systemPlayerId, NULL, 0, 0, FALSE );
-+            players++;
-+        }
++        /* Windows' order (S3 tap, 2026-10-16): the system players newest first - the machine
++         * joining now leads - then the game players newest first (five players: 4 2 0 3 1) */
++        for ( plist = DPQ_FIRST( This->dp2->lpSysGroup->players ); plist && count < ARRAYSIZE( order );
++              plist = DPQ_NEXT( plist->players ) )
++            order[ count++ ] = plist->lpPData;
++        for ( pass = 0; pass < 2; pass++ )
++            for ( k = count - 1; k >= 0; k-- )
++            {
++                struct PlayerData *p = order[ k ];
++                /* every player is in the system group: Windows marks each record so (S3 tap: its
++                 * joiners create the host's system player with 0x7 and its game player with 0x4;
++                 * ours, without the bit, created them with 0x3 and 0x0) */
++                DWORD flags = p->dwFlags | DPLAYI_PLAYER_PLAYERINGROUP;
++                if ( !!(p->dwFlags & DPLAYI_PLAYER_SYSPLAYER) != !pass )
++                    continue;
++                if ( p->dpid == This->dp2->systemPlayerId )
++                    flags |= DPLAYI_PLAYER_NAMESRVR;
++                add_super_packed( This, &b, p->dpid, flags, p->name, p->lpRemoteData, p->dwRemoteDataSize,
++                                  p->systemPlayerId, NULL, 0, 0, FALSE );
++                players++;
++            }
 +        for ( glist = DPQ_FIRST( This->dp2->lpSysGroup->groups ); glist; glist = DPQ_NEXT( glist->groups ) )
 +        {
 +            struct GroupData *g = glist->lpGData;
@@ -5289,8 +7831,8 @@ diff -ruN src/dlls/dplayx/host.c port/dlls/dplayx/host.c
 +}
 diff -ruN src/dlls/dplayx/lifecycle.c port/dlls/dplayx/lifecycle.c
 --- src/dlls/dplayx/lifecycle.c	1969-12-31 17:00:00.000000000 -0700
-+++ port/dlls/dplayx/lifecycle.c	2026-10-15 11:21:03.792973900 -0700
-@@ -0,0 +1,432 @@
++++ port/dlls/dplayx/lifecycle.c	2026-10-28 19:22:33.674181400 -0700
+@@ -0,0 +1,503 @@
 +/*
 + * Session lifecycle: leaving, keepalive and host migration.
 + *
@@ -5533,6 +8075,52 @@ diff -ruN src/dlls/dplayx/lifecycle.c port/dlls/dplayx/lifecycle.c
 +    LeaveCriticalSection( &This->lock );
 +}
 +
++/* YOUAREDEAD (24): the host removed this machine (it went silent past the keepalive) and tells it so
++ * when it talks again. Windows' joiner then drops out of the session (okplay blackout, 2026-10-28):
++ * DPSYS_SESSIONLOST, then every other machine and its players leave (DPSYS_DESTROYPLAYERORGROUP for
++ * each player), no host migration, and it pings nobody after that. Its own players stay until Close. */
++HRESULT DP_LIFE_HandleYouAreDead( IDirectPlayImpl *This, const void *body, DWORD size, const void *header )
++{
++    struct PlayerList *plist;
++    DPID machines[ 64 ], ids[ 64 ], sender;
++    int nm = 0, n, i, j;
++    BOOL known;
++
++    EnterCriticalSection( &This->lock );
++    if ( !This->dp2->bConnectionOpen || !This->dp2->lpSysGroup || This->dp2->bHostInterface )
++    {
++        LeaveCriticalSection( &This->lock );
++        return DP_OK;
++    }
++    /* only the host decides who is in the session (no identity: a classic provider - trusted as before) */
++    sender = DP_SenderMachine( This, header, &known );
++    if ( known && sender != This->dp2->nameServerId )
++    {
++        DP_NOTE( "YOUAREDEAD from machine 0x%08lx ignored: not the host (0x%08lx)\n", sender, This->dp2->nameServerId );
++        LeaveCriticalSection( &This->lock );
++        return DP_OK;
++    }
++    DP_NOTE( "YOUAREDEAD from the host: this machine is out of the session\n" );
++    DP_QueueSystemMessage( This, DPSYS_SESSIONLOST );
++    for ( plist = DPQ_FIRST( This->dp2->lpSysGroup->players ); plist && nm < ARRAYSIZE( machines ); plist = DPQ_NEXT( plist->players ) )
++        if ( (plist->lpPData->dwFlags & DPLAYI_PLAYER_SYSPLAYER) && !(plist->lpPData->dwFlags & DPLAYI_PLAYER_PLAYERLOCAL) )
++            machines[ nm++ ] = plist->lpPData->dpid;
++    for ( j = 0; j < nm; j++ )
++    {
++        n = 0;
++        for ( plist = DPQ_FIRST( This->dp2->lpSysGroup->players ); plist && n < ARRAYSIZE( ids ); plist = DPQ_NEXT( plist->players ) )
++        {
++            struct PlayerData *p = plist->lpPData;
++            if ( p->dpid != machines[ j ] && p->systemPlayerId == machines[ j ] && !(p->dwFlags & DPLAYI_PLAYER_PLAYERLOCAL) )
++                ids[ n++ ] = p->dpid;
++        }
++        for ( i = 0; i < n; i++ ) DP_RemovePlayer( This, ids[ i ], FALSE );
++        DP_RemovePlayer( This, machines[ j ], FALSE );
++    }
++    LeaveCriticalSection( &This->lock );
++    return DP_OK;
++}
++
 +HRESULT DP_LIFE_HandleDeletePlayer( IDirectPlayImpl *This, const void *body, DWORD size, const void *header )
 +{
 +    const DPSP_MSG_DELETEPLAYER *msg = body;
@@ -5648,21 +8236,9 @@ diff -ruN src/dlls/dplayx/lifecycle.c port/dlls/dplayx/lifecycle.c
 +    LeaveCriticalSection( &This->lock );
 +}
 +
-+static DWORD WINAPI keepalive_thread( void *arg )
++/* one round of the keepalive: pings to quiet machines, drops of silent ones (every 500 ms) */
++static void keepalive_once( IDirectPlayImpl *This )
 +{
-+    IDirectPlayImpl *This = arg;
-+    HANDLE stop = This->dp2->hKeepAliveStop;
-+    const char *rogue = getenv( "OKP_TEST_ROGUE" );
-+    DWORD started = GetTickCount();
-+    BOOL rogue_done = FALSE;
-+
-+    while ( WaitForSingleObject( stop, 500 ) == WAIT_TIMEOUT )
-+    {
-+        if ( rogue && *rogue && !rogue_done && GetTickCount() - started > 4000 )
-+        {
-+            rogue_done = TRUE;
-+            rogue_fire( This, rogue );
-+        }
 +        struct PlayerList *plist;
 +        DPID dead[ 16 ];
 +        int ndead = 0, i;
@@ -5681,7 +8257,10 @@ diff -ruN src/dlls/dplayx/lifecycle.c port/dlls/dplayx/lifecycle.c
 +                {
 +                    if ( ndead < ARRAYSIZE( dead ) ) dead[ ndead++ ] = p->dpid;
 +                }
-+                else if ( now - p->lastPing >= KEEPALIVE_PING_MS )
++                /* only a machine that has gone quiet: while it talks it is alive, and Windows sends
++                 * no PING then (S3 tap, 2026-10-16: none in a 14 s game with traffic, ours sent one
++                 * every 1.5 s regardless) */
++                else if ( now - p->lastHeard >= KEEPALIVE_PING_MS && now - p->lastPing >= KEEPALIVE_PING_MS )
 +                {
 +                    DPSP_MSG_PING ping;
 +                    ping.envelope.dwMagic = DPMSGMAGIC_DPLAYMSG;
@@ -5697,9 +8276,33 @@ diff -ruN src/dlls/dplayx/lifecycle.c port/dlls/dplayx/lifecycle.c
 +        LeaveCriticalSection( &This->lock );
 +        for ( i = 0; i < ndead; i++ )
 +            DP_LIFE_MachineGone( This, dead[ i ], "no reply for drop_after= seconds" );
++}
++
++static DWORD WINAPI keepalive_thread( void *arg )
++{
++    IDirectPlayImpl *This = arg;
++    HANDLE stop = This->dp2->hKeepAliveStop;
++    const char *rogue = getenv( "OKP_TEST_ROGUE" );
++    DWORD started = GetTickCount();
++    BOOL rogue_done = FALSE;
++
++    while ( WaitForSingleObject( stop, 500 ) == WAIT_TIMEOUT )
++    {
++        if ( rogue && *rogue && !rogue_done && GetTickCount() - started > 4000 )
++        {
++            rogue_done = TRUE;
++            rogue_fire( This, rogue );
++        }
++        keepalive_once( This );
 +    }
 +    return 0;
 +}
++
++#ifdef OKWEB_DPLAY
++/* the browser build has no threads: the same round runs as a task of the page's pump (okweb/dplay/winweb.c) */
++void winweb_every( DWORD ms, void (*fn)( void * ), void *arg );
++static void keepalive_task( void *arg ) { keepalive_once( arg ); }
++#endif
 +
 +/* the session is open (hosting or joined) */
 +void DP_LIFE_Start( IDirectPlayImpl *This )
@@ -5708,6 +8311,11 @@ diff -ruN src/dlls/dplayx/lifecycle.c port/dlls/dplayx/lifecycle.c
 +        This->dp2->nameServerId = This->dp2->systemPlayerId;
 +    if ( !(This->dp2->lpSessionDesc->dwFlags & DPSESSION_KEEPALIVE) || This->dp2->hKeepAliveThread )
 +        return;
++#ifdef OKWEB_DPLAY
++    winweb_every( 500, keepalive_task, This );
++    This->dp2->hKeepAliveThread = (HANDLE)1;   /* "running" */
++    return;
++#endif
 +    This->dp2->hKeepAliveStop = CreateEventW( NULL, TRUE, FALSE, NULL );
 +    This->dp2->hKeepAliveThread = CreateThread( NULL, 0, keepalive_thread, This, 0, &This->dp2->dwKeepAliveThreadId );
 +}
@@ -5715,6 +8323,11 @@ diff -ruN src/dlls/dplayx/lifecycle.c port/dlls/dplayx/lifecycle.c
 +void DP_LIFE_Stop( IDirectPlayImpl *This )
 +{
 +    if ( !This->dp2->hKeepAliveThread ) return;
++#ifdef OKWEB_DPLAY
++    winweb_every( 0, keepalive_task, This );
++    This->dp2->hKeepAliveThread = NULL;
++    return;
++#endif
 +    SetEvent( This->dp2->hKeepAliveStop );
 +    if ( GetCurrentThreadId() != This->dp2->dwKeepAliveThreadId )
 +        WaitForSingleObject( This->dp2->hKeepAliveThread, 5000 );
@@ -5724,8 +8337,8 @@ diff -ruN src/dlls/dplayx/lifecycle.c port/dlls/dplayx/lifecycle.c
 +    This->dp2->hKeepAliveStop = NULL;
 +}
 diff -ruN src/dlls/dplayx/name_server.c port/dlls/dplayx/name_server.c
---- src/dlls/dplayx/name_server.c	2026-10-14 16:15:35.269594300 -0700
-+++ port/dlls/dplayx/name_server.c	2026-10-16 12:25:04.199724800 -0700
+--- src/dlls/dplayx/name_server.c	2026-10-28 18:30:34.246764500 -0700
++++ port/dlls/dplayx/name_server.c	2026-10-28 18:30:34.202724700 -0700
 @@ -106,6 +106,17 @@
  
    maxNameLength = (msgSize - sizeof( DPMSG_ENUMSESSIONSREPLY )) / sizeof( WCHAR );
@@ -5885,8 +8498,8 @@ diff -ruN src/dlls/dplayx/name_server.c port/dlls/dplayx/name_server.c
 +    memcpy( rmsg + 1, lpDP->dp2->lpSessionDesc->lpszSessionName, dwVariableSize );
  }
 diff -ruN src/dlls/dplayx/name_server.h port/dlls/dplayx/name_server.h
---- src/dlls/dplayx/name_server.h	2026-10-14 16:15:35.270595200 -0700
-+++ port/dlls/dplayx/name_server.h	2026-10-14 16:15:35.224384200 -0700
+--- src/dlls/dplayx/name_server.h	2026-10-28 18:30:34.247765500 -0700
++++ port/dlls/dplayx/name_server.h	2026-10-28 18:30:34.203725200 -0700
 @@ -37,6 +37,7 @@
  void NS_SetLocalAddr( LPVOID lpNSInfo, LPCVOID lpHdr, DWORD dwHdrSize );
  
@@ -5897,7 +8510,7 @@ diff -ruN src/dlls/dplayx/name_server.h port/dlls/dplayx/name_server.h
                                      IDirectPlayImpl *lpDP );
 diff -ruN src/dlls/dplayx/sp_compat.c port/dlls/dplayx/sp_compat.c
 --- src/dlls/dplayx/sp_compat.c	1969-12-31 17:00:00.000000000 -0700
-+++ port/dlls/dplayx/sp_compat.c	2026-10-16 15:44:48.740660500 -0700
++++ port/dlls/dplayx/sp_compat.c	2026-10-28 18:30:34.204726200 -0700
 @@ -0,0 +1,241 @@
 +/*
 + * Service providers without the DirectX 6 send callbacks.
@@ -6141,8 +8754,8 @@ diff -ruN src/dlls/dplayx/sp_compat.c port/dlls/dplayx/sp_compat.c
 +    return failed && !sent ? DPERR_GENERIC : DP_OK;
 +}
 diff -ruN src/dlls/dplayx/tests/dplayx.c port/dlls/dplayx/tests/dplayx.c
---- src/dlls/dplayx/tests/dplayx.c	2026-10-14 16:15:35.273597700 -0700
-+++ port/dlls/dplayx/tests/dplayx.c	2026-10-14 16:15:35.227386600 -0700
+--- src/dlls/dplayx/tests/dplayx.c	2026-10-28 18:30:34.251769000 -0700
++++ port/dlls/dplayx/tests/dplayx.c	2026-10-28 18:30:34.207728800 -0700
 @@ -10714,7 +10714,9 @@
          return;
      }
@@ -6155,8 +8768,8 @@ diff -ruN src/dlls/dplayx/tests/dplayx.c port/dlls/dplayx/tests/dplayx.c
          skip("no privileges, skipping tests to avoid firewall dialog\n");
          return;
 diff -ruN src/dlls/dpwsockx/dpwsockx_dll.h port/dlls/dpwsockx/dpwsockx_dll.h
---- src/dlls/dpwsockx/dpwsockx_dll.h	2026-10-14 16:15:35.276600500 -0700
-+++ port/dlls/dpwsockx/dpwsockx_dll.h	2026-10-16 12:19:28.984075600 -0700
+--- src/dlls/dpwsockx/dpwsockx_dll.h	2026-10-28 18:30:34.253771000 -0700
++++ port/dlls/dpwsockx/dpwsockx_dll.h	2026-10-28 18:30:34.210731900 -0700
 @@ -87,6 +87,8 @@
  
      SOCKET              tcpSock;
@@ -6192,8 +8805,8 @@ diff -ruN src/dlls/dpwsockx/dpwsockx_dll.h port/dlls/dpwsockx/dpwsockx_dll.h
  
  #define DPSP_MSG_TOKEN_REMOTE    0xFAB00000
 diff -ruN src/dlls/dpwsockx/dpwsockx_main.c port/dlls/dpwsockx/dpwsockx_main.c
---- src/dlls/dpwsockx/dpwsockx_main.c	2026-10-14 16:15:35.277601500 -0700
-+++ port/dlls/dpwsockx/dpwsockx_main.c	2026-10-16 12:19:45.552375600 -0700
+--- src/dlls/dpwsockx/dpwsockx_main.c	2026-10-28 18:30:34.254771700 -0700
++++ port/dlls/dpwsockx/dpwsockx_main.c	2026-10-28 18:30:34.211732700 -0700
 @@ -27,6 +27,7 @@
  #include "wine/debug.h"
  #include "dplay.h"
