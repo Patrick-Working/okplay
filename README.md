@@ -32,6 +32,7 @@ measurements are in `docs/DPLAY_CONFORMANCE.md`.
 | `winedplay/` | the drop-in: Wine's dplayx ported to Windows (`port/`), the pristine Wine sources it came from (`src/`), the Windows shims (`shim/`), packaging, Windows 95/98 checks |
 | `okplay/` | the Online/LAN Play transport, the room server (`server/`), Connection Check, tests (`tests/`) |
 | `okweb/` | DirectPlay for the browser (`dplay/`), the JavaScript SDK (`sdk/`), demo, how a browser port plugs in (`integrations/`) |
+| `oknative/` | okplay for native games on ENet (first used by the UFO 50 Android port): room list, hole punching, UPnP, the relay, staying online in the background on Android |
 | `conformance/` | the suites that compare ours with Windows' DirectPlay (S1 Wine's tests, S3 wire tap, S4 two machines) |
 | `okagent/` | a small remote-control agent for the Windows 98 test VMs |
 | `docs/` | design, conformance results, per-game notes (`GAME_*.md`) |

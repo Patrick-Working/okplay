@@ -1,0 +1,42 @@
+diff --git a/unix.c b/unix.c
+index 6669216..faea7b6 100644
+--- a/unix.c
++++ b/unix.c
+@@ -436,6 +436,13 @@ enet_socket_destroy (ENetSocket socket)
+       close (socket);
+ }
+ 
++/* PFO 50 Android: an optional relay for peers that can't be reached directly. Addresses in
++   0.0.0.0/8 are never valid on the wire, so they stand for relayed peers: sends to them go to
++   enet_virtual_send_hook, and datagrams the relay received come back first in
++   enet_socket_receive through enet_virtual_receive_hook. Both hooks are NULL unless set. */
++int (* enet_virtual_send_hook) (const ENetAddress *, const ENetBuffer *, size_t) = NULL;
++int (* enet_virtual_receive_hook) (ENetAddress *, ENetBuffer *, size_t) = NULL;
++
+ int
+ enet_socket_send (ENetSocket socket,
+                   const ENetAddress * address,
+@@ -446,6 +453,9 @@ enet_socket_send (ENetSocket socket,
+     struct sockaddr_in sin;
+     int sentLength;
+ 
++    if (address != NULL && address -> host != 0 && (ENET_NET_TO_HOST_32 (address -> host) >> 24) == 0 && enet_virtual_send_hook != NULL)
++      return enet_virtual_send_hook (address, buffers, bufferCount);
++
+     memset (& msgHdr, 0, sizeof (struct msghdr));
+ 
+     if (address != NULL)
+@@ -486,6 +496,13 @@ enet_socket_receive (ENetSocket socket,
+     struct sockaddr_in sin;
+     int recvLength;
+ 
++    if (address != NULL && enet_virtual_receive_hook != NULL)
++    {
++        int relayed = enet_virtual_receive_hook (address, buffers, bufferCount);
++        if (relayed > 0)
++          return relayed;
++    }
++
+     memset (& msgHdr, 0, sizeof (struct msghdr));
+ 
+     if (address != NULL)
