@@ -536,6 +536,94 @@ static void set_path(okp_ctx *c, okp_peer *p, const SOCKADDR_IN6 *from, const ch
     flush_queue(c, p);
 }
 
+/* ---------------------------------------------------------- pause detector
+ * A pause in a lockstep game (AoE2 waits for every player's turn) can come from the network, from
+ * the other PC's game, from this PC's game, or from okplay itself. Each leaves its own log line,
+ * written when the gap ends, and only after the traffic had been steady - menus and lobbies, where
+ * games go quiet on purpose, stay out of the log. */
+#define GAP_MS        1000   /* a gap this long in steady game traffic is logged */
+#define STEADY_MS     3000   /* steady: messages at least every STEADY_EVERY ms for this long */
+#define STEADY_EVERY  500
+#define GAPS_MAX      300    /* per peer and session: a long outage logs once, not forever */
+
+/* 1 (and the gap in *gap) when this message ends a gap worth logging */
+static int gap_track(DWORD now, DWORD *last, DWORD *run, DWORD *gap)
+{
+    int r = 0;
+    if (*last) {
+        DWORD g = now - *last;
+        if (g >= GAP_MS && *last - *run >= STEADY_MS) { *gap = g; r = 1; }
+        if (g >= STEADY_EVERY) *run = now;
+    } else {
+        *run = now;
+    }
+    *last = now;
+    return r;
+}
+
+/* local wall-clock time "ms" ago, HH:MM:SS.mmm, to line up with the other PC's log */
+static const char *time_ago(DWORD ms, char *out, int size)
+{
+    SYSTEMTIME st;
+    FILETIME ft;
+    ULARGE_INTEGER u;
+    GetLocalTime(&st);
+    SystemTimeToFileTime(&st, &ft);
+    u.LowPart = ft.dwLowDateTime;
+    u.HighPart = ft.dwHighDateTime;
+    u.QuadPart -= (ULONGLONG)ms * 10000;
+    ft.dwLowDateTime = u.LowPart;
+    ft.dwHighDateTime = u.HighPart;
+    FileTimeToSystemTime(&ft, &st);
+    snprintf(out, size, "%02d:%02d:%02d.%03d", st.wHour, st.wMinute, st.wSecond, st.wMilliseconds);
+    return out;
+}
+
+/* lock held: any packet from this peer (the pause detector's "was the line alive" half) */
+static void rx_any(okp_peer *p, DWORD now)
+{
+    DWORD q = p->any_rx_last ? now - p->any_rx_last : 0;
+    if (q > p->quiet_max) p->quiet_max = q;
+    p->any_rx_last = now;
+    /* heard again after a silence: whatever it hasn't acked goes again on the next timer tick,
+     * instead of each message waiting out its own backed-off retry (up to 1 s more of pause) */
+    if (q >= 1000)
+        for (int i = 0; i < p->nrtx; i++)
+            if (p->rtx[i].tries > 0) p->rtx[i].last = now - 1000;
+}
+
+/* lock held: game messages from this peer have just started again after a gap. Its keepalives
+ * (every KEEPALIVE_MS) and acks tell the two causes apart: during a network outage nothing at all
+ * arrives; when only its game went quiet, the line never stays silent much past a keepalive. */
+static void note_rx_gap(okp_peer *p, DWORD g)
+{
+    char t[16];
+    if (p->gaps_logged++ >= GAPS_MAX) return;
+    time_ago(g, t, sizeof(t));
+    if (g >= KEEPALIVE_MS + 600 && p->quiet_max < KEEPALIVE_MS + 600 && p->quiet_max < g / 2)
+        okp_log(1, "pause: peer %016llx sent no game messages for %lu ms (from %s) but its other packets"
+                " kept coming (longest silence %lu ms) - the network was fine: that PC's game stopped"
+                " sending (its log says why)", (unsigned long long)p->id, (unsigned long)g, t,
+                (unsigned long)p->quiet_max);
+    else if (p->quiet_max >= KEEPALIVE_MS + 600)
+        okp_log(1, "pause: peer %016llx sent no game messages for %lu ms (from %s), and for %lu ms nothing"
+                " at all came, not even okplay's keepalives - the network dropped out (Wi-Fi?), or that"
+                " whole PC froze", (unsigned long long)p->id, (unsigned long)g, t, (unsigned long)p->quiet_max);
+    else
+        okp_log(1, "pause: peer %016llx sent no game messages for %lu ms (from %s) - too short to tell the"
+                " network from its game", (unsigned long long)p->id, (unsigned long)g, t);
+}
+
+/* lock held: this PC's game has just sent to this peer again after a gap */
+static void note_tx_gap(okp_peer *p, DWORD g)
+{
+    char t[16];
+    if (p->gaps_logged++ >= GAPS_MAX) return;
+    okp_log(1, "pause: this PC's game sent nothing to peer %016llx for %lu ms (from %s) - it was waiting"
+            " for the others if their messages stopped first, otherwise this PC's game was busy",
+            (unsigned long long)p->id, (unsigned long)g, time_ago(g, t, sizeof(t)));
+}
+
 /* lock held: queue one reliable datagram (RDATA or RFRAG) and send it now if we have a path;
  * the timer resends until acked. The caller has checked the window has room. */
 static void rel_send_locked(okp_ctx *c, okp_peer *p, int type, const uint8_t *buf, int len)
@@ -616,8 +704,17 @@ int okp_send_data(okp_ctx *c, uint64_t to, const void *buf, int len, int flags)
         memcpy(pkt + sizeof(okp_wire), buf, len);
     }
 
+    DWORD t_lock = okp_now();
     EnterCriticalSection(&c->lock);
+    DWORD now = okp_now();
+    if (now - t_lock >= 250)
+        okp_log(1, "pause: a send waited %lu ms for okplay's lock (its network thread was busy)",
+                (unsigned long)(now - t_lock));
     okp_peer *p = okp_peer_get(c, to, 1);
+    DWORD gap;
+    if (p && !(len >= 4 && memcmp(buf, "play", 4) == 0) &&
+        gap_track(now, &p->game_tx_last, &p->game_tx_run, &gap))
+        note_tx_gap(p, gap);
     if (p && reliable) {
         int pieces = (len + OKP_FRAG_MAX - 1) / OKP_FRAG_MAX;
         if (pieces < 1) pieces = 1;
@@ -845,7 +942,12 @@ static void hand_to_dplay(okp_ctx *c, const okp_wire *w, void *body, int blen)
     h.peer = w->from;
     h.room = w->room;
     h.flags = 0;
+    DWORD t0 = okp_now();
     HRESULT hr = IDirectPlaySP_HandleMessage(c->isp, body, blen, &h);
+    DWORD took = okp_now() - t0;
+    if (took >= 250)
+        okp_log(1, "pause: DirectPlay took %lu ms to take a %d-byte message from peer %016llx",
+                (unsigned long)took, blen, (unsigned long long)w->from);
     if (hr != DP_OK) {
         static LONG bad;
         LONG k = InterlockedIncrement(&bad);
@@ -912,6 +1014,7 @@ static void handle_packet(okp_ctx *c, uint8_t *b, int n, SOCKADDR_IN6 *from)
         p->last_rx = okp_now();
         if (p->have_path && okp_addr_eq(&p->path, from)) p->last_path_rx = p->last_rx;
         p->rx_pkts++;
+        rx_any(p, p->last_rx);   /* (the pause detector: its keepalives still arrive) */
         if (epoch) {
             if (p->their_epoch && p->their_epoch != epoch) {
                 okp_log(1, "peer %016llx started over (a new connection attempt): reliable lane reset",
@@ -941,6 +1044,7 @@ static void handle_packet(okp_ctx *c, uint8_t *b, int n, SOCKADDR_IN6 *from)
     p->last_rx = okp_now();
     if (p->have_path && okp_addr_eq(&p->path, from)) p->last_path_rx = p->last_rx;
     p->rx_pkts++;
+    int game = 0;   /* this packet carried (or released) a game message: the pause detector */
 
     if (w->type == OKP_T_PROBE_ACK && blen >= OKP_PROBE_ACK_V4) {   /* 0.8.0 acks end at token */
         okp_probe_ack *pa = (okp_probe_ack *)body;
@@ -967,12 +1071,26 @@ static void handle_packet(okp_ctx *c, uint8_t *b, int n, SOCKADDR_IN6 *from)
         uint32_t cum, seq;
         memcpy(&cum, body, 4);
         memcpy(&seq, body + 4, 4);
-        int k = 0;
+        int k = 0, nslow = 0, tries = 0;
+        DWORD now = okp_now(), worst = 0;
         for (int i = 0; i < p->nrtx; i++) {
             okp_rtx *r = &p->rtx[i];
-            if ((int32_t)(r->seq - cum) < 0 || r->seq == seq) free(r->pkt);
-            else p->rtx[k++] = *r;
+            if ((int32_t)(r->seq - cum) < 0 || r->seq == seq) {
+                DWORD took = now - r->first;
+                if (took > p->r_slowest) p->r_slowest = took;
+                if (took >= 500) {
+                    nslow++;
+                    p->r_slow++;
+                    if (took > worst) { worst = took; tries = r->tries; }
+                }
+                free(r->pkt);
+            } else {
+                p->rtx[k++] = *r;
+            }
         }
+        if (nslow && p->gaps_logged++ < GAPS_MAX)
+            okp_log(1, "pause: peer %016llx acked %d guaranteed message(s) late, the oldest after %lu ms (%d sends)",
+                    (unsigned long long)p->id, nslow, (unsigned long)worst, tries);
         p->nrtx = k;
         rel_drain_locked(c, p);
     } else if ((w->type == OKP_T_RDATA || w->type == OKP_T_RFRAG) && blen >= 4) {
@@ -1029,6 +1147,8 @@ static void handle_packet(okp_ctx *c, uint8_t *b, int n, SOCKADDR_IN6 *from)
         peer_send(c, p, from, ack, sizeof(ack));
         p->rx_bytes += n;
         p->rx_sys += nready;
+        for (int i = 0; i < nready; i++)
+            if (ready[i].len < 4 || memcmp(ready[i].data, "play", 4) != 0) game = 1;
     } else if (w->type == OKP_T_DATA) {
         set_path(c, p, from, "data");
         deliver = 1;
@@ -1041,6 +1161,15 @@ static void handle_packet(okp_ctx *c, uint8_t *b, int n, SOCKADDR_IN6 *from)
             okp_log(3, "recv sys cmd %u (%d bytes) from peer %016llx", cmd, blen, (unsigned long long)w->from);
         } else {
             p->rx_game++;
+            game = 1;
+        }
+    }
+    {
+        DWORD gap, now = p->last_rx;
+        rx_any(p, now);
+        if (game) {
+            if (gap_track(now, &p->game_rx_last, &p->game_rx_run, &gap)) note_rx_gap(p, gap);
+            p->quiet_max = 0;
         }
     }
     LeaveCriticalSection(&c->lock);
@@ -1068,15 +1197,16 @@ static void log_stats(okp_ctx *c, DWORD now)
         if (p->have_path) {
             okp_log(2, "stats peer %016llx path %s rtt %lums | tx %lu pkts %lu B | rx %lu pkts %lu B (sys %lu, game %lu)"
                     " | qdrop %lu | path changes %lu | last rx %lums ago | reliable sent %lu resent %lu"
-                    " unacked %d gave-up %lu dups %lu queued %lu (waiting %d, peak %d B) | bad token %lu untrusted probes %lu",
+                    " unacked %d gave-up %lu dups %lu queued %lu (waiting %d, peak %d B) slowest %lums slow %lu"
+                    " | bad token %lu untrusted probes %lu",
                     (unsigned long long)p->id, okp_addr_str(&p->path, s, sizeof(s)), (unsigned long)p->rtt,
                     (unsigned long)p->tx_pkts, (unsigned long)p->tx_bytes, (unsigned long)p->rx_pkts,
                     (unsigned long)p->rx_bytes, (unsigned long)p->rx_sys, (unsigned long)p->rx_game,
                     (unsigned long)p->dropped_q, (unsigned long)p->path_changes,
                     (unsigned long)(now - p->last_rx), (unsigned long)p->r_sent, (unsigned long)p->r_retrans,
                     p->nrtx, (unsigned long)p->r_giveup, (unsigned long)p->r_dups,
-                    (unsigned long)p->r_queued, p->npend, p->pend_peak,
-                    (unsigned long)p->rx_badtoken, (unsigned long)p->rx_untrusted_probe);
+                    (unsigned long)p->r_queued, p->npend, p->pend_peak, (unsigned long)p->r_slowest,
+                    (unsigned long)p->r_slow, (unsigned long)p->rx_badtoken, (unsigned long)p->rx_untrusted_probe);
         } else if (!p->last_nopath_log || now - p->last_nopath_log >= 60000) {
             p->last_nopath_log = now;
             okp_log(1, "stats peer %016llx NO PATH: probing %d candidate(s) for %lus, %d packet(s) queued, qdrop %lu",
@@ -1209,6 +1339,11 @@ static DWORD WINAPI net_main(LPVOID arg)
     okp_ctx *c = (okp_ctx *)arg;
     uint8_t *buf = (uint8_t *)malloc(OKP_MAX_PKT + 64);
     while (c->running) {
+        DWORD lt = okp_now();
+        if (c->last_loop && lt - c->last_loop >= 500)
+            okp_log(1, "pause: okplay's network thread was held up for %lu ms (this PC was busy, or the log"
+                    " file or DirectPlay was slow)", (unsigned long)(lt - c->last_loop));
+        c->last_loop = lt;
         fd_set rs;
         FD_ZERO(&rs);
         FD_SET(c->sock, &rs);

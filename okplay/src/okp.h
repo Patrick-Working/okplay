@@ -180,6 +180,12 @@ typedef struct {
     okp_rbuf rbuf[OKP_RTX_MAX];
     int nrbuf;
     uint32_t r_sent, r_retrans, r_giveup, r_dups;
+    DWORD r_slowest;               /* longest a reliable message took to be acked, ms */
+    uint32_t r_slow;               /* reliable messages that took 500 ms or more */
+    /* pause detector (net.c gap_track): game messages each way, and anything else heard */
+    DWORD game_rx_last, game_rx_run, game_tx_last, game_tx_run;
+    DWORD any_rx_last, quiet_max;  /* any packet from it, and its longest silence since a game message */
+    uint32_t gaps_logged;
     okp_pend *pend, *pend_tail;    /* waiting for window space, oldest first */
     int npend, pend_bytes, pend_peak;
     uint32_t r_queued;             /* pieces that had to wait */
@@ -265,6 +271,7 @@ typedef struct {
     volatile LONG closing;         /* session closed: host should withdraw */
 
     DWORD last_stats;
+    DWORD last_loop;               /* net thread: when its loop last went round (stall detector) */
 
     /* LAN Play */
     SOCKET lan_q;                  /* joiner: ephemeral IPv4 socket for DISCOVER/OFFER */
