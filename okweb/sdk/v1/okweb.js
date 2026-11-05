@@ -12,6 +12,16 @@ const DEFAULT_KEY = 'okp_7Qm2xV9rLs4Hd8Wn';
 const DEFAULT_ICE = [{ urls: 'stun:stun.cloudflare.com:3478' }, { urls: 'stun:stun.l.google.com:19302' }];
 const T_APP = 0, T_CTL = 1;         // first byte of every data-channel frame
 
+/* Tests: simulated network conditions on what arrives (one way, so both sides together make a round trip
+ * of twice the delay). opts.netsim, or the page's ?okwebsim=delayMs,jitterMs,loss (loss 0..1, unreliable
+ * lane only; the reliable lane keeps its order). Off unless asked for. */
+function parseSim(v) {
+  if (v === null || v === undefined || v === '' || v === false) return null;
+  const a = typeof v === 'string' ? v.split(',').map(Number) : [v.delayMs, v.jitterMs, v.loss];
+  const sim = { delay: Math.max(0, a[0] || 0), jitter: Math.max(0, a[1] || 0), loss: Math.min(1, Math.max(0, a[2] || 0)) };
+  return sim.delay || sim.jitter || sim.loss ? sim : null;
+}
+
 /* Timers that keep going in a background tab. Browsers slow a hidden page's setTimeout and
  * setInterval to about once a second, and after a few minutes to about once a minute: a hosted
  * room would expire on the server and the game's networking would stall. A dedicated worker's
@@ -521,7 +531,18 @@ export class Session extends Emitter {
     this._frame(p, bytes.subarray(1), bytes[0] === 1);
   }
 
+  // every frame that arrives (data channels and relay); with simulated conditions (parseSim) after the delay
   _frame(peer, data, reliable) {
+    const sim = this.net && this.net.sim;
+    if (!sim) return this._frameNow(peer, data, reliable);
+    if (!reliable && sim.loss && Math.random() < sim.loss) return;
+    const copy = data.slice(0);   // (the buffer may be reused before the delay is over)
+    let at = performance.now() + sim.delay + Math.random() * sim.jitter;
+    if (reliable) { if (at < (peer._simReliable || 0)) at = peer._simReliable; peer._simReliable = at; }   // (in order)
+    setTimeout(() => this._frameNow(peer, copy, reliable), Math.max(0, at - performance.now()));
+  }
+
+  _frameNow(peer, data, reliable) {
     const f = new Uint8Array(data);
     if (!f.length) return;
     if (f[0] === T_APP) {
@@ -750,6 +771,8 @@ export class OkWeb {
     this.relayAfterMs = opts.relayAfterMs || 8000;
     this.pingMs = opts.pingMs || 0;   // > 0: measure each player's round trip this often (stats(): ping, pingAvg...)
     this._testNoDirect = !!opts._testNoDirect;   // tests: descriptions without routes, so no direct path opens
+    this.sim = parseSim(opts.netsim !== undefined ? opts.netsim
+      : (typeof location !== 'undefined' ? new URLSearchParams(location.search).get('okwebsim') : null));   // tests: see parseSim
     this.logger = opts.log || null;
     this.server = new Server(opts.server, opts.key || DEFAULT_KEY);
   }
