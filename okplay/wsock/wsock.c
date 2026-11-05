@@ -24,6 +24,7 @@
  * Status (2026-11-05): first version. Not yet: the Online/LAN + password window, IPX. */
 #define WIN32_LEAN_AND_MEAN
 #include "okp.h"
+#include "okbox.h"
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -45,6 +46,7 @@ typedef struct {
 } okw_hdr;
 #pragma pack(pop)
 #define OKW_BCAST 1
+#define OKW_CTRL  2   /* okplay's own: 'A' + password hash (joiner -> host), 'Y' / 'N' (host -> joiner) */
 
 typedef struct okw_pkt {
     struct okw_pkt *next;
@@ -71,6 +73,23 @@ static CRITICAL_SECTION okw_lock;
 static okw_sock socks[OKW_MAX_SOCKS];
 static okp_ctx *ctx;
 static int started, want_lan;
+/* the Online/LAN/Original choice: 0 = not made yet, 1 = the game's original TCP/IP (Windows' own Winsock,
+ * okplay stays out), 2 = Online Play, 3 = LAN Play */
+static volatile LONG mode_choice;
+static CRITICAL_SECTION okw_ask_lock;   /* one box at a time; held while it is open (okw_lock is not) */
+/* game passwords (as the drop-in: only "okp1-" + a salted SHA-256 travels) */
+static uint32_t pending_room;           /* the host's room id, chosen before its password box */
+static int host_pw_asked, host_has_pw;
+static char host_hash[64];
+static uint64_t authed[OKP_MAX_PEERS];  /* host: joiners that showed the right hash */
+static int nauthed;
+static uint64_t auth_host;              /* joiner: the password room it is joining */
+static int auth_state;                  /* 0 not asked, 1 sent - waiting, 2 let in, -1 cancelled */
+static char join_hash[64];
+static DWORD auth_tick;
+typedef struct { uint64_t peer; uint16_t sport, dport; int flags, len; uint8_t data[300]; } okw_held;
+static okw_held held[64];               /* joiner: game packets waiting for the host's yes */
+static int nheld;
 static HMODULE g_self;
 static uint16_t next_eph = 30000;
 static char advert[1024];          /* host: the game's last broadcast */
@@ -101,6 +120,20 @@ static int peer_of_standin(uint32_t ip, uint64_t *out)   /* okw_lock held (takes
         if (standin_of(ctx->rooms[i].host) == ip) { *out = ctx->rooms[i].host; found = 1; }
     LeaveCriticalSection(&ctx->lock);
     return found;
+}
+
+/* the game's instance id the password hash is salted with: made from the room id, the same on every PC */
+static GUID room_guid(uint32_t room)
+{
+    GUID g = { room, 0x4f4b, 0x5753, { 'o', 'k', 'w', 's', 'o', 'c', 'k', 1 } };
+    return g;
+}
+
+static void wide_to_ascii(const WCHAR *w, char *out, int n)
+{
+    int i;
+    for (i = 0; i < n - 1 && w[i]; i++) out[i] = (char)w[i];
+    out[i] = 0;
 }
 
 static const char *ip_s(uint32_t ip, char *b)
@@ -154,14 +187,67 @@ static void deliver(uint32_t from_ip, uint16_t sport, uint16_t dport, const void
     if (any) queue_pkt(any, from_ip, sport, data, len);
 }
 
+static int send_to_peer(uint64_t peer, uint16_t sport, uint16_t dport, int flags, const void *buf, int len);
+
+static int is_authed(uint64_t peer)   /* okw_lock held */
+{
+    for (int i = 0; i < nauthed; i++) if (authed[i] == peer) return 1;
+    return 0;
+}
+
+static DWORD WINAPI wrong_password_box(LPVOID arg)
+{
+    (void)arg;
+    okbox_wrong_password();
+    return 0;
+}
+
+static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held */
+{
+    if (n < 1) return;
+    if (b[0] == 'A' && ctx && ctx->is_host) {   /* a joiner's password */
+        char got[64];
+        int k = n - 1 < 63 ? n - 1 : 63;
+        memcpy(got, b + 1, k);
+        got[k] = 0;
+        int ok = !host_has_pw || !strcmp(got, host_hash);
+        if (ok && !is_authed(from) && nauthed < OKP_MAX_PEERS) authed[nauthed++] = from;
+        okp_log(1, "wsock: peer %016llx %s", (unsigned long long)from, ok ? "let in (password matched)" : "turned away (wrong password)");
+        send_to_peer(from, 0, 0, OKW_CTRL, ok ? "Y" : "N", 1);
+    } else if ((b[0] == 'Y' || b[0] == 'N') && from == auth_host && auth_state == 1) {
+        if (b[0] == 'Y') {
+            auth_state = 2;
+            okp_log(1, "wsock: the host let us in - %d held packet(s) go now", nheld);
+            for (int i = 0; i < nheld; i++)
+                send_to_peer(held[i].peer, held[i].sport, held[i].dport, held[i].flags, held[i].data, held[i].len);
+        } else {
+            auth_state = 0;   /* the game's next join attempt asks again */
+            okp_log(1, "wsock: wrong password - the host did not let us in");
+            if (!getenv("OKP_TEST_JOIN_PASSWORD")) {
+                HANDLE t = CreateThread(NULL, 0, wrong_password_box, NULL, 0, NULL);
+                if (t) CloseHandle(t);
+            }
+        }
+        nheld = 0;
+    }
+}
+
 static void okw_rx(void *c, uint64_t from, const void *data, int len)   /* okplay's net thread */
 {
     (void)c;
     if (len < (int)sizeof(okw_hdr)) return;
     const okw_hdr *h = (const okw_hdr *)data;
     if (h->m0 != 'W' || h->m1 != 'K') return;
+    const uint8_t *body = (const uint8_t *)data + sizeof(*h);
+    int blen = len - (int)sizeof(*h);
     EnterCriticalSection(&okw_lock);
-    deliver(standin_of(from), h->sport, h->dport, (const uint8_t *)data + sizeof(*h), len - (int)sizeof(*h));
+    if (h->flags & OKW_CTRL) {
+        control(from, body, blen);
+    } else if (ctx && ctx->is_host && host_has_pw && !is_authed(from)) {
+        /* a password game: nothing from a joiner reaches the game before its password matched */
+    } else {
+        deliver(standin_of(from), h->sport, h->dport, body, blen);
+    }
     LeaveCriticalSection(&okw_lock);
 }
 
@@ -169,6 +255,14 @@ static int send_to_peer(uint64_t peer, uint16_t sport, uint16_t dport, int flags
 {
     uint8_t pkt[sizeof(okw_hdr) + 2048];
     if (len > 2048 || !ctx) return 0;
+    if (!(flags & OKW_CTRL) && peer == auth_host && auth_state != 2) {   /* a password room: wait for its yes */
+        if (auth_state == 1 && nheld < 64 && len <= (int)sizeof(held[0].data)) {
+            okw_held *e = &held[nheld++];
+            e->peer = peer; e->sport = sport; e->dport = dport; e->flags = flags; e->len = len;
+            memcpy(e->data, buf, len);
+        }
+        return 1;
+    }
     okw_hdr *h = (okw_hdr *)pkt;
     h->m0 = 'W';
     h->m1 = 'K';
@@ -204,6 +298,7 @@ static void build_room_record(void)   /* okw_lock held */
     }
     memcpy(sd + 40, &maxp, 4);
     memcpy(sd + 44, &curp, 4);
+    if (host_has_pw) { uint32_t fl = 0x400; memcpy(sd + 4, &fl, 4); }   /* DPSESSION_PASSWORDREQUIRED: the list shows a lock */
     uint32_t off = 92;
     memcpy(b + 88, &off, 4);
     int n = 92;
@@ -244,11 +339,7 @@ static void start_okplay(void)   /* okw_lock held; the first time the game uses 
     if (started) return;
     started = 1;
     okp_config_load();
-    char ini[MAX_PATH], v[16] = "";
-    snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
-    GetPrivateProfileStringA("okplay", "wsock_mode", "online", v, sizeof(v), ini);
-    GetEnvironmentVariableA("OKP_WSOCK_MODE", v, sizeof(v));   /* tests: online / lan */
-    want_lan = !_stricmp(v, "lan");
+    want_lan = mode_choice == 3;
     okp_ctx *c = (okp_ctx *)calloc(1, sizeof(okp_ctx));
     if (!c) return;
     c->host_transport = -1;
@@ -277,7 +368,7 @@ static void start_okplay(void)   /* okw_lock held; the first time the game uses 
 static void host_room(void)   /* okw_lock held */
 {
     if (!ctx || ctx->is_host) return;
-    ctx->room = (uint32_t)okp_rand64() | 1;
+    ctx->room = pending_room ? pending_room : ((uint32_t)okp_rand64() | 1);
     snprintf(ctx->tok, sizeof(ctx->tok), "%016llx", (unsigned long long)okp_rand64());
     ctx->is_host = 1;
     ctx->closing = 0;
@@ -317,6 +408,14 @@ static void join_room(uint64_t host)   /* okw_lock held */
 static void okw_tick(void)   /* okw_lock held */
 {
     DWORD now = okp_now();
+    if (ctx && auth_state == 1 && now - auth_tick >= 500) {   /* our password, until the host answers */
+        uint8_t a[64];
+        int n = (int)strlen(join_hash);
+        a[0] = 'A';
+        memcpy(a + 1, join_hash, n);
+        auth_tick = now;
+        send_to_peer(auth_host, 0, 0, OKW_CTRL, a, n + 1);
+    }
     if (!ctx || ctx->is_host || ctx->host_peer) return;
     int browsing = 0;
     for (int i = 0; i < OKW_MAX_SOCKS; i++) if (socks[i].used && socks[i].port && !socks[i].peer_ip) browsing = 1;
@@ -357,6 +456,95 @@ static HANDLE WINAPI okw_CreateThread(LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LP
 }
 void *const okw_imp_CreateThread __asm__("__imp__CreateThread@24") = (void *)okw_CreateThread;
 
+/* ---------------------------------------------------------------- the boxes */
+
+/* the first UDP socket (or own-address lookup) of a game run: Online Play, LAN Play or the original TCP/IP.
+ * okplay.ini wsock_mode=ask (default) | online | lan | original; tests: OKP_WSOCK_MODE. No okw_lock held. */
+static int choose_mode(void)
+{
+    if (mode_choice) return mode_choice;
+    EnterCriticalSection(&okw_ask_lock);
+    if (!mode_choice) {
+        char ini[MAX_PATH], v[16] = "";
+        snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
+        GetPrivateProfileStringA("okplay", "wsock_mode", "ask", v, sizeof(v), ini);
+        GetEnvironmentVariableA("OKP_WSOCK_MODE", v, sizeof(v));
+        int m = !_stricmp(v, "online") ? 2 : !_stricmp(v, "lan") ? 3 : (!_stricmp(v, "original") || !_stricmp(v, "windows")) ? 1 : 0;
+        if (!m) m = okbox_ask_mode("TCP/IP");
+        okp_log(1, "wsock: %s (okplay.ini wsock_mode=%s)", m == 2 ? "Online Play" : m == 3 ? "LAN Play" :
+                "the game's original TCP/IP - okplay stays out", v);
+        InterlockedExchange(&mode_choice, m);
+    }
+    LeaveCriticalSection(&okw_ask_lock);
+    return mode_choice;
+}
+
+/* the game is about to host (its first broadcast): the password box, as the drop-in's */
+static void ask_host_password(void)
+{
+    WCHAR w[64];
+    EnterCriticalSection(&okw_ask_lock);
+    if (!host_pw_asked) {
+        host_pw_asked = 1;
+        pending_room = (uint32_t)okp_rand64() | 1;
+        GUID g = room_guid(pending_room);
+        if (okbox_ask_host_password(&g, w, 64)) {
+            wide_to_ascii(w, host_hash, sizeof(host_hash));
+            host_has_pw = 1;
+        }
+    }
+    LeaveCriticalSection(&okw_ask_lock);
+}
+
+/* the game is joining `host`'s room, which has a password: ask, then send the hash until the host answers */
+static void ask_join_password(uint64_t host, uint32_t room)
+{
+    WCHAR w[64];
+    EnterCriticalSection(&okw_ask_lock);
+    if (!(auth_host == host && (auth_state == 1 || auth_state == 2))) {
+        GUID g = room_guid(room);
+        int ok = okbox_ask_join_password(&g, w, 64);
+        EnterCriticalSection(&okw_lock);
+        auth_host = host;
+        nheld = 0;
+        if (ok) {
+            wide_to_ascii(w, join_hash, sizeof(join_hash));
+            auth_state = 1;
+            auth_tick = 0;
+        } else {
+            auth_state = -1;   /* cancelled: the game's join to this room just goes nowhere */
+        }
+        LeaveCriticalSection(&okw_lock);
+    }
+    LeaveCriticalSection(&okw_ask_lock);
+}
+
+/* before a send (no okw_lock held): does it need a box first? */
+static void boxes_before_send(uint32_t ip)
+{
+    if (mode_choice < 2) return;
+    if (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF) {
+        if (!host_pw_asked && !(ctx && ctx->host_peer)) ask_host_password();
+        return;
+    }
+    uint64_t host = 0;
+    uint32_t room = 0, flags = 0;
+    EnterCriticalSection(&okw_lock);
+    if (ctx && !ctx->is_host) {
+        EnterCriticalSection(&ctx->lock);
+        for (int i = 0; i < ctx->nrooms; i++) {
+            if (standin_of(ctx->rooms[i].host) != ip) continue;
+            host = ctx->rooms[i].host;
+            room = ctx->rooms[i].room;
+            if (ctx->rooms[i].enumlen >= 8 + 8) memcpy(&flags, ctx->rooms[i].enumblob + 8 + 4, 4);
+        }
+        LeaveCriticalSection(&ctx->lock);
+    }
+    int need = host && (flags & 0x400) && !(auth_host == host && (auth_state == 1 || auth_state == 2));
+    LeaveCriticalSection(&okw_lock);
+    if (need) ask_join_password(host, room);
+}
+
 /* ---------------------------------------------------------------- the Winsock calls */
 
 static int set_err(int e) { WSASetLastError(e); return SOCKET_ERROR; }
@@ -365,6 +553,7 @@ SOCKET WINAPI x_socket(int af, int type, int proto)
 {
     SOCKET s = socket(af, type, proto);
     if (s == INVALID_SOCKET || af != AF_INET || type != SOCK_DGRAM) return s;
+    if (choose_mode() == 1) return s;   /* the original TCP/IP: Windows' own socket, untouched */
     EnterCriticalSection(&okw_lock);
     start_okplay();
     for (int i = 0; i < OKW_MAX_SOCKS; i++) {
@@ -480,6 +669,7 @@ static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int l
 
 int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockaddr *a, int al)
 {
+    if (a && al >= (int)sizeof(struct sockaddr_in)) boxes_before_send(((const struct sockaddr_in *)a)->sin_addr.s_addr);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k) { LeaveCriticalSection(&okw_lock); return sendto(s, b, len, f, a, al); }
@@ -607,6 +797,7 @@ struct hostent *WINAPI x_gethostbyname(const char *n)
     static char *list[2];
     char me[256] = "";
     gethostname(me, sizeof(me));
+    if (choose_mode() == 1) return gethostbyname(n);
     EnterCriticalSection(&okw_lock);
     start_okplay();
     int mine = ctx && (!n || !n[0] || !_stricmp(n, me));
@@ -659,7 +850,21 @@ HANDLE WINAPI x_WSAAsyncGetHostByName(HWND w, u_int m, const char *n, char *b, i
 int WINAPI x_WSAGetLastError(void) { return WSAGetLastError(); }
 void WINAPI x_WSASetLastError(int e) { WSASetLastError(e); }
 int WINAPI x_WSAStartup(WORD v, LPWSADATA d) { return WSAStartup(v, d); }
-int WINAPI x_WSACleanup(void) { return WSACleanup(); }
+/* the game is done with the network: a room it hosted comes off the list now (the process may end next) */
+int WINAPI x_WSACleanup(void)
+{
+    int withdraw = 0;
+    EnterCriticalSection(&okw_lock);
+    if (ctx && (ctx->is_host || ctx->closing) && ctx->room && ctx->mode == OKP_MODE_ONLINE) {
+        withdraw = 1;
+        ctx->is_host = 0;
+        ctx->session_open = 0;
+        ctx->closing = 1;
+    }
+    LeaveCriticalSection(&okw_lock);
+    if (withdraw) okp_rdv_close(ctx);
+    return WSACleanup();
+}
 int WINAPI x___WSAFDIsSet(SOCKET s, fd_set *f) { return __WSAFDIsSet(s, f); }
 
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
@@ -672,6 +877,12 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
         WSADATA w;
         WSAStartup(MAKEWORD(2, 2), &w);
         okp_log_init(inst);
+        InitializeCriticalSection(&okw_ask_lock);
+        {
+            static char ini[MAX_PATH];
+            snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
+            okbox_init(inst, NULL, ini);
+        }
         DisableThreadLibraryCalls(inst);
     }
     return TRUE;

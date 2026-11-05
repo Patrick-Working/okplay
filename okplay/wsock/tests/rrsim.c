@@ -1,7 +1,7 @@
 /* rrsim: a stand-in for a LAN game with Road Rash's network pattern, to test okplay wsock without the game.
  *   rrsim host NAME [secs]   - broadcasts 57-byte adverts to 255.255.255.255:6995 every 500 ms, takes a
  *                              19-byte join request on 6996, opens a connected socket back on the joiner's port
- *   rrsim join [secs]        - listens on 6995, takes the first advert, sends the join request to host:6996
+ *   rrsim join [secs] [name] - listens on 6995, takes the first advert (from that host name), sends the join request to host:6996
  *                              from 6996, opens a connected socket on its own port to host:that port
  * Both then exchange hellos on the link; RESULT ok when each heard the other. Plain Winsock 1.1 (wsock32),
  * the calls the game makes (FIONREAD polling, FIONBIO, connected UDP). Windows 95 and later. */
@@ -141,12 +141,19 @@ int main(int argc, char **argv)
                     connect(l, (struct sockaddr *)&to, sizeof(to));
                     int ok = link_up(l, 'S', secs);
                     printf("RESULT %s\n", ok ? "ok" : "fail");
+                    closesocket(l);
+                    closesocket(ad);   /* as the game does: its room comes off the list */
+                    closesocket(jl);
+                    WSACleanup();
                     return ok ? 0 : 1;
                 }
             }
             Sleep(33);
         }
         printf("RESULT fail (no join)\n");
+        closesocket(ad);
+        closesocket(jl);
+        WSACleanup();
         return 1;
     }
     SOCKET ad = udp_bound(6995);
@@ -158,7 +165,7 @@ int main(int argc, char **argv)
             struct sockaddr_in from;
             int fl = sizeof(from);
             int k = recvfrom(ad, a, sizeof(a), 0, (struct sockaddr *)&from, &fl);
-            if (k == 57) {
+            if (k == 57 && (argc < 4 || !strncmp(a + 37, argv[3], 19))) {   /* join [secs] [host name] */
                 unsigned long hip;
                 memcpy(&hip, a + 4, 4);
                 printf("EVENT advert from %s: host %s \"%.19s\", %d free\n", ip_s(from.sin_addr.s_addr), ip_s(hip), a + 37, a[17]);

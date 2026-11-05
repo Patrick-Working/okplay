@@ -35,7 +35,7 @@ gcc -shared -o bin/plain/dplayx.dll $P shim/dplayx.def -Wl,--enable-stdcall-fixu
 D=$(build_wine dropin "-DOKP_BUILTIN -include $OK/src/okp_stdio.h -iquote $OK/src")
 OFLAGS="$CPU -O2 -g -fno-omit-frame-pointer -Wall -Wextra -Wno-unused-parameter -Wno-cast-function-type -Wno-format-truncation -D_WIN32_WINNT=0x0601 -DWINVER=0x0601 -DOKP_BUILTIN -include $OK/src/okp_stdio.h -I$OK/include -I$OK/src"
 O=""
-for f in sp net rdv lan util crash compat okp_printf report; do
+for f in sp net rdv lan util crash compat okp_printf report okbox; do
     gcc $OFLAGS -c -o obj/okplay/$f.o $OK/src/$f.c
     O="$O obj/okplay/$f.o"
 done
