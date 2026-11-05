@@ -8,5 +8,11 @@ need_mingw32
 mkdir -p bin
 gcc -O2 -g -march=pentium-mmx -mtune=generic -D__USE_MINGW_ANSI_STDIO=0 -Wall -mwindows -o bin/okagent.exe okagent.c \
     -static-libgcc -lwsock32 -luser32 -lgdi32 -ladvapi32
+# okagent-ws2.exe: the same agent on Winsock 2 (ws2_32.dll, Windows 98 and later). On Windows 9x one
+# loaded wsock32.dll is shared by every program, so an agent holding it keeps a game from loading a
+# wsock32.dll from its own folder (okplay/tools/wsocklog, the Winsock shim).
+gcc -O2 -g -march=pentium-mmx -mtune=generic -D__USE_MINGW_ANSI_STDIO=0 -Wall -mwindows -o bin/okagent-ws2.exe okagent.c \
+    -static-libgcc -lws2_32 -luser32 -lgdi32 -ladvapi32
 bash ../winedplay/check9x.sh "$(pwd)/bin/okagent.exe"
+bash ../winedplay/check9x.sh "$(pwd)/bin/okagent-ws2.exe"
 ls -la bin/okagent.exe

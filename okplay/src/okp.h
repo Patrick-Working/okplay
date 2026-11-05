@@ -221,6 +221,9 @@ typedef struct {
 
 typedef struct {
     IDirectPlaySP *isp;
+    /* A game that isn't DirectPlay (okplay/wsock, the Winsock shim): received game data goes here
+     * instead of to dplayx (from = the sender's peer id). NULL for DirectPlay. */
+    void (*raw_rx)(void *ctx, uint64_t from, const void *data, int len);
     CRITICAL_SECTION lock;
     int mode;                      /* OKP_MODE_* (chosen by the GUID dplayx loaded us for) */
     const char *mode_name;

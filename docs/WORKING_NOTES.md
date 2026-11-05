@@ -63,9 +63,20 @@ Gotchas learned the hard way:
 - SDL's Emscripten port yields in every `SDL_RenderPresent` in an Asyncify build unless
   `SDL_HINT_EMSCRIPTEN_ASYNCIFY` is "0".
 
-## Where things stand (2026-10-28)
+## Where things stand (2026-11-05)
 
-- Drop-in: 0.8.2 released; parity with Windows' DirectPlay measured in `docs/DPLAY_CONFORMANCE.md`.
+- Drop-in: 0.8.3 released (tag v0.8.3). Unreleased on main: the pause detector (`okplay/src/net.c`,
+  "pause:" log lines). A player saw 3-8 s pauses in AoE2 UserPatch LAN games on 0.8.3; 0.8.3 logs
+  cannot say why. Each "pause:" line names the cause: network outage (not even keepalives arrived),
+  the other PC's game stopped sending, this PC's game stopped, guaranteed messages acked late, or
+  okplay's thread / DirectPlay held up. Next: a test build on both PCs, then read both `netplay-logs`
+  around a pause (line up the "from HH:MM:SS" times). Also fixed: after an outage, unacked reliable
+  messages now go again on the next tick instead of waiting out their backed-off retry (up to 1 s).
+- Parity left (`docs/DPLAY_CONFORMANCE.md`): receiving 48/49 split messages, CREATEPLAYERVERIFY on
+  host migration, groups for a late joiner, hidden/staging group flags.
+- Testing: Online scenarios in `tests/run_local.sh` need `python server/rdv_standin.py --port 8787`
+  running; without it pair/migrate/aoe2names/mixed98 fail with "no session found".
+- Earlier (2026-10-28): 0.8.2 released; parity with Windows' DirectPlay measured in `docs/DPLAY_CONFORMANCE.md`.
 - Browser: okweb 1.2.0 (game passwords as in the drop-in, the lock shown on the room list). A full
   AoE2 browser port (rogan2) hosts, joins, readies and plays over Online Play, directly or through the
   room server's relay.

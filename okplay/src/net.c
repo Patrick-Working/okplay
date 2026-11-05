@@ -936,6 +936,7 @@ static void rel_deliver(okp_peer *p, uint8_t *data, int len, int frag, int own, 
 
 static void hand_to_dplay(okp_ctx *c, const okp_wire *w, void *body, int blen)
 {
+    if (c->raw_rx) { c->raw_rx(c, w->from, body, blen); return; }
     if (!c->isp) return;
     okp_sphdr h;
     h.magic = OKP_HDR_MAGIC;

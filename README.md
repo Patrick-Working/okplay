@@ -34,6 +34,7 @@ measurements are in `docs/DPLAY_CONFORMANCE.md`.
 | `okweb/` | DirectPlay for the browser (`dplay/`), the JavaScript SDK (`sdk/`), demo, how a browser port plugs in (`integrations/`) |
 | `oknative/` | okplay for native games on ENet (first used by the UFO 50 Android port): room list, hole punching, UPnP, the relay, staying online in the background on Android |
 | `conformance/` | the suites that compare ours with Windows' DirectPlay (S1 Wine's tests, S3 wire tap, S4 two machines) |
+| `okplay/tools/wsocklog/` | a pass-through `wsock32.dll` that logs a game's Winsock calls (for non-DirectPlay games) |
 | `okagent/` | a small remote-control agent for the Windows 98 test VMs |
 | `docs/` | design, conformance results, per-game notes (`GAME_*.md`) |
 
@@ -64,11 +65,31 @@ The browser build (`okweb/dplay/build_wasm.sh`) needs Emscripten.
   (needs Windows' DirectPlay feature).
 - `conformance/run_s3.sh` - what each DirectPlay puts on the wire, message by message.
 
-## Games
+## Games and projects
 
-Any DirectPlay game should work; tested so far: Age of Empires II, Midtown Madness 2, Necrodome
-(`docs/GAME_NECRODOME.md`). Fixes for one game's own bugs are kept apart, in memory only and for an
-exact game file (`winedplay/shim/gamefix.c`) - the game's files are never changed.
+**DirectPlay games (the drop-in)** - any DirectPlay game should work, from DirectX 3 (`DPLAY.DLL`) to
+DirectX 7. Tested:
+
+- **Age of Empires II: The Conquerors**, original and UserPatch 1.5 - Online Play, LAN Play, passwords,
+  Windows 98 to 11.
+- **Midtown Madness 2**.
+- **Necrodome** (DirectX 3 era): the GOG edition and the original CD release, Windows 10 against
+  Windows 98 (`docs/GAME_NECRODOME.md`).
+
+Fixes for one game's own bugs are kept apart, in memory only and for an exact game file
+(`winedplay/shim/gamefix.c`) - the game's files are never changed.
+
+**Other projects built on okplay**
+
+- [UFO 50 Android Online](https://github.com/Patrick-Working/UFO50AndroidOnline) - build your own
+  Android version of UFO 50 with online play; its room list, hole punching and relay are okplay's
+  (`oknative/`), on top of [PFO 50](https://github.com/Blaizer/PFO-50)'s multiplayer.
+- **Browser ports**: `okweb/` gives a game compiled to WebAssembly the same DirectPlay; first used by a
+  browser port of Age of Empires II (in development).
+
+**Next: games that use Winsock directly** (no DirectPlay) - `okplay/tools/wsocklog` shows how a game
+uses the network; first up is Road Rash (`docs/GAME_ROADRASH.md`): its LAN-only play and its IPX mode,
+which modern Windows dropped, over okplay.
 
 ## Licence
 
