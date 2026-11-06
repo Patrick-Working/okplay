@@ -1,5 +1,14 @@
 # okplay - Oldkid.net Online Play
 
+| | version | status |
+|---|---|---|
+| **DirectPlay drop-in** (`dplayx.dll`, `dplay.dll`) | **0.8.3** (2026-10-28) | released - [download at oldkid.net](https://oldkid.net/aoe2net/) |
+| **Winsock shim** (`wsock32.dll`, new) | **0.1.0** (2026-11-05) | in this repository, not yet in a download |
+
+**Latest supported games:** Road Rash (1996; Steam and CD, new - Winsock shim) · Age of Empires II: The
+Conquerors (original and UserPatch 1.5) · Midtown Madness 2 · Necrodome. Online Play with game passwords (LAN Play for the
+DirectPlay games so far), Windows 98 to 11. Details under [Games and projects](#games-and-projects).
+
 A clean-room replacement for Microsoft DirectPlay, so DirectPlay games from the late 1990s can be
 played online again - on Windows 95 through Windows 11, and in the browser.
 
