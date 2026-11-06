@@ -10,8 +10,8 @@
 /* okplay wsock (okplay/wsock/): a wsock32.dll for games that use Winsock directly */
 #define OKP_VERSION_MAJOR 0
 #define OKP_VERSION_MINOR 1
-#define OKP_VERSION_PATCH 0
-#define OKP_VERSION_STR "0.1.0"
+#define OKP_VERSION_PATCH 1
+#define OKP_VERSION_STR "0.1.1"
 #define OKP_EDITION "wsock"
 #else
 #define OKP_VERSION_MAJOR 0
