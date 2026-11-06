@@ -876,10 +876,37 @@ static LRESULT CALLBACK cbt_proc(int code, WPARAM wp, LPARAM lp)
 
 /* ---------------------------------------------------------------- the Winsock calls */
 
+/* Is this a game okplay wsock is for? One download holds every okplay DLL, so this one may sit next to any
+ * game (a DirectPlay game loads wsock32.dll too). Only for the games on this list (or named in okplay.ini
+ * wsock_games=, or with OKP_WSOCK_MODE set, for tests) does any of okplay run; for every other program each
+ * call goes straight to Windows' Winsock and nothing else happens - no box, no log, no thread, no hook. */
+static int okw_on;
+static const char *const okw_games[] = { "roadrash.exe", "roadrash95.exe" };   /* Road Rash: CD, Steam */
+
+static int is_winsock_game(void)
+{
+    char path[MAX_PATH], *base, v[16] = "";
+    if (GetEnvironmentVariableA("OKP_WSOCK_MODE", v, sizeof(v))) return 1;
+    if (!GetModuleFileNameA(NULL, path, sizeof(path))) return 0;
+    base = strrchr(path, '\\');
+    base = base ? base + 1 : path;
+    for (unsigned i = 0; i < sizeof(okw_games) / sizeof(okw_games[0]); i++) if (!_stricmp(base, okw_games[i])) return 1;
+    char ini[MAX_PATH], list[512] = "", dir[MAX_PATH];
+    if (!GetModuleFileNameA(g_self, dir, sizeof(dir))) return 0;
+    char *slash = strrchr(dir, '\\');
+    if (slash) slash[1] = 0;
+    snprintf(ini, sizeof(ini), "%sokplay.ini", dir);
+    GetPrivateProfileStringA("okplay", "wsock_games", "", list, sizeof(list), ini);
+    for (char *t = strtok(list, ",; "); t; t = strtok(NULL, ",; ")) if (!_stricmp(base, t)) return 1;
+    return 0;
+}
+
+
 static int set_err(int e) { WSASetLastError(e); return SOCKET_ERROR; }
 
 SOCKET WINAPI x_socket(int af, int type, int proto)
 {
+    if (!okw_on) return socket(af, type, proto);
     SOCKET s = socket(af, type, proto);
     if (s == INVALID_SOCKET || af != AF_INET || type != SOCK_DGRAM) return s;
     if (choose_mode() == 1) return s;   /* the original TCP/IP: Windows' own socket, untouched */
@@ -898,6 +925,7 @@ SOCKET WINAPI x_socket(int af, int type, int proto)
 
 int WINAPI x_closesocket(SOCKET s)
 {
+    if (!okw_on) return closesocket(s);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (k) {
@@ -918,6 +946,7 @@ int WINAPI x_closesocket(SOCKET s)
 
 int WINAPI x_bind(SOCKET s, const struct sockaddr *a, int l)
 {
+    if (!okw_on) return bind(s, a, l);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k) { LeaveCriticalSection(&okw_lock); return bind(s, a, l); }
@@ -933,6 +962,7 @@ int WINAPI x_bind(SOCKET s, const struct sockaddr *a, int l)
 
 int WINAPI x_connect(SOCKET s, const struct sockaddr *a, int l)
 {
+    if (!okw_on) return connect(s, a, l);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k) { LeaveCriticalSection(&okw_lock); return connect(s, a, l); }
@@ -949,6 +979,7 @@ int WINAPI x_connect(SOCKET s, const struct sockaddr *a, int l)
 
 int WINAPI x_getsockname(SOCKET s, struct sockaddr *a, int *l)
 {
+    if (!okw_on) return getsockname(s, a, l);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k || !ctx) { LeaveCriticalSection(&okw_lock); return getsockname(s, a, l); }
@@ -1000,6 +1031,7 @@ static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int l
 
 int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockaddr *a, int al)
 {
+    if (!okw_on) return sendto(s, b, len, f, a, al);
     wait_for_box();
     if (a && al >= (int)sizeof(struct sockaddr_in)) boxes_before_send(((const struct sockaddr_in *)a)->sin_addr.s_addr);
     EnterCriticalSection(&okw_lock);
@@ -1019,6 +1051,7 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
 
 int WINAPI x_send(SOCKET s, const char *b, int len, int f)
 {
+    if (!okw_on) return send(s, b, len, f);
     wait_for_box();
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
@@ -1074,6 +1107,7 @@ static int do_recv(SOCKET s, char *b, int len, struct sockaddr *a, int *al, int 
 
 int WINAPI x_recv(SOCKET s, char *b, int len, int f)
 {
+    if (!okw_on) return recv(s, b, len, f);
     wait_for_box();
     int handled;
     int r = do_recv(s, b, len, NULL, NULL, &handled);
@@ -1082,6 +1116,7 @@ int WINAPI x_recv(SOCKET s, char *b, int len, int f)
 
 int WINAPI x_recvfrom(SOCKET s, char *b, int len, int f, struct sockaddr *a, int *al)
 {
+    if (!okw_on) return recvfrom(s, b, len, f, a, al);
     wait_for_box();
     int handled;
     int r = do_recv(s, b, len, a, al, &handled);
@@ -1090,6 +1125,7 @@ int WINAPI x_recvfrom(SOCKET s, char *b, int len, int f, struct sockaddr *a, int
 
 int WINAPI x_ioctlsocket(SOCKET s, long cmd, u_long *arg)
 {
+    if (!okw_on) return ioctlsocket(s, cmd, arg);
     wait_for_box();
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
@@ -1109,6 +1145,7 @@ int WINAPI x_ioctlsocket(SOCKET s, long cmd, u_long *arg)
 
 int WINAPI x_setsockopt(SOCKET s, int lv, int o, const char *v, int l)
 {
+    if (!okw_on) return setsockopt(s, lv, o, v, l);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (k) {
@@ -1128,6 +1165,7 @@ int WINAPI x_getsockopt(SOCKET s, int lv, int o, char *v, int *l)
 /* the game's own address = its stand-in */
 struct hostent *WINAPI x_gethostbyname(const char *n)
 {
+    if (!okw_on) return gethostbyname(n);
     static struct hostent he;
     static char name[256];
     static uint32_t addr;
@@ -1156,6 +1194,7 @@ struct hostent *WINAPI x_gethostbyname(const char *n)
 SOCKET WINAPI x_accept(SOCKET s, struct sockaddr *a, int *l) { return accept(s, a, l); }
 int WINAPI x_getpeername(SOCKET s, struct sockaddr *a, int *l)
 {
+    if (!okw_on) return getpeername(s, a, l);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (k && k->peer_ip && a && l && *l >= (int)sizeof(struct sockaddr_in)) {
@@ -1188,12 +1227,14 @@ int WINAPI x_WSAGetLastError(void) { return WSAGetLastError(); }
 void WINAPI x_WSASetLastError(int e) { WSASetLastError(e); }
 int WINAPI x_WSAStartup(WORD v, LPWSADATA d)
 {
+    if (!okw_on) return WSAStartup(v, d);
     if (!cbt_hook) cbt_hook = SetWindowsHookExA(WH_CBT, cbt_proc, NULL, GetCurrentThreadId());
     return WSAStartup(v, d);
 }
 /* the game is done with the network: a room it hosted comes off the list now (the process may end next) */
 int WINAPI x_WSACleanup(void)
 {
+    if (!okw_on) return WSACleanup();
     int withdraw = 0;
     EnterCriticalSection(&okw_lock);
     if (ctx && (ctx->is_host || ctx->closing) && ctx->room && ctx->mode == OKP_MODE_ONLINE) {
@@ -1213,6 +1254,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
     (void)res;
     if (why == DLL_PROCESS_ATTACH) {
         g_self = inst;
+        DisableThreadLibraryCalls(inst);
+        okw_on = is_winsock_game();
+        if (!okw_on) return TRUE;   /* not a game this is for: Windows' Winsock only (see is_winsock_game) */
         InitializeCriticalSection(&okw_lock);
         okp_sys_init();
         WSADATA w;

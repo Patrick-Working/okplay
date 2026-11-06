@@ -119,6 +119,15 @@ Noticed: closing the game's window in the middle of a race leaves the game runni
 keeps racing until the process ends), on Windows 10 and 98 alike - the game's own behaviour as far as seen,
 not yet looked into.
 
+## One download for everything: the shim stays out of other games (2026-11-05, night)
+
+okplay ships as one download, so `wsock32.dll` can end up next to any game - and a DirectPlay game loads
+`wsock32.dll` too (AoE2 does). So the shim switches on only for the games it knows (`ROADRASH.EXE`,
+`RoadRash95.exe`; more via okplay.ini `wsock_games=`, or `OKP_WSOCK_MODE` for tests). For any other program
+it does nothing at load (no log, thread, hook or box) and every call goes straight to Windows' Winsock.
+Checked on Windows 98: AoE2 with the shim beside it starts, lists its connections, searches Windows'
+TCP/IP and exits normally; Road Rash still gets Online Play; rrsim right/wrong/open passwords, Online and LAN.
+
 Earlier "joiner stalls" in the VMs were the game's own 33 ms multimedia timer no longer firing in the
 game process after many forced kills and hard resets of the VM; a clean restart fixed it. Exit the game
 normally between runs.
