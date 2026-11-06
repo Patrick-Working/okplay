@@ -17,6 +17,9 @@ extern int okp_utf16_to_utf8( const WCHAR *in, char *out, int outsz );
 static HINSTANCE okbox_self;
 static BOOL (*okbox_aoe2)( void );
 static char okbox_ini[ MAX_PATH ];
+static BOOL okbox_top;
+
+void okbox_set_topmost( BOOL on ) { okbox_top = on; }
 
 void okbox_init( HINSTANCE hinst, BOOL (*is_aoe2)( void ), const char *ini )
 {
@@ -495,8 +498,12 @@ static INT_PTR run_dialog( DLGTEMPLATE *t, DLGPROC proc, struct pw_dialog *d )
     /* DLGTEMPLATE strings are WCHAR for both calls; 9x only creates ANSI dialogs */
     INT_PTR (WINAPI *box_w)( HINSTANCE, LPCDLGTEMPLATEW, HWND, DLGPROC, LPARAM ) =
         (void *)user32_w( "DialogBoxIndirectParamW" );
-    if ( box_w ) return box_w( okbox_self, t, GetActiveWindow(), proc, (LPARAM)d );
-    return DialogBoxIndirectParamA( okbox_self, t, GetActiveWindow(), proc, (LPARAM)d );
+    HWND owner = GetActiveWindow();
+    /* on top and in front: when there is no window to own the box, and always for okplay wsock (games
+     * that draw full screen over everything; okbox_set_topmost) */
+    if ( !owner || okbox_top ) t->style |= DS_SYSMODAL | DS_SETFOREGROUND;
+    if ( box_w ) return box_w( okbox_self, t, owner, proc, (LPARAM)d );
+    return DialogBoxIndirectParamA( okbox_self, t, owner, proc, (LPARAM)d );
 }
 
 /* okplay.ini simple_textboxes=1: the same boxes as plain Windows dialogs - a title bar, the system's

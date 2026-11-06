@@ -84,7 +84,8 @@ static char host_hash[64];
 static uint64_t authed[OKP_MAX_PEERS];  /* host: joiners that showed the right hash */
 static int nauthed;
 static uint64_t auth_host;              /* joiner: the password room it is joining */
-static int auth_state;                  /* 0 not asked, 1 sent - waiting, 2 let in, -1 cancelled */
+static int auth_state;                  /* 0 not asked, 3 box open, 1 sent - waiting, 2 let in, -1 cancelled */
+static uint32_t auth_room;
 static char join_hash[64];
 static DWORD auth_tick;
 typedef struct { uint64_t peer; uint16_t sport, dport; int flags, len; uint8_t data[300]; } okw_held;
@@ -222,6 +223,7 @@ static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held *
                 send_to_peer(held[i].peer, held[i].sport, held[i].dport, held[i].flags, held[i].data, held[i].len);
         } else {
             auth_state = 0;   /* the game's next join attempt asks again */
+            SecureZeroMemory(join_hash, sizeof(join_hash));
             okp_log(1, "wsock: wrong password - the host did not let us in");
             if (!getenv("OKP_TEST_JOIN_PASSWORD")) {
                 HANDLE t = CreateThread(NULL, 0, wrong_password_box, NULL, 0, NULL);
@@ -256,7 +258,7 @@ static int send_to_peer(uint64_t peer, uint16_t sport, uint16_t dport, int flags
     uint8_t pkt[sizeof(okw_hdr) + 2048];
     if (len > 2048 || !ctx) return 0;
     if (!(flags & OKW_CTRL) && peer == auth_host && auth_state != 2) {   /* a password room: wait for its yes */
-        if (auth_state == 1 && nheld < 64 && len <= (int)sizeof(held[0].data)) {
+        if ((auth_state == 1 || auth_state == 3) && nheld < 64 && len <= (int)sizeof(held[0].data)) {
             okw_held *e = &held[nheld++];
             e->peer = peer; e->sport = sport; e->dport = dport; e->flags = flags; e->len = len;
             memcpy(e->data, buf, len);
@@ -458,11 +460,82 @@ void *const okw_imp_CreateThread __asm__("__imp__CreateThread@24") = (void *)okw
 
 /* ---------------------------------------------------------------- the boxes */
 
+/* Where a box runs: on the game's own thread (Windows 9x deadlocked with the box on a thread of its own:
+ * the game holds the Win16 lock while DirectDraw draws, and the box's thread needs it). While it is open,
+ * its message loop would also deliver the game's own timer and input messages - the game then re-entered
+ * us from inside the box and opened another box (five were found open), and redrew its screen over the
+ * box. So a message hook on this thread drops those messages for every window that isn't the box; the
+ * game's network keeps going (its tick runs on a multimedia-timer thread, not on messages). box_open
+ * also makes any call that still comes back in go on without a box. */
+typedef struct { int kind; GUID g; WCHAR w[64]; INT_PTR r; } okw_box;
+static volatile LONG box_open;
+/* While a box is open the game's other threads wait as soon as they touch the network: Road Rash's join
+ * handshake runs on a multimedia-timer thread with its own 5 s clock, which ran out while the player was
+ * typing the password (153 unanswered hellos, then it gave up). Its messages to its own windows are kept
+ * and posted again when the box closes (dropping them lost state the game needed). */
+static HANDLE box_done;      /* manual-reset event, set = no box open */
+static DWORD box_tid;
+typedef struct { HWND w; UINT m; WPARAM wp; LPARAM lp; } okw_msg;
+static okw_msg deferred[64];
+static int ndeferred;
+
+static void wait_for_box(void)
+{
+    /* Windows 9x: not there - a multimedia-timer thread made to wait never sent again (the game's join then
+     * times out while the player types; the password is kept, and joining again goes straight in) */
+    if (okp_sys.win9x) return;
+    if (box_open && GetCurrentThreadId() != box_tid && box_done) WaitForSingleObject(box_done, INFINITE);
+}
+
+static int in_box_window(HWND w)
+{
+    char cls[16];
+    while (w && (GetWindowLongA(w, GWL_STYLE) & WS_CHILD)) w = GetParent(w);   /* up to the top-level window (a popup's GetParent is its owner) */
+    return w && GetClassNameA(w, cls, sizeof(cls)) && !strcmp(cls, "#32770") &&
+           GetWindowThreadProcessId(w, NULL) == GetCurrentThreadId();
+}
+
+static LRESULT CALLBACK box_filter(int code, WPARAM wp, LPARAM lp)
+{
+    if (code >= 0 && wp == PM_REMOVE) {
+        MSG *m = (MSG *)lp;
+        int quiet = m->message == WM_TIMER || (m->message >= WM_KEYFIRST && m->message <= WM_KEYLAST) ||
+                    (m->message >= WM_MOUSEFIRST && m->message <= WM_MOUSELAST) || m->message >= WM_USER;
+        if (quiet && !in_box_window(m->hwnd)) {
+            if (m->message >= WM_USER && m->hwnd && ndeferred < 64) {   /* the game's own: later, not never */
+                okw_msg *d = &deferred[ndeferred++];
+                d->w = m->hwnd; d->m = m->message; d->wp = m->wParam; d->lp = m->lParam;
+            }
+            m->message = WM_NULL;
+        }
+    }
+    return CallNextHookEx(NULL, code, wp, lp);
+}
+
+static INT_PTR run_box(okw_box *b)
+{
+    HHOOK h = SetWindowsHookExA(WH_GETMESSAGE, box_filter, NULL, GetCurrentThreadId());
+    box_tid = GetCurrentThreadId();
+    ndeferred = 0;
+    if (box_done) ResetEvent(box_done);
+    InterlockedExchange(&box_open, 1);
+    if (b->kind == 0) b->r = okbox_ask_mode("TCP/IP");
+    else if (b->kind == 1) b->r = okbox_ask_host_password(&b->g, b->w, 64);
+    else b->r = okbox_ask_join_password(&b->g, b->w, 64);
+    InterlockedExchange(&box_open, 0);
+    if (h) UnhookWindowsHookEx(h);
+    if (box_done) SetEvent(box_done);
+    for (int i = 0; i < ndeferred; i++) PostMessageA(deferred[i].w, deferred[i].m, deferred[i].wp, deferred[i].lp);
+    ndeferred = 0;
+    return b->r;
+}
+
 /* the first UDP socket (or own-address lookup) of a game run: Online Play, LAN Play or the original TCP/IP.
  * okplay.ini wsock_mode=ask (default) | online | lan | original; tests: OKP_WSOCK_MODE. No okw_lock held. */
 static int choose_mode(void)
 {
     if (mode_choice) return mode_choice;
+    if (box_open) return 2;   /* back in from inside the box (9x): okplay for now, the box decides */
     EnterCriticalSection(&okw_ask_lock);
     if (!mode_choice) {
         char ini[MAX_PATH], v[16] = "";
@@ -470,7 +543,12 @@ static int choose_mode(void)
         GetPrivateProfileStringA("okplay", "wsock_mode", "ask", v, sizeof(v), ini);
         GetEnvironmentVariableA("OKP_WSOCK_MODE", v, sizeof(v));
         int m = !_stricmp(v, "online") ? 2 : !_stricmp(v, "lan") ? 3 : (!_stricmp(v, "original") || !_stricmp(v, "windows")) ? 1 : 0;
-        if (!m) m = okbox_ask_mode("TCP/IP");
+        if (!m) {
+            okw_box b;
+            memset(&b, 0, sizeof(b));
+            b.kind = 0;
+            m = (int)run_box(&b);
+        }
         okp_log(1, "wsock: %s (okplay.ini wsock_mode=%s)", m == 2 ? "Online Play" : m == 3 ? "LAN Play" :
                 "the game's original TCP/IP - okplay stays out", v);
         InterlockedExchange(&mode_choice, m);
@@ -483,12 +561,18 @@ static int choose_mode(void)
 static void ask_host_password(void)
 {
     WCHAR w[64];
+    if (box_open) return;   /* back in from inside a box (9x): asked when that one closes */
     EnterCriticalSection(&okw_ask_lock);
     if (!host_pw_asked) {
         host_pw_asked = 1;
         pending_room = (uint32_t)okp_rand64() | 1;
-        GUID g = room_guid(pending_room);
-        if (okbox_ask_host_password(&g, w, 64)) {
+        okw_box b;
+        memset(&b, 0, sizeof(b));
+        b.kind = 1;
+        b.g = room_guid(pending_room);
+        if (run_box(&b)) {
+            memcpy(w, b.w, sizeof(w));
+            SecureZeroMemory(b.w, sizeof(b.w));
             wide_to_ascii(w, host_hash, sizeof(host_hash));
             host_has_pw = 1;
         }
@@ -496,27 +580,51 @@ static void ask_host_password(void)
     LeaveCriticalSection(&okw_ask_lock);
 }
 
-/* the game is joining `host`'s room, which has a password: ask, then send the hash until the host answers */
-static void ask_join_password(uint64_t host, uint32_t room)
+/* the game is joining `host`'s room, which has a password. The box runs on a thread of its own and the game
+ * goes on (shown in the middle of the game's join, a box on the game's thread derailed it on Windows 98);
+ * packets to that host wait until the host's yes. Windows NT: the game's network calls also wait while the
+ * box is open, so its join clock stops. Windows 9x: if typing outlasts the game's join (5 s in Road Rash),
+ * that attempt fails and joining again goes straight in (the password is kept for that room). */
+static DWORD WINAPI join_box_thread(LPVOID arg)
 {
     WCHAR w[64];
-    EnterCriticalSection(&okw_ask_lock);
-    if (!(auth_host == host && (auth_state == 1 || auth_state == 2))) {
-        GUID g = room_guid(room);
-        int ok = okbox_ask_join_password(&g, w, 64);
-        EnterCriticalSection(&okw_lock);
-        auth_host = host;
+    GUID g = room_guid(auth_room);
+    (void)arg;
+    box_tid = GetCurrentThreadId();
+    if (box_done) ResetEvent(box_done);
+    InterlockedExchange(&box_open, 1);
+    int ok = okbox_ask_join_password(&g, w, 64);
+    InterlockedExchange(&box_open, 0);
+    EnterCriticalSection(&okw_lock);
+    if (ok) {
+        wide_to_ascii(w, join_hash, sizeof(join_hash));
+        auth_state = 1;
+        auth_tick = 0;   /* sent at the next call from the game (okw_tick) */
+    } else {
+        auth_state = -1;   /* cancelled: the game's join to this room just goes nowhere */
         nheld = 0;
-        if (ok) {
-            wide_to_ascii(w, join_hash, sizeof(join_hash));
-            auth_state = 1;
-            auth_tick = 0;
-        } else {
-            auth_state = -1;   /* cancelled: the game's join to this room just goes nowhere */
-        }
-        LeaveCriticalSection(&okw_lock);
     }
-    LeaveCriticalSection(&okw_ask_lock);
+    LeaveCriticalSection(&okw_lock);
+    SecureZeroMemory(w, sizeof(w));
+    if (box_done) SetEvent(box_done);
+    return 0;
+}
+
+static void ask_join_password(uint64_t host, uint32_t room)
+{
+    EnterCriticalSection(&okw_lock);
+    int start = !(auth_host == host && (auth_state == 1 || auth_state == 2 || auth_state == 3));
+    if (start) {
+        auth_host = host;
+        auth_room = room;
+        auth_state = 3;
+        nheld = 0;
+    }
+    LeaveCriticalSection(&okw_lock);
+    if (start) {
+        HANDLE t = CreateThread(NULL, 0, join_box_thread, NULL, 0, NULL);
+        if (t) CloseHandle(t);
+    }
 }
 
 /* before a send (no okw_lock held): does it need a box first? */
@@ -540,7 +648,7 @@ static void boxes_before_send(uint32_t ip)
         }
         LeaveCriticalSection(&ctx->lock);
     }
-    int need = host && (flags & 0x400) && !(auth_host == host && (auth_state == 1 || auth_state == 2));
+    int need = host && (flags & 0x400) && !(auth_host == host && (auth_state == 1 || auth_state == 2 || auth_state == 3));
     LeaveCriticalSection(&okw_lock);
     if (need) ask_join_password(host, room);
 }
@@ -639,6 +747,7 @@ static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int l
     if (!ctx) return len;
     if (!k->port) k->port = next_eph++;
     if (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF) {   /* broadcast: we host; everyone in the room gets it */
+        if (box_open && !ctx->is_host) return len;   /* the password box is still open (9x): no room yet */
         if (port != 6996) {
             memcpy(advert, b, len < (int)sizeof(advert) ? len : (int)sizeof(advert));
             advert_len = len < (int)sizeof(advert) ? len : (int)sizeof(advert);
@@ -669,6 +778,7 @@ static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int l
 
 int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockaddr *a, int al)
 {
+    wait_for_box();
     if (a && al >= (int)sizeof(struct sockaddr_in)) boxes_before_send(((const struct sockaddr_in *)a)->sin_addr.s_addr);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
@@ -687,6 +797,7 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
 
 int WINAPI x_send(SOCKET s, const char *b, int len, int f)
 {
+    wait_for_box();
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k) { LeaveCriticalSection(&okw_lock); return send(s, b, len, f); }
@@ -740,6 +851,7 @@ static int do_recv(SOCKET s, char *b, int len, struct sockaddr *a, int *al, int 
 
 int WINAPI x_recv(SOCKET s, char *b, int len, int f)
 {
+    wait_for_box();
     int handled;
     int r = do_recv(s, b, len, NULL, NULL, &handled);
     return handled ? r : recv(s, b, len, f);
@@ -747,6 +859,7 @@ int WINAPI x_recv(SOCKET s, char *b, int len, int f)
 
 int WINAPI x_recvfrom(SOCKET s, char *b, int len, int f, struct sockaddr *a, int *al)
 {
+    wait_for_box();
     int handled;
     int r = do_recv(s, b, len, a, al, &handled);
     return handled ? r : recvfrom(s, b, len, f, a, al);
@@ -754,6 +867,7 @@ int WINAPI x_recvfrom(SOCKET s, char *b, int len, int f, struct sockaddr *a, int
 
 int WINAPI x_ioctlsocket(SOCKET s, long cmd, u_long *arg)
 {
+    wait_for_box();
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k) { LeaveCriticalSection(&okw_lock); return ioctlsocket(s, cmd, arg); }
@@ -878,10 +992,12 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
         WSAStartup(MAKEWORD(2, 2), &w);
         okp_log_init(inst);
         InitializeCriticalSection(&okw_ask_lock);
+        box_done = CreateEventA(NULL, TRUE, TRUE, NULL);
         {
             static char ini[MAX_PATH];
             snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
             okbox_init(inst, NULL, ini);
+            okbox_set_topmost(TRUE);
         }
         DisableThreadLibraryCalls(inst);
     }
