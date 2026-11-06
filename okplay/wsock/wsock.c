@@ -27,6 +27,7 @@
 #include "okbox.h"
 #include <commctrl.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -89,6 +90,7 @@ static int auth_state;                  /* 0 not asked, 3 box open, 1 sent - wai
 static uint32_t auth_room;
 static char join_hash[64];
 static DWORD auth_tick;
+static volatile LONG auth_in_list;      /* the room list is waiting for the host's answer: it shows a "no" itself */
 typedef struct { uint64_t peer; uint16_t sport, dport; int flags, len; uint8_t data[300]; } okw_held;
 static okw_held held[64];               /* joiner: game packets waiting for the host's yes */
 static int nheld;
@@ -157,9 +159,46 @@ static okw_sock *sock_of(SOCKET s)   /* okw_lock held */
     return NULL;
 }
 
+/* okplay.ini wsock_trace=1: every game packet the shim carries, into the log. Lines are kept in memory and
+ * written by a thread of their own: the game sends from a multimedia-timer callback, and on Windows 9x file
+ * I/O from there can stall it. */
+#define TR_N 512
+static char tr_lines[TR_N][128];
+static DWORD tr_tick[TR_N];
+static volatile LONG tr_w, tr_r;
+static int tr_on;
+static CRITICAL_SECTION tr_lock;
+static void tr(const char *fmt, ...)
+{
+    if (!tr_on) return;
+    EnterCriticalSection(&tr_lock);
+    if (tr_w - tr_r < TR_N) {
+        va_list ap;
+        va_start(ap, fmt);
+        _vsnprintf(tr_lines[tr_w % TR_N], 127, fmt, ap);
+        va_end(ap);
+        tr_lines[tr_w % TR_N][127] = 0;
+        tr_tick[tr_w % TR_N] = GetTickCount();
+        tr_w++;
+    }
+    LeaveCriticalSection(&tr_lock);
+}
+static DWORD WINAPI tr_writer(LPVOID arg)
+{
+    (void)arg;
+    for (;;) {
+        Sleep(300);
+        while (tr_r < tr_w) {
+            okp_log(1, "trace +%lu %s", (unsigned long)tr_tick[tr_r % TR_N], tr_lines[tr_r % TR_N]);
+            InterlockedIncrement(&tr_r);
+        }
+    }
+    return 0;
+}
+
 static void queue_pkt(okw_sock *k, uint32_t from_ip, uint16_t from_port, const void *data, int len)   /* lock held */
 {
-    if (k->qn > 256) return;   /* a game that stopped reading: drop, as a full socket buffer does */
+    if (k->qn > 256) { tr("rx DROP queue full port %u", k->port); return; }   /* a game that stopped reading: drop, as a full socket buffer does */
     okw_pkt *p = (okw_pkt *)malloc(sizeof(okw_pkt) + len);
     if (!p) return;
     p->next = NULL;
@@ -181,12 +220,22 @@ static void deliver(uint32_t from_ip, uint16_t sport, uint16_t dport, const void
         okw_sock *k = &socks[i];
         if (!k->used || k->port != dport) continue;
         if (k->peer_ip) {
-            if (k->peer_ip == from_ip && k->peer_port == sport) { queue_pkt(k, from_ip, sport, data, len); return; }
+            if (k->peer_ip == from_ip && k->peer_port == sport) {
+                tr("rx %u<-%u len %d type %d (connected, q %d)", dport, sport, len, len ? ((const uint8_t *)data)[0] : -1, k->qn);
+                queue_pkt(k, from_ip, sport, data, len);
+                return;
+            }
         } else if (!any) {
             any = k;
         }
     }
-    if (any) queue_pkt(any, from_ip, sport, data, len);
+    if (any) {
+        tr("rx %u<-%u len %d type %d (unconnected, q %d)", dport, sport, len, len ? ((const uint8_t *)data)[0] : -1, any->qn);
+        queue_pkt(any, from_ip, sport, data, len);
+    } else {
+        char t[20];
+        tr("rx DROP %u<-%s:%u len %d type %d: no socket for it", dport, ip_s(from_ip, t), sport, len, len ? ((const uint8_t *)data)[0] : -1);
+    }
 }
 
 static int send_to_peer(uint64_t peer, uint16_t sport, uint16_t dport, int flags, const void *buf, int len);
@@ -226,7 +275,7 @@ static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held *
             auth_state = 0;   /* the game's next join attempt asks again */
             SecureZeroMemory(join_hash, sizeof(join_hash));
             okp_log(1, "wsock: wrong password - the host did not let us in");
-            if (!getenv("OKP_TEST_JOIN_PASSWORD")) {
+            if (!getenv("OKP_TEST_JOIN_PASSWORD") && !auth_in_list) {
                 HANDLE t = CreateThread(NULL, 0, wrong_password_box, NULL, 0, NULL);
                 if (t) CloseHandle(t);
             }
@@ -406,6 +455,26 @@ static void join_room(uint64_t host)   /* okw_lock held */
     LeaveCriticalSection(&ctx->lock);
 }
 
+/* undo join_room after the host said no: the list goes back to the room list (with its lock marker)
+ * instead of that host's own broadcasts, so picking the room again asks again */
+static void leave_room(uint64_t host)   /* okw_lock held */
+{
+    if (!ctx || ctx->is_host || ctx->host_peer != host) return;
+    EnterCriticalSection(&ctx->lock);
+    okp_peer *p = okp_peer_get(ctx, host, 0);
+    if (p) {
+        okp_peer_free_bufs(p);
+        p->qn = 0;
+        p->used = 0;
+    }
+    ctx->host_peer = 0;
+    ctx->room = 0;
+    LeaveCriticalSection(&ctx->lock);
+    ctx->session_open = 0;
+    browse_tick = 0;
+    okp_log(2, "wsock: left room of host %016llx", (unsigned long long)host);
+}
+
 /* every call from the game: while it isn't hosting or in a room and has a socket waiting for broadcasts
  * (a server browser), list the rooms and feed their broadcasts to that socket */
 static void okw_tick(void)   /* okw_lock held */
@@ -539,6 +608,7 @@ static INT_PTR run_box(okw_box *b)
     InterlockedExchange(&box_open, 1);
     if (b->kind == 0) b->r = okbox_ask_mode("TCP/IP");
     else if (b->kind == 1) b->r = okbox_ask_host_password(&b->g, b->w, 64);
+    else if (b->kind == 3) b->r = (okbox_wrong_password(), 1);
     else b->r = okbox_ask_join_password(&b->g, b->w, 64);
     InterlockedExchange(&box_open, 0);
     if (h) UnhookWindowsHookEx(h);
@@ -736,9 +806,42 @@ static int list_pick_ok(HWND dlg)
     nheld = 0;
     join_room(host);   /* connect now: the path is ready when the game's join starts */
     okw_tick();        /* and the password goes at once */
+    InterlockedExchange(&auth_in_list, 1);
     LeaveCriticalSection(&okw_lock);
     SecureZeroMemory(b.w, sizeof(b.w));
-    return 1;
+
+    /* The host's answer is waited for here, still in the list: a "no" that came after the game had left its
+     * list put a box over a full-screen game, and Windows 9x sent the game to the desktop (where Road Rash
+     * shows only black). On a LAN the answer takes a few milliseconds; with no answer in 4 s the game goes
+     * ahead and its packets wait for the host's yes as before. */
+    HCURSOR old_cur = SetCursor(LoadCursor(NULL, IDC_WAIT));
+    DWORD t0 = GetTickCount();
+    int st;
+    for (;;) {
+        EnterCriticalSection(&okw_lock);
+        okw_tick();
+        st = auth_state;
+        LeaveCriticalSection(&okw_lock);
+        if (st != 1 || GetTickCount() - t0 > 4000) break;
+        Sleep(30);
+    }
+    InterlockedExchange(&auth_in_list, 0);
+    SetCursor(old_cur);
+    if (st == 2) {
+        okp_log(1, "wsock: the host let us in - joining (%lu ms)", (unsigned long)(GetTickCount() - t0));
+        return 1;
+    }
+    if (st == 1) {
+        okp_log(1, "wsock: no answer from the host yet - the game goes ahead, its packets wait for the yes");
+        return 1;
+    }
+    EnterCriticalSection(&okw_lock);
+    leave_room(host);
+    LeaveCriticalSection(&okw_lock);
+    memset(&b, 0, sizeof(b));
+    b.kind = 3;
+    run_box(&b);   /* "Wrong password": back to the list, which stays open */
+    return 0;
 }
 
 static LRESULT CALLBACK list_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
@@ -890,6 +993,7 @@ static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int l
         return len;
     }
     join_room(peer);
+    tr("tx %u->%u len %d type %d", k->port, port, len, len ? (uint8_t)b[0] : -1);
     send_to_peer(peer, k->port, port, 0, b, len);
     return len;
 }
@@ -942,6 +1046,7 @@ static int take(okw_sock *k, char *b, int len, struct sockaddr *a, int *al)   /*
         *al = sizeof(*in);
     }
     int trunc = p->len > len;
+    tr("game read %u len %d type %d%s (left %d)", k->port, p->len, p->len ? p->data[0] : -1, trunc ? " TRUNCATED" : "", k->qn);
     free(p);
     if (trunc) return set_err(WSAEMSGSIZE);
     return n;
@@ -1120,6 +1225,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
             snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
             okbox_init(inst, NULL, ini);
             okbox_set_topmost(TRUE);
+            InitializeCriticalSection(&tr_lock);
+            tr_on = GetPrivateProfileIntA("okplay", "wsock_trace", 0, ini);
+            if (tr_on) { DWORD id; CloseHandle(CreateThread(NULL, 0, tr_writer, NULL, 0, &id)); }
         }
         DisableThreadLibraryCalls(inst);
     }

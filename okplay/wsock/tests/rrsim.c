@@ -165,7 +165,7 @@ int main(int argc, char **argv)
             struct sockaddr_in from;
             int fl = sizeof(from);
             int k = recvfrom(ad, a, sizeof(a), 0, (struct sockaddr *)&from, &fl);
-            if (k == 57 && (argc < 4 || !strncmp(a + 37, argv[3], 19))) {   /* join [secs] [host name] */
+            if (k == 57 && (argc < 4 || !strncmp(a + 37, argv[3], strlen(argv[3])))) {   /* join [secs] [host name] */
                 unsigned long hip;
                 memcpy(&hip, a + 4, 4);
                 printf("EVENT advert from %s: host %s \"%.19s\", %d free\n", ip_s(from.sin_addr.s_addr), ip_s(hip), a + 37, a[17]);

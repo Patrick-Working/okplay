@@ -13,3 +13,6 @@ gcc $FLAGS -shared -o "$here/bin/wsock32.dll" "$here/wsock.c" "$here/wsock32.def
     -Wl,--enable-stdcall-fixup -Wl,--kill-at -static-libgcc -lws2_32 -liphlpapi -lwinhttp -lbcrypt -lversion -lgdi32
 bash "$OK/../winedplay/check9x.sh" "$(cygpath -aw "$here/bin/wsock32.dll")"
 echo "built $here/bin/wsock32.dll"
+# the test game (a Road Rash-like peer: adverts, join request, hellos), for tests on this PC
+gcc -O2 -Wall -o "$here/bin/rrsim.exe" "$here/tests/rrsim.c" -lwsock32
+echo "built $here/bin/rrsim.exe"

@@ -90,5 +90,25 @@ game loads the shim, and the shim forwards to `ws2_32.dll` (forwarding to the sy
 failed every socket() with WSAEAFNOSUPPORT). A connected-UDP test outside the game (one thread) passed both
 ways (`tools/wsocklog/udpconn.c`), so why the in-game hellos don't arrive is still open.
 
+## Windows 98 to Windows 98 over okplay, with passwords (2026-11-05, later)
+
+Two Windows 98 VMs, each with `okplay/wsock` and `wsock_mode=online`: the host's password window came
+up over the game when it picked TCP/IP; the joiner's list showed the room as "win98b (pw)". Picking it
+opens the join password window over the list. The shim then waits, still in the list, for the host's
+answer (about 100 ms here): a wrong password says so and leaves the player in the list (the room keeps
+its "(pw)"), the right one lets the game's own join go straight in. Then lobby ("2 players connected"),
+a race on The City (both screens agree on the gap), results back in the lobby. Packet trace
+(`wsock_trace=1`): no packets lost apart from the first hellos that reach the host before the game opens
+its socket for that joiner (the game repeats them, as on a real LAN).
+
+Why the answer is awaited in the list: a "no" that arrived after the game had left its list put a window
+over the full-screen game, and Windows 98 sent the game to the desktop; Road Rash shows only black when
+it comes back (any focus change does that, e.g. Windows' own network logon window - close that before
+starting the game).
+
+Earlier "joiner stalls" in the VMs were the game's own 33 ms multimedia timer no longer firing in the
+game process after many forced kills and hard resets of the VM; a clean restart fixed it. Exit the game
+normally between runs.
+
 Clean room: Winsock is a public standard; Microsoft's wsock32/ws2_32 are never disassembled. The game
 is observed only through its socket calls.
