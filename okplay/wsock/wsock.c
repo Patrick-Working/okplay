@@ -104,6 +104,8 @@ static uint64_t okw_self;         /* our peer id, and so our stand-in address, f
 static int mode_provisional;       /* okplay was started before the Online/LAN box was answered */
 static DWORD socks_gone_tick;      /* when the game closed its last UDP socket */
 static int socks_gone;             /* it has none open since then */
+static DWORD room_closed_tick;     /* host: when the game closed its room */
+static int room_closed;
 
 /* ---------------------------------------------------------------- stand-in addresses */
 
@@ -468,10 +470,33 @@ static void end_session(void)   /* no lock held */
     advert_port = 0;
     browse_tick = inject_tick = 0;
     socks_gone = 0;
+    room_closed = 0;
     LeaveCriticalSection(&okw_lock);
     if (!c) return;
     okp_log(1, "wsock: the game left network play - okplay stops; the next TCP/IP game asks again");
     stop_ctx(c, withdraw);
+}
+
+/* A new game, so the mode and the host's password are asked again: the game has had no UDP socket open for
+ * 2 s (Disconnect), or it closed its room and broadcasts again with no player link alive (the host backed
+ * out of its lobby and hosts again). Not at a race start: the host closes its room then, but its players
+ * are still there. No lock held. */
+static void check_new_game(void)
+{
+    int over = 0;
+    EnterCriticalSection(&okw_lock);
+    if (socks_gone && GetTickCount() - socks_gone_tick >= 2000) over = 1;
+    else if (room_closed && GetTickCount() - room_closed_tick >= 2000 && ctx) {
+        int live = 0;
+        DWORD now = okp_now();
+        EnterCriticalSection(&ctx->lock);
+        for (int i = 0; i < OKP_MAX_PEERS; i++)
+            if (ctx->peers[i].used && ctx->peers[i].have_path && now - ctx->peers[i].last_rx < 5000) live = 1;
+        LeaveCriticalSection(&ctx->lock);
+        if (!live) over = 1;
+    }
+    LeaveCriticalSection(&okw_lock);
+    if (over) end_session();
 }
 
 /* become the host of a room (the game broadcast) */
@@ -482,6 +507,7 @@ static void host_room(void)   /* okw_lock held */
     snprintf(ctx->tok, sizeof(ctx->tok), "%016llx", (unsigned long long)okp_rand64());
     ctx->is_host = 1;
     ctx->closing = 0;
+    room_closed = 0;
     build_room_record();
     ctx->session_open = 1;
     if (ctx->mode == OKP_MODE_LAN && !okp_lan_open_listen(ctx))
@@ -990,12 +1016,12 @@ SOCKET WINAPI x_socket(int af, int type, int proto)
     if (!okw_on) return socket(af, type, proto);
     SOCKET s = socket(af, type, proto);
     if (s == INVALID_SOCKET || af != AF_INET || type != SOCK_DGRAM) return s;
-    if (socks_gone && GetTickCount() - socks_gone_tick >= 2000) end_session();
+    check_new_game();
     socks_gone = 0;
     if (choose_mode() == 1) return s;   /* the original TCP/IP: Windows' own socket, untouched */
     tr("game socket %u: mode chosen, thread %lu", (unsigned)s, (unsigned long)GetCurrentThreadId());
     EnterCriticalSection(&okw_lock);
-    start_okplay();
+    if (mode_choice >= 2) start_okplay();   /* (not while the Online/LAN box is still open) */
     for (int i = 0; i < OKW_MAX_SOCKS; i++) {
         if (socks[i].used) continue;
         memset(&socks[i], 0, sizeof(socks[i]));
@@ -1021,6 +1047,8 @@ int WINAPI x_closesocket(SOCKET s)
             advert_len = 0;
             okp_rdv_wake(ctx);
             okp_log(1, "wsock: the game closed its room");
+            room_closed = 1;
+            room_closed_tick = GetTickCount();
         }
         for (okw_pkt *p = k->q, *n; p; p = n) { n = p->next; free(p); }
         k->used = 0;
@@ -1124,7 +1152,17 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
 {
     if (!okw_on) return sendto(s, b, len, f, a, al);
     wait_for_box();
-    if (a && al >= (int)sizeof(struct sockaddr_in)) boxes_before_send(((const struct sockaddr_in *)a)->sin_addr.s_addr);
+    if (a && al >= (int)sizeof(struct sockaddr_in)) {
+        uint32_t ip = ((const struct sockaddr_in *)a)->sin_addr.s_addr;
+        if (room_closed && (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF)) check_new_game();
+        if (!mode_choice) {
+            EnterCriticalSection(&okw_lock);
+            int virt = sock_of(s) != NULL;
+            LeaveCriticalSection(&okw_lock);
+            if (virt) choose_mode();
+        }
+        boxes_before_send(ip);
+    }
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k) { LeaveCriticalSection(&okw_lock); return sendto(s, b, len, f, a, al); }
@@ -1266,10 +1304,11 @@ struct hostent *WINAPI x_gethostbyname(const char *n)
     gethostname(me, sizeof(me));
     if (choose_mode() == 1) return gethostbyname(n);
     EnterCriticalSection(&okw_lock);
-    start_okplay();
-    int mine = ctx && (!n || !n[0] || !_stricmp(n, me));
+    if (mode_choice >= 2) start_okplay();
+    if (!okw_self) okw_self = okp_rand64();   /* the stand-in is known before okplay runs (box still open) */
+    int mine = !n || !n[0] || !_stricmp(n, me);
     if (!mine) { LeaveCriticalSection(&okw_lock); return gethostbyname(n); }
-    addr = standin_of(ctx->self);
+    addr = standin_of(okw_self);
     lstrcpynA(name, me, sizeof(name));
     list[0] = (char *)&addr;
     list[1] = NULL;
@@ -1362,6 +1401,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
         WSADATA w;
         WSAStartup(MAKEWORD(2, 2), &w);
         okp_log_init(inst);
+        okp_crash_install(inst);   /* a crash leaves okplay-crash-*.dmp in logs\ */
         InitializeCriticalSection(&okw_ask_lock);
         box_done = CreateEventA(NULL, TRUE, TRUE, NULL);
         {

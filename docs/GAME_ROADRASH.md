@@ -146,6 +146,15 @@ that alone is not the trigger). Checked VM to VM: LAN Play host with a password,
 LAN and was let in; Disconnect, host again: mode box again (Online this time), password box again, new room.
 rrsim: RRSIM_PREHOST=<name> hosts a first game, stops and hosts again.
 
+Later the same night (0.1.2), from two more Windows 11 logs: on Windows 11 too the box's own thread comes
+back in while the box is open, and okplay started Online Play there, so the join list filled from the
+room server behind the box. Now okplay doesn't start until the box is answered (the game's own address,
+its stand-in, is known before). Hosting again after backing out of the lobby didn't ask again because an
+old player link was still open: a broadcast after the game closed its room, with no player link alive for
+5 s, now also counts as a new game. The shim installs okplay's crash capture (a crash leaves
+okplay-crash-*.dmp in logs\): one game crashed at the end of a race over a phone hotspot (round trips
+110-344 ms, then a 3.6 s dropout) and left no dump.
+
 Earlier "joiner stalls" in the VMs were the game's own 33 ms multimedia timer no longer firing in the
 game process after many forced kills and hard resets of the VM; a clean restart fixed it. Exit the game
 normally between runs.
