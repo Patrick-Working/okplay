@@ -48,7 +48,34 @@ typedef struct {
 } okw_hdr;
 #pragma pack(pop)
 #define OKW_BCAST 1
-#define OKW_CTRL  2   /* okplay's own: 'A' + password hash (joiner -> host), 'Y' / 'N' (host -> joiner) */
+#define OKW_CTRL  2   /* okplay's own: 'A' + password hash (joiner -> host), 'Y' / 'N' (host -> joiner), 'V' (below) */
+
+/* Game packets over a bad line (0.1.3). Road Rash resends what matters itself, so its packets stay
+ * unreliable (a reliable lane would hold every packet behind a late one). Two helps instead, between
+ * shims that both have them - each says so first with a CTRL 'V' + version; an older shim never answers
+ * and keeps getting the 'W','K' packets above:
+ *   - every game packet gets a sequence number: the log shows, per player and every 10 s, how many
+ *     arrived, how many were lost, came late or out of order;
+ *   - a packet carries a copy of the one before it (Online Play; okplay.ini wsock_redundancy=0/1), so a
+ *     single lost packet is filled in by the next one. The copy that isn't needed is dropped here; the
+ *     game never sees a packet twice.
+ * Frame: 'W','S', version 1, entry count, then entries oldest first: flags, sport, dport, seq, len, data. */
+#pragma pack(push, 1)
+typedef struct { uint8_t flags; uint16_t sport, dport, seq, len; } okw_entry;
+#pragma pack(pop)
+typedef struct {
+    uint64_t peer;
+    int used, caps, sent_v, hellos;
+    DWORD hello_tick, report_tick;
+    uint16_t tx_seq;
+    okw_entry prev;                 /* the last packet sent to this player (its copy goes with the next) */
+    uint8_t prev_data[600];
+    int have_prev;
+    int rx_started;
+    uint16_t rx_hi;                 /* newest sequence number seen */
+    uint64_t rx_win;                /* bit i: rx_hi - i arrived */
+    uint32_t n_new, n_lost, n_late, n_dup, n_filled;   /* since the last report */
+} okw_link;
 
 typedef struct okw_pkt {
     struct okw_pkt *next;
@@ -95,6 +122,9 @@ typedef struct { uint64_t peer; uint16_t sport, dport; int flags, len; uint8_t d
 static okw_held held[64];               /* joiner: game packets waiting for the host's yes */
 static int nheld;
 static HMODULE g_self;
+static okw_link links[OKP_MAX_PEERS];
+static int redundancy;             /* send the previous packet along (Online Play by default) */
+static okw_link *link_of(uint64_t peer, int create);
 static uint16_t next_eph = 30000;
 static char advert[1024];          /* host: the game's last broadcast */
 static int advert_len;
@@ -265,6 +295,16 @@ static DWORD WINAPI wrong_password_box(LPVOID arg)
 static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held */
 {
     if (n < 1) return;
+    if (b[0] == 'V') {   /* the other shim speaks the sequenced format */
+        okw_link *L = link_of(from, 1);
+        if (L && !L->caps) {
+            L->caps = 1;
+            okp_log(2, "wsock: player %016llx has okplay 0.1.3+ - numbered packets%s", (unsigned long long)from,
+                    redundancy ? ", each with a copy of the one before" : "");
+        }
+        if (L && !L->sent_v) { L->sent_v = 1; send_to_peer(from, 0, 0, OKW_CTRL, "V\x01", 2); }
+        return;
+    }
     if (b[0] == 'A' && ctx && ctx->is_host) {   /* a joiner's password */
         char got[64];
         int k = n - 1 < 63 ? n - 1 : 63;
@@ -293,11 +333,92 @@ static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held *
     }
 }
 
+static okw_link *link_of(uint64_t peer, int create)   /* okw_lock held */
+{
+    okw_link *freel = NULL;
+    for (int i = 0; i < OKP_MAX_PEERS; i++) {
+        if (links[i].used && links[i].peer == peer) return &links[i];
+        if (!links[i].used && !freel) freel = &links[i];
+    }
+    if (!create || !freel) return NULL;
+    memset(freel, 0, sizeof(*freel));
+    freel->used = 1;
+    freel->peer = peer;
+    freel->report_tick = GetTickCount();
+    return freel;
+}
+
+/* one sequenced packet arrived: 1 = hand it to the game, 0 = a copy of one it already has */
+static int seq_accept(okw_link *L, uint16_t seq, int is_copy)
+{
+    if (!L->rx_started) {
+        L->rx_started = 1;
+        L->rx_hi = seq;
+        L->rx_win = 1;
+        L->n_new++;
+        return 1;
+    }
+    int d = (int16_t)(uint16_t)(seq - L->rx_hi);
+    if (d > 0) {   /* newer than any so far: anything skipped counts as lost until it turns up */
+        L->n_lost += d - 1;
+        L->rx_win = d >= 64 ? 1 : (L->rx_win << d) | 1;
+        L->rx_hi = seq;
+        L->n_new++;
+        if (is_copy) L->n_filled++;
+        return 1;
+    }
+    int back = -d;
+    if (back >= 64) { L->n_late++; L->n_new++; return 1; }   /* very late: the game decides */
+    if (L->rx_win & (1ull << back)) { L->n_dup++; return 0; }
+    L->rx_win |= 1ull << back;   /* a gap filled: by the copy, or the packet itself coming late */
+    if (L->n_lost) L->n_lost--;
+    if (is_copy) L->n_filled++;
+    else L->n_late++;
+    L->n_new++;
+    return 1;
+}
+
+static void link_reports(void)   /* okw_lock held; every 10 s per player, when something moved */
+{
+    DWORD now = GetTickCount();
+    for (int i = 0; i < OKP_MAX_PEERS; i++) {
+        okw_link *L = &links[i];
+        if (!L->used || now - L->report_tick < 10000) continue;
+        L->report_tick = now;
+        if (!L->n_new && !L->n_lost) continue;
+        uint32_t all = L->n_new + L->n_lost;
+        okp_log(2, "wsock: player %016llx, last 10 s: %u game packets, %u lost (%u.%u%%), %u filled in from the copy, "
+                "%u late or out of order, %u spare copies dropped", (unsigned long long)L->peer, L->n_new, L->n_lost,
+                L->n_lost * 100 / all, L->n_lost * 1000 / all % 10, L->n_filled, L->n_late, L->n_dup);
+        L->n_new = L->n_lost = L->n_late = L->n_dup = L->n_filled = 0;
+    }
+}
+
 static void okw_rx(void *c, uint64_t from, const void *data, int len)   /* okplay's net thread */
 {
     (void)c;
     if (len < (int)sizeof(okw_hdr)) return;
     const okw_hdr *h = (const okw_hdr *)data;
+    const uint8_t *d8 = (const uint8_t *)data;
+    if (d8[0] == 'W' && d8[1] == 'S' && len >= 4 && d8[2] == 1) {   /* sequenced (0.1.3+) */
+        EnterCriticalSection(&okw_lock);
+        if (ctx && c == ctx && !(ctx->is_host && host_has_pw && !is_authed(from))) {
+            okw_link *L = link_of(from, 1);
+            int n = d8[3], off = 4;
+            if (L) L->caps = 1;
+            for (int i = 0; i < n && L; i++) {
+                okw_entry e;
+                if (off + (int)sizeof(e) > len) break;
+                memcpy(&e, d8 + off, sizeof(e));
+                off += sizeof(e);
+                if (off + e.len > len) break;
+                if (seq_accept(L, e.seq, i < n - 1)) deliver(standin_of(from), e.sport, e.dport, d8 + off, e.len);
+                off += e.len;
+            }
+        }
+        LeaveCriticalSection(&okw_lock);
+        return;
+    }
     if (h->m0 != 'W' || h->m1 != 'K') return;
     const uint8_t *body = (const uint8_t *)data + sizeof(*h);
     int blen = len - (int)sizeof(*h);
@@ -327,6 +448,37 @@ static int send_to_peer(uint64_t peer, uint16_t sport, uint16_t dport, int flags
             memcpy(e->data, buf, len);
         }
         return 1;
+    }
+    if (!(flags & OKW_CTRL)) {
+        okw_link *L = link_of(peer, 1);
+        if (L && !L->caps && L->hellos < 20 && GetTickCount() - L->hello_tick >= 1000) {   /* ask once a second, 20 s */
+            L->hello_tick = GetTickCount();
+            L->hellos++;
+            L->sent_v = 1;
+            send_to_peer(peer, 0, 0, OKW_CTRL, "V\x01", 2);
+        }
+        if (L && L->caps && len <= (int)sizeof(L->prev_data)) {
+            uint8_t f[4 + 2 * sizeof(okw_entry) + 2 * 600];
+            int off = 4, n = 0;
+            f[0] = 'W'; f[1] = 'S'; f[2] = 1;
+            if (redundancy && L->have_prev) {
+                memcpy(f + off, &L->prev, sizeof(L->prev));
+                memcpy(f + off + sizeof(L->prev), L->prev_data, L->prev.len);
+                off += sizeof(L->prev) + L->prev.len;
+                n++;
+            }
+            okw_entry e;
+            e.flags = (uint8_t)flags; e.sport = sport; e.dport = dport; e.seq = ++L->tx_seq; e.len = (uint16_t)len;
+            memcpy(f + off, &e, sizeof(e));
+            memcpy(f + off + sizeof(e), buf, len);
+            off += sizeof(e) + len;
+            n++;
+            f[3] = (uint8_t)n;
+            L->prev = e;
+            memcpy(L->prev_data, buf, len);
+            L->have_prev = 1;
+            return okp_send_data(ctx, peer, f, off, 0);
+        }
     }
     okw_hdr *h = (okw_hdr *)pkt;
     h->m0 = 'W';
@@ -425,6 +577,12 @@ static void start_okplay(void)   /* okw_lock held; the first time the game uses 
         return;
     }
     ctx = c;
+    {
+        char ini[MAX_PATH];
+        snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
+        int r = GetPrivateProfileIntA("okplay", "wsock_redundancy", -1, ini);
+        redundancy = r >= 0 ? r != 0 : !want_lan;   /* default: on for Online Play, off on a LAN */
+    }
     char b[20];
     okp_log(1, "wsock: okplay " OKP_VERSION_STR " %s for a Winsock game, peer %016llx, stand-in address %s", c->mode_name,
             (unsigned long long)c->self, ip_s(standin_of(c->self), b));
@@ -471,6 +629,7 @@ static void end_session(void)   /* no lock held */
     browse_tick = inject_tick = 0;
     socks_gone = 0;
     room_closed = 0;
+    memset(links, 0, sizeof(links));
     LeaveCriticalSection(&okw_lock);
     if (!c) return;
     okp_log(1, "wsock: the game left network play - okplay stops; the next TCP/IP game asks again");
@@ -564,6 +723,7 @@ static void leave_room(uint64_t host)   /* okw_lock held */
 static void okw_tick(void)   /* okw_lock held */
 {
     if (!started && mode_choice >= 2) start_okplay();   /* (re)started in the mode the player picked */
+    link_reports();
     DWORD now = okp_now();
     if (ctx && auth_state == 1 && now - auth_tick >= 500) {   /* our password, until the host answers */
         uint8_t a[64];

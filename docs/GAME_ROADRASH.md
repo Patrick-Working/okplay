@@ -155,6 +155,18 @@ old player link was still open: a broadcast after the game closed its room, with
 okplay-crash-*.dmp in logs\): one game crashed at the end of a race over a phone hotspot (round trips
 110-344 ms, then a 3.6 s dropout) and left no dump.
 
+## Helping the game over a bad line (0.1.3)
+
+Road Rash's packets stay unreliable (its own resends handle what matters; a reliable lane would hold every
+packet behind a late one). Between two 0.1.3+ shims (they say so with a CTRL 'V'; an older shim never
+answers and keeps the old 'W','K' packets), every game packet is numbered and carries a copy of the one
+before it ('W','S' frames, Online Play by default, okplay.ini wsock_redundancy=0/1). The receiver drops
+the copy it doesn't need, so the game never sees a packet twice, and logs per player every 10 s: packets,
+lost, filled in from the copy, late or out of order, spare copies dropped.
+Measured with rrsim, 20% of one side's packets dropped: 18-20% lost without copies, 2.6-2.9% with
+(728 of 753 hellos arrived instead of 606). In the game, VM to VM with 10% dropped: 0.3-1.6% left after
+the copies, nothing late, race normal. Mixed 0.1.2/0.1.3 players connect both ways (old format).
+
 Earlier "joiner stalls" in the VMs were the game's own 33 ms multimedia timer no longer firing in the
 game process after many forced kills and hard resets of the VM; a clean restart fixed it. Exit the game
 normally between runs.

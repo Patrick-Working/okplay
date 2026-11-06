@@ -64,6 +64,8 @@ static int link_up(SOCKET s, char role, DWORD secs)
     memcpy(hello + 4, "IDLE", 4);
     DWORD t0 = GetTickCount();
     int heard = 0, sent = 0;
+    DWORD hold = getenv("RRSIM_HOLD") ? (DWORD)atoi(getenv("RRSIM_HOLD")) : 0;   /* keep the link going, count hellos */
+    if (hold) secs = hold;
     while (GetTickCount() - t0 < secs * 1000) {
         send(s, hello, sizeof(hello), 0);
         sent++;
@@ -74,14 +76,15 @@ static int link_up(SOCKET s, char role, DWORD secs)
             if (k == 76 && buf[0] == 1 && buf[3] != role) {
                 if (!heard) printf("EVENT link up after %lu ms (%d hellos sent)\n", GetTickCount() - t0, sent);
                 heard++;
-                if (heard >= 10) return 1;
+                if (heard >= 10 && !hold) return 1;
             }
             n = 0;
             ioctlsocket(s, FIONREAD, &n);
         }
         Sleep(33);
     }
-    return 0;
+    if (hold) printf("EVENT held the link %lu s: sent %d hellos, heard %d\n", (unsigned long)hold, sent, heard);
+    return heard >= 10;
 }
 
 int main(int argc, char **argv)
