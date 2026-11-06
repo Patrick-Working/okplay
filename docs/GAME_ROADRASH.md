@@ -106,6 +106,19 @@ over the full-screen game, and Windows 98 sent the game to the desktop; Road Ras
 it comes back (any focus change does that, e.g. Windows' own network logon window - close that before
 starting the game).
 
+## Steam and the CD version through the live room server (2026-11-05, evening)
+
+Both directions with a password: Steam (Windows 10) hosting and a Windows 98 joiner, then a Windows 98
+host and the Steam copy joining through the live server (oldkid.net). The room showed on the site's Live
+Games list with its lock ("Road Rash for Windows 95 Executable, 2 / 8"); the join password window over the
+game's list worked on Windows 10 too; lobby and a race on The City, both screens agreeing on the gap. With
+`brand`/`online_name`/`lan_name` from the packaged okplay.ini the windows carry the release's names.
+Windows 98 reaches the server over plain HTTP (no WinHTTP there), as the drop-in does.
+
+Noticed: closing the game's window in the middle of a race leaves the game running without a window (it
+keeps racing until the process ends), on Windows 10 and 98 alike - the game's own behaviour as far as seen,
+not yet looked into.
+
 Earlier "joiner stalls" in the VMs were the game's own 33 ms multimedia timer no longer firing in the
 game process after many forced kills and hard resets of the VM; a clean restart fixed it. Exit the game
 normally between runs.
