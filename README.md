@@ -34,6 +34,7 @@ measurements are in `docs/DPLAY_CONFORMANCE.md`.
 | `okweb/` | DirectPlay for the browser (`dplay/`), the JavaScript SDK (`sdk/`), demo, how a browser port plugs in (`integrations/`) |
 | `oknative/` | okplay for native games on ENet (first used by the UFO 50 Android port): room list, hole punching, UPnP, the relay, staying online in the background on Android |
 | `conformance/` | the suites that compare ours with Windows' DirectPlay (S1 Wine's tests, S3 wire tap, S4 two machines) |
+| `okplay/wsock/` | okplay for games that use Winsock directly: a `wsock32.dll` beside the game (first: Road Rash) |
 | `okplay/tools/wsocklog/` | a pass-through `wsock32.dll` that logs a game's Winsock calls (for non-DirectPlay games) |
 | `okagent/` | a small remote-control agent for the Windows 98 test VMs |
 | `docs/` | design, conformance results, per-game notes (`GAME_*.md`) |
@@ -87,9 +88,14 @@ Fixes for one game's own bugs are kept apart, in memory only and for an exact ga
 - **Browser ports**: `okweb/` gives a game compiled to WebAssembly the same DirectPlay; first used by a
   browser port of Age of Empires II (in development).
 
-**Next: games that use Winsock directly** (no DirectPlay) - `okplay/tools/wsocklog` shows how a game
-uses the network; first up is Road Rash (`docs/GAME_ROADRASH.md`): its LAN-only play and its IPX mode,
-which modern Windows dropped, over okplay.
+**Winsock games (`okplay/wsock`)** - for games that talk UDP themselves instead of through DirectPlay:
+a `wsock32.dll` beside the game carries their traffic over okplay (room list, hole punching, the same
+passwords and boxes as the drop-in), and the game's own LAN game list becomes the room list. Tested:
+
+- **Road Rash** (1996): the Steam edition and the original CD release play each other, Windows 98 to 11,
+  Online Play through the room server with game passwords, lobby and races (`docs/GAME_ROADRASH.md`).
+
+Next: IPX games (Road Rash's IPX mode and others) over okplay, and LAN Play for Winsock games.
 
 ## Licence
 
