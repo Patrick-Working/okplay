@@ -25,6 +25,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "okp.h"
 #include "okbox.h"
+#include <commctrl.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
@@ -440,7 +441,21 @@ static void okw_tick(void)   /* okw_lock held */
             uint16_t port;
             const uint8_t *ad;
             int al = room_advert(&rooms[i], &port, &ad);
-            if (al > 0) deliver(standin_of(rooms[i].host), port, port, ad, al);
+            if (al <= 0) continue;
+            uint32_t fl = 0;
+            if (rooms[i].enumlen >= 16) memcpy(&fl, rooms[i].enumblob + 8 + 4, 4);
+            if ((fl & 0x400) && al == 57 && port == 6995) {   /* Road Rash: the name the list shows, 20 bytes at 37 */
+                uint8_t ad2[57];
+                char name[24];
+                memcpy(ad2, ad, 57);
+                memcpy(name, ad2 + 37, 20);
+                name[20] = 0;
+                name[14] = 0;   /* room for " (pw)" */
+                snprintf((char *)ad2 + 37, 20, "%s (pw)", name);
+                deliver(standin_of(rooms[i].host), port, port, ad2, 57);
+            } else {
+                deliver(standin_of(rooms[i].host), port, port, ad, al);
+            }
         }
     }
 }
@@ -499,8 +514,11 @@ static LRESULT CALLBACK box_filter(int code, WPARAM wp, LPARAM lp)
 {
     if (code >= 0 && wp == PM_REMOVE) {
         MSG *m = (MSG *)lp;
+        /* only its timer ticks and input: its own posted messages go through as usual (holding them back and
+         * posting them again later left Road Rash's join without its network tick); box_open keeps any call
+         * that comes back in from opening another box */
         int quiet = m->message == WM_TIMER || (m->message >= WM_KEYFIRST && m->message <= WM_KEYLAST) ||
-                    (m->message >= WM_MOUSEFIRST && m->message <= WM_MOUSELAST) || m->message >= WM_USER;
+                    (m->message >= WM_MOUSEFIRST && m->message <= WM_MOUSELAST);
         if (quiet && !in_box_window(m->hwnd)) {
             if (m->message >= WM_USER && m->hwnd && ndeferred < 64) {   /* the game's own: later, not never */
                 okw_msg *d = &deferred[ndeferred++];
@@ -651,6 +669,106 @@ static void boxes_before_send(uint32_t ip)
     int need = host && (flags & 0x400) && !(auth_host == host && (auth_state == 1 || auth_state == 2 || auth_state == 3));
     LeaveCriticalSection(&okw_lock);
     if (need) ask_join_password(host, room);
+}
+
+/* ---------------------------------------------------------------- the game's room list */
+
+/* A game that lists LAN games in a Windows dialog (Road Rash: "Pick from among the available TCP/IP games")
+ * waits in that dialog until the player picks one - the one moment nothing is in progress. So the join
+ * password is asked there: a window hook on the game's thread finds a dialog with a list in it, and its OK
+ * button (or a double click in the list) for a locked room opens the password box over the list first.
+ * Cancel keeps the player in the list; with the password, okplay starts connecting to that host and the
+ * game's own join then goes straight in. (The game's files are not touched: the hook lives in memory.) */
+static HHOOK cbt_hook;
+static const char LIST_PROP[] = "okwsock.oldproc";
+
+/* the selected row's host name -> its room; 1 = let the click through */
+static int list_pick_ok(HWND dlg)
+{
+    HWND lv = FindWindowExA(dlg, NULL, "SysListView32", NULL);
+    if (!lv || !ctx) return 1;
+    int idx = (int)SendMessageA(lv, LVM_GETNEXTITEM, (WPARAM)-1, LVNI_SELECTED);
+    if (idx < 0) return 1;
+    char text[64] = "";
+    LVITEMA it;
+    memset(&it, 0, sizeof(it));
+    it.iSubItem = 0;
+    it.pszText = text;
+    it.cchTextMax = sizeof(text);
+    SendMessageA(lv, LVM_GETITEMTEXTA, (WPARAM)idx, (LPARAM)&it);
+    char *pw = strstr(text, " (pw)");
+    if (!pw) return 1;   /* not a locked room */
+    *pw = 0;
+    uint64_t host = 0;
+    uint32_t room = 0;
+    EnterCriticalSection(&okw_lock);
+    EnterCriticalSection(&ctx->lock);
+    for (int i = 0; i < ctx->nrooms && !host; i++) {
+        uint16_t port;
+        const uint8_t *ad;
+        int al = room_advert(&ctx->rooms[i], &port, &ad);
+        uint32_t fl = 0;
+        if (ctx->rooms[i].enumlen >= 16) memcpy(&fl, ctx->rooms[i].enumblob + 8 + 4, 4);
+        if (al == 57 && (fl & 0x400) && !strncmp((const char *)ad + 37, text, strlen(text))) {
+            host = ctx->rooms[i].host;
+            room = ctx->rooms[i].room;
+        }
+    }
+    LeaveCriticalSection(&ctx->lock);
+    int known = host && auth_host == host && (auth_state == 1 || auth_state == 2);
+    LeaveCriticalSection(&okw_lock);
+    if (!host || known) return 1;
+    okp_log(1, "wsock: the player picked a locked room (%s) - asking for its password", text);
+    okw_box b;
+    memset(&b, 0, sizeof(b));
+    b.kind = 2;
+    b.g = room_guid(room);
+    if (!run_box(&b)) {
+        okp_log(1, "wsock: password cancelled - back to the list");
+        return 0;
+    }
+    EnterCriticalSection(&okw_lock);
+    wide_to_ascii(b.w, join_hash, sizeof(join_hash));
+    auth_host = host;
+    auth_room = room;
+    auth_state = 1;
+    auth_tick = 0;
+    nheld = 0;
+    join_room(host);   /* connect now: the path is ready when the game's join starts */
+    okw_tick();        /* and the password goes at once */
+    LeaveCriticalSection(&okw_lock);
+    SecureZeroMemory(b.w, sizeof(b.w));
+    return 1;
+}
+
+static LRESULT CALLBACK list_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
+{
+    WNDPROC old = (WNDPROC)GetPropA(w, LIST_PROP);
+    if (m == WM_COMMAND && LOWORD(wp) == IDOK && !list_pick_ok(w)) return 0;
+    if (m == WM_NOTIFY && lp && ((NMHDR *)lp)->code == NM_DBLCLK) {
+        char cls[32];
+        if (GetClassNameA(((NMHDR *)lp)->hwndFrom, cls, sizeof(cls)) && !strcmp(cls, "SysListView32") && !list_pick_ok(w)) return 0;
+    }
+    if (m == WM_NCDESTROY) {
+        RemovePropA(w, LIST_PROP);
+        if (old) SetWindowLongA(w, GWL_WNDPROC, (LONG)(LONG_PTR)old);
+    }
+    return old ? CallWindowProcA(old, w, m, wp, lp) : DefWindowProcA(w, m, wp, lp);
+}
+
+static LRESULT CALLBACK cbt_proc(int code, WPARAM wp, LPARAM lp)
+{
+    if (code == HCBT_ACTIVATE && mode_choice != 1) {   /* (the list may come up before the game's first socket) */
+        HWND w = (HWND)wp;
+        char cls[16];
+        if (GetClassNameA(w, cls, sizeof(cls)) && !strcmp(cls, "#32770") && !GetPropA(w, LIST_PROP) &&
+            FindWindowExA(w, NULL, "SysListView32", NULL)) {   /* (our own boxes have no list) */
+            LONG old = SetWindowLongA(w, GWL_WNDPROC, (LONG)(LONG_PTR)list_proc);
+            SetPropA(w, LIST_PROP, (HANDLE)(LONG_PTR)old);
+            okp_log(1, "wsock: watching the game's room list (its OK button and double click)");
+        }
+    }
+    return CallNextHookEx(cbt_hook, code, wp, lp);
 }
 
 /* ---------------------------------------------------------------- the Winsock calls */
@@ -963,7 +1081,11 @@ int WINAPI x_WSAAsyncSelect(SOCKET s, HWND w, u_int m, long ev) { return WSAAsyn
 HANDLE WINAPI x_WSAAsyncGetHostByName(HWND w, u_int m, const char *n, char *b, int l) { return WSAAsyncGetHostByName(w, m, n, b, l); }
 int WINAPI x_WSAGetLastError(void) { return WSAGetLastError(); }
 void WINAPI x_WSASetLastError(int e) { WSASetLastError(e); }
-int WINAPI x_WSAStartup(WORD v, LPWSADATA d) { return WSAStartup(v, d); }
+int WINAPI x_WSAStartup(WORD v, LPWSADATA d)
+{
+    if (!cbt_hook) cbt_hook = SetWindowsHookExA(WH_CBT, cbt_proc, NULL, GetCurrentThreadId());
+    return WSAStartup(v, d);
+}
 /* the game is done with the network: a room it hosted comes off the list now (the process may end next) */
 int WINAPI x_WSACleanup(void)
 {
