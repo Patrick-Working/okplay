@@ -100,6 +100,10 @@ static char advert[1024];          /* host: the game's last broadcast */
 static int advert_len;
 static uint16_t advert_port;
 static DWORD advert_tick, browse_tick, inject_tick;
+static uint64_t okw_self;         /* our peer id, and so our stand-in address, for the whole game run */
+static int mode_provisional;       /* okplay was started before the Online/LAN box was answered */
+static DWORD socks_gone_tick;      /* when the game closed its last UDP socket */
+static int socks_gone;             /* it has none open since then */
 
 /* ---------------------------------------------------------------- stand-in addresses */
 
@@ -215,24 +219,27 @@ static void queue_pkt(okw_sock *k, uint32_t from_ip, uint16_t from_port, const v
 /* deliver to the game: the socket bound to dport that is connected to this sender, else an unconnected one */
 static void deliver(uint32_t from_ip, uint16_t sport, uint16_t dport, const void *data, int len)   /* lock held */
 {
-    okw_sock *any = NULL;
+    int n = 0;
     for (int i = 0; i < OKW_MAX_SOCKS; i++) {
         okw_sock *k = &socks[i];
-        if (!k->used || k->port != dport) continue;
-        if (k->peer_ip) {
-            if (k->peer_ip == from_ip && k->peer_port == sport) {
-                tr("rx %u<-%u len %d type %d (connected, q %d)", dport, sport, len, len ? ((const uint8_t *)data)[0] : -1, k->qn);
-                queue_pkt(k, from_ip, sport, data, len);
-                return;
-            }
-        } else if (!any) {
-            any = k;
+        if (!k->used || k->port != dport || !k->peer_ip) continue;
+        if (k->peer_ip == from_ip && k->peer_port == sport) {
+            tr("rx %u<-%u len %d type %d (connected, q %d)", dport, sport, len, len ? ((const uint8_t *)data)[0] : -1, k->qn);
+            queue_pkt(k, from_ip, sport, data, len);
+            return;
         }
     }
-    if (any) {
-        tr("rx %u<-%u len %d type %d (unconnected, q %d)", dport, sport, len, len ? ((const uint8_t *)data)[0] : -1, any->qn);
-        queue_pkt(any, from_ip, sport, data, len);
-    } else {
+    /* Every unconnected socket on that port gets it. A game can end up with two: Road Rash made a second
+     * browser socket on 6995 while the Online/LAN box was open, then listened on that one. */
+    for (int i = 0; i < OKW_MAX_SOCKS; i++) {
+        okw_sock *k = &socks[i];
+        if (!k->used || k->port != dport || k->peer_ip) continue;
+        tr("rx %u<-%u len %d type %d (unconnected, sock %u, q %d)", dport, sport, len, len ? ((const uint8_t *)data)[0] : -1,
+           (unsigned)k->s, k->qn);
+        queue_pkt(k, from_ip, sport, data, len);
+        n++;
+    }
+    if (!n) {
         char t[20];
         tr("rx DROP %u<-%s:%u len %d type %d: no socket for it", dport, ip_s(from_ip, t), sport, len, len ? ((const uint8_t *)data)[0] : -1);
     }
@@ -293,6 +300,10 @@ static void okw_rx(void *c, uint64_t from, const void *data, int len)   /* okpla
     const uint8_t *body = (const uint8_t *)data + sizeof(*h);
     int blen = len - (int)sizeof(*h);
     EnterCriticalSection(&okw_lock);
+    if (!ctx || c != ctx) {   /* okplay of an earlier network session, being stopped */
+        LeaveCriticalSection(&okw_lock);
+        return;
+    }
     if (h->flags & OKW_CTRL) {
         control(from, body, blen);
     } else if (ctx && ctx->is_host && host_has_pw && !is_authed(from)) {
@@ -401,7 +412,8 @@ static void start_okplay(void)   /* okw_lock held; the first time the game uses 
     c->sock = INVALID_SOCKET;
     c->lan_q = INVALID_SOCKET;
     c->lan_listen = INVALID_SOCKET;
-    c->self = okp_rand64();
+    if (!okw_self) okw_self = okp_rand64();
+    c->self = okw_self;   /* the same id (and stand-in address) if okplay restarts in this session */
     c->raw_rx = okw_rx;
     c->enum_app = OKW_APPGUID;
     okp_log_header();
@@ -414,6 +426,52 @@ static void start_okplay(void)   /* okw_lock held; the first time the game uses 
     char b[20];
     okp_log(1, "wsock: okplay " OKP_VERSION_STR " %s for a Winsock game, peer %016llx, stand-in address %s", c->mode_name,
             (unsigned long long)c->self, ip_s(standin_of(c->self), b));
+}
+
+/* The game left network play (it closed its last UDP socket a while ago): okplay stops and every answer
+ * is forgotten, so the next time the player picks TCP/IP the Online/LAN box and the host's password box
+ * come up again, as the drop-in asks at every new game. (A game that closes a socket and opens the next
+ * one at once - Road Rash's host learns its port with a throwaway socket - stays in the same session.) */
+static void stop_ctx(okp_ctx *c, int withdraw)   /* no lock held; c already detached from ctx */
+{
+    if (!c) return;
+    c->closing = 1;
+    c->session_open = 0;
+    c->is_host = 0;
+    if (withdraw) okp_rdv_close(c);
+    c->running = 0;
+    okp_rdv_stop(c);
+    okp_net_stop(c);
+    DeleteCriticalSection(&c->lock);
+    free(c);
+}
+
+static void end_session(void)   /* no lock held */
+{
+    EnterCriticalSection(&okw_lock);
+    okp_ctx *c = ctx;
+    int withdraw = c && c->room && (c->is_host || c->closing) && c->mode == OKP_MODE_ONLINE;
+    ctx = NULL;
+    started = 0;   /* (okw_self stays: a game may keep the own address it looked up once) */
+    mode_provisional = 0;
+    InterlockedExchange(&mode_choice, 0);
+    host_pw_asked = host_has_pw = 0;
+    SecureZeroMemory(host_hash, sizeof(host_hash));
+    pending_room = 0;
+    nauthed = 0;
+    auth_host = 0;
+    auth_state = 0;
+    auth_room = 0;
+    SecureZeroMemory(join_hash, sizeof(join_hash));
+    nheld = 0;
+    advert_len = 0;
+    advert_port = 0;
+    browse_tick = inject_tick = 0;
+    socks_gone = 0;
+    LeaveCriticalSection(&okw_lock);
+    if (!c) return;
+    okp_log(1, "wsock: the game left network play - okplay stops; the next TCP/IP game asks again");
+    stop_ctx(c, withdraw);
 }
 
 /* become the host of a room (the game broadcast) */
@@ -479,6 +537,7 @@ static void leave_room(uint64_t host)   /* okw_lock held */
  * (a server browser), list the rooms and feed their broadcasts to that socket */
 static void okw_tick(void)   /* okw_lock held */
 {
+    if (!started && mode_choice >= 2) start_okplay();   /* (re)started in the mode the player picked */
     DWORD now = okp_now();
     if (ctx && auth_state == 1 && now - auth_tick >= 500) {   /* our password, until the host answers */
         uint8_t a[64];
@@ -623,7 +682,17 @@ static INT_PTR run_box(okw_box *b)
 static int choose_mode(void)
 {
     if (mode_choice) return mode_choice;
-    if (box_open) return 2;   /* back in from inside the box (9x): okplay for now, the box decides */
+    if (box_open) {
+        /* Another thread of the game (Windows NT: its network thread) waits for the answer - starting
+         * Online Play "for now" here made a LAN Play pick go nowhere. The box's own thread, back in from
+         * inside it (Windows 9x), can't wait: okplay starts for now and restarts if the answer differs. */
+        if (GetCurrentThreadId() != box_tid && box_done) {
+            WaitForSingleObject(box_done, INFINITE);
+            if (mode_choice) return mode_choice;
+        }
+        mode_provisional = 1;
+        return 2;
+    }
     EnterCriticalSection(&okw_ask_lock);
     if (!mode_choice) {
         char ini[MAX_PATH], v[16] = "";
@@ -640,6 +709,18 @@ static int choose_mode(void)
         okp_log(1, "wsock: %s (okplay.ini wsock_mode=%s)", m == 2 ? "Online Play" : m == 3 ? "LAN Play" :
                 "the game's original TCP/IP - okplay stays out", v);
         InterlockedExchange(&mode_choice, m);
+        if (mode_provisional) {   /* it started as Online Play while the box was open: the answer decides */
+            mode_provisional = 0;
+            EnterCriticalSection(&okw_lock);
+            okp_ctx *c = started && m != 2 ? ctx : NULL;
+            if (c) { ctx = NULL; started = 0; }
+            LeaveCriticalSection(&okw_lock);
+            if (c) {
+                okp_log(1, "wsock: okplay had started as Online Play while the box was open - %s", m == 3 ?
+                        "restarting as LAN Play (same address)" : "stopping it");
+                stop_ctx(c, 0);
+            }
+        }
     }
     LeaveCriticalSection(&okw_ask_lock);
     return mode_choice;
@@ -909,7 +990,10 @@ SOCKET WINAPI x_socket(int af, int type, int proto)
     if (!okw_on) return socket(af, type, proto);
     SOCKET s = socket(af, type, proto);
     if (s == INVALID_SOCKET || af != AF_INET || type != SOCK_DGRAM) return s;
+    if (socks_gone && GetTickCount() - socks_gone_tick >= 2000) end_session();
+    socks_gone = 0;
     if (choose_mode() == 1) return s;   /* the original TCP/IP: Windows' own socket, untouched */
+    tr("game socket %u: mode chosen, thread %lu", (unsigned)s, (unsigned long)GetCurrentThreadId());
     EnterCriticalSection(&okw_lock);
     start_okplay();
     for (int i = 0; i < OKW_MAX_SOCKS; i++) {
@@ -917,6 +1001,7 @@ SOCKET WINAPI x_socket(int af, int type, int proto)
         memset(&socks[i], 0, sizeof(socks[i]));
         socks[i].used = 1;
         socks[i].s = s;
+        tr("game socket %u (virtual, slot %d)", (unsigned)s, i);
         break;
     }
     LeaveCriticalSection(&okw_lock);
@@ -939,6 +1024,10 @@ int WINAPI x_closesocket(SOCKET s)
         }
         for (okw_pkt *p = k->q, *n; p; p = n) { n = p->next; free(p); }
         k->used = 0;
+        tr("game closesocket %u port %u", (unsigned)s, k->port);
+        int open = 0;
+        for (int i = 0; i < OKW_MAX_SOCKS; i++) open += socks[i].used;
+        if (!open) { socks_gone_tick = GetTickCount(); socks_gone = 1; }
     }
     LeaveCriticalSection(&okw_lock);
     return closesocket(s);
@@ -956,6 +1045,7 @@ int WINAPI x_bind(SOCKET s, const struct sockaddr *a, int l)
     if (!port) port = next_eph++;
     k->port = port;
     k->bound_ip = in->sin_addr.s_addr;
+    tr("game bind sock %u port %u", (unsigned)s, port);
     LeaveCriticalSection(&okw_lock);
     return 0;
 }
@@ -996,6 +1086,7 @@ int WINAPI x_getsockname(SOCKET s, struct sockaddr *a, int *l)
 
 static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int len)   /* lock held */
 {
+    if (!ctx && !started && mode_choice >= 2) start_okplay();
     if (!ctx) return len;
     if (!k->port) k->port = next_eph++;
     if (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF) {   /* broadcast: we host; everyone in the room gets it */
@@ -1136,6 +1227,7 @@ int WINAPI x_ioctlsocket(SOCKET s, long cmd, u_long *arg)
     } else if (cmd == (long)WS_FIONREAD) {
         okw_tick();
         if (arg) *arg = (u_long)k->qbytes;
+        { static DWORD last; if (k->qbytes || GetTickCount() - last > 1000) { last = GetTickCount(); tr("game FIONREAD sock %u port %u -> %d bytes", (unsigned)k->s, k->port, k->qbytes); } }
     } else {
         r = set_err(WSAEINVAL);
     }
@@ -1217,11 +1309,19 @@ u_short WINAPI x_ntohs(u_short v) { return ntohs(v); }
 unsigned long WINAPI x_inet_addr(const char *c) { return inet_addr(c); }
 char *WINAPI x_inet_ntoa(struct in_addr a) { return inet_ntoa(a); }
 int WINAPI x_listen(SOCKET s, int b) { return listen(s, b); }
-int WINAPI x_select(int n, fd_set *r, fd_set *w, fd_set *e, const struct timeval *t) { return select(n, r, w, e, t); }
+int WINAPI x_select(int n, fd_set *r, fd_set *w, fd_set *e, const struct timeval *t)
+{
+    if (okw_on) tr("game select (read set %d)", r ? (int)r->fd_count : -1);
+    return select(n, r, w, e, t);
+}
 int WINAPI x_shutdown(SOCKET s, int h) { return shutdown(s, h); }
 struct hostent *WINAPI x_gethostbyaddr(const char *a, int l, int t) { return gethostbyaddr(a, l, t); }
 int WINAPI x_gethostname(char *n, int l) { return gethostname(n, l); }
-int WINAPI x_WSAAsyncSelect(SOCKET s, HWND w, u_int m, long ev) { return WSAAsyncSelect(s, w, m, ev); }
+int WINAPI x_WSAAsyncSelect(SOCKET s, HWND w, u_int m, long ev)
+{
+    if (okw_on) tr("game WSAAsyncSelect events %lx", (unsigned long)ev);
+    return WSAAsyncSelect(s, w, m, ev);
+}
 HANDLE WINAPI x_WSAAsyncGetHostByName(HWND w, u_int m, const char *n, char *b, int l) { return WSAAsyncGetHostByName(w, m, n, b, l); }
 int WINAPI x_WSAGetLastError(void) { return WSAGetLastError(); }
 void WINAPI x_WSASetLastError(int e) { WSASetLastError(e); }

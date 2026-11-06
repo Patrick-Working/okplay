@@ -128,6 +128,24 @@ it does nothing at load (no log, thread, hook or box) and every call goes straig
 Checked on Windows 98: AoE2 with the shim beside it starts, lists its connections, searches Windows'
 TCP/IP and exits normally; Road Rash still gets Online Play; rrsim right/wrong/open passwords, Online and LAN.
 
+## LAN Play, the Online/LAN box and hosting again (2026-11-05, late)
+
+Found with logs from two Windows 11 PCs: picking LAN Play in the box still ran Online Play. While the box
+was open the game came back in (another thread on Windows 11, the box's own thread on Windows 98) and the
+shim started Online Play "for now". Now other threads wait for the answer, and if okplay did start early it
+restarts in the picked mode with the same peer id, so the game's own address (its stand-in) stays the
+same. The peer id is kept for the whole game run for that reason.
+
+Second find, Windows 98: while the box was open Road Rash made a second browser socket on 6995 and then
+listened on that one, so the room list stayed empty though LAN discovery had found the host. Packets for
+an unconnected port now go to every socket bound to it.
+
+Hosting again: once the game has had no UDP socket open for 2 s (Disconnect), okplay stops and forgets the
+mode and passwords; the next TCP/IP pick asks again (the host closes its room at every race start too, so
+that alone is not the trigger). Checked VM to VM: LAN Play host with a password, the joiner found it on the
+LAN and was let in; Disconnect, host again: mode box again (Online this time), password box again, new room.
+rrsim: RRSIM_PREHOST=<name> hosts a first game, stops and hosts again.
+
 Earlier "joiner stalls" in the VMs were the game's own 33 ms multimedia timer no longer firing in the
 game process after many forced kills and hard resets of the VM; a clean restart fixed it. Exit the game
 normally between runs.

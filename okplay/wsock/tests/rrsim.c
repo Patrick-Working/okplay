@@ -94,6 +94,29 @@ int main(int argc, char **argv)
     unsigned long me = my_ip();
     printf("EVENT my address %s\n", ip_s(me));
     DWORD t0 = GetTickCount();
+    if (host && getenv("RRSIM_PREHOST")) {   /* host a first game, stop, wait: the next one is a new network session */
+        unsigned short p0 = learn_port(me);
+        SOCKET a0 = udp_bound(6995), j0 = udp_bound(6996);
+        int on0 = 1;
+        setsockopt(a0, SOL_SOCKET, SO_BROADCAST, (char *)&on0, sizeof(on0));
+        char ad0[57];
+        memset(ad0, 0, sizeof(ad0));
+        ad0[0] = 2;
+        memcpy(ad0 + 2, &(unsigned short){ htons(p0) }, 2);
+        memcpy(ad0 + 4, &me, 4);
+        strncpy(ad0 + 37, getenv("RRSIM_PREHOST"), 19);
+        struct sockaddr_in bc0;
+        memset(&bc0, 0, sizeof(bc0));
+        bc0.sin_family = AF_INET;
+        bc0.sin_port = htons(6995);
+        bc0.sin_addr.s_addr = INADDR_BROADCAST;
+        for (int i = 0; i < 8; i++) { sendto(a0, ad0, sizeof(ad0), 0, (struct sockaddr *)&bc0, sizeof(bc0)); Sleep(500); }
+        closesocket(a0);
+        closesocket(j0);
+        printf("EVENT first game closed\n");
+        Sleep(3000);
+        t0 = GetTickCount();
+    }
     if (host) {
         unsigned short p = learn_port(me);
         SOCKET ad = udp_bound(6995), jl = udp_bound(6996);
