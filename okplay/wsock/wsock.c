@@ -1202,8 +1202,9 @@ int okp_ui_ask_conn_reports(void) { return (int)ui_ask(0, NULL); }
 /* a game network call, no lock held: show what waits if this is a safe moment */
 static void ui_show_pending(void)
 {
+    static volatile LONG showing;   /* (not TryEnterCriticalSection: on Windows 9x it is a stub that always fails) */
     if (!ui_pending || box_open || GetTickCount() - last_race_tick < 5000) return;
-    if (!TryEnterCriticalSection(&okw_ask_lock)) return;   /* the mode box's own lock: one box at a time */
+    if (InterlockedExchange(&showing, 1)) return;   /* one thread at a time; box_open keeps the other boxes apart */
     for (;;) {
         okw_box b;
         memset(&b, 0, sizeof(b));
@@ -1221,7 +1222,7 @@ static void ui_show_pending(void)
         else { ui_conn.on = 0; ui_conn.answer = r; SetEvent(ui_conn.done); }
         LeaveCriticalSection(&ui_lock);
     }
-    LeaveCriticalSection(&okw_ask_lock);
+    InterlockedExchange(&showing, 0);
 }
 
 /* the first UDP socket (or own-address lookup) of a game run: Online Play, LAN Play or the original TCP/IP.

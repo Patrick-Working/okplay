@@ -131,7 +131,7 @@ class VM:
         self.ctl("put", local, remote, check=True)
 
     def newest_log(self):
-        names = [l.split("\t")[2].strip() for l in self.ctl("ls", GAME_DIR + r"\logs\*").splitlines()
+        names = [l.split("\t")[2].strip() for l in self.ctl("ls", GAME_DIR + r"\logs\okplay-2*.log").splitlines()
                  if l.startswith("file\t")]
         if not names:
             return ""
