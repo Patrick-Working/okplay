@@ -58,11 +58,16 @@ FAKE_IP = ""   # --fake-client-ip: pretend clients come from this public address
 # the newest drop-in, as okplay.php's LATEST_VERSION / LATEST_NOTE (--latest / --latest-note for tests)
 LATEST_VERSION = "0.7.0"
 LATEST_NOTE = "Adds Windows 98 support and the combined connection list."
+# the newest okplay wsock, as okplay.php's LATEST_WSOCK_VERSION / LATEST_WSOCK_NOTE (--latest-wsock /
+# --latest-wsock-note)
+LATEST_WSOCK_VERSION = "0.1.3"
+LATEST_WSOCK_NOTE = ""
 
 
-def latest_line():
+def latest_line():   # (as okplay.php: the drop-in's line, then okplay wsock's)
     note = urllib.parse.quote(LATEST_NOTE, safe="") if LATEST_NOTE else "-"
-    return f"latest {LATEST_VERSION} {note}\n"
+    wnote = urllib.parse.quote(LATEST_WSOCK_NOTE, safe="") if LATEST_WSOCK_NOTE else "-"
+    return f"latest {LATEST_VERSION} {note}\nlatest_wsock {LATEST_WSOCK_VERSION} {wnote}\n"
 
 
 def prune(now):
@@ -242,7 +247,8 @@ def handle(f, ip):
                     "exe": r.get("exe", "")} for r in rooms.values()
                    if r.get("app") != TEST_APP]   # test games stay off the page
             tests = sum(1 for r in rooms.values() if r.get("app") == TEST_APP)
-            return 200, json.dumps({"rooms": pub, "tests": tests, "now": int(now), "latest": LATEST_VERSION})
+            return 200, json.dumps({"rooms": pub, "tests": tests, "now": int(now), "latest": LATEST_VERSION,
+                                "latest_wsock": LATEST_WSOCK_VERSION})
         if a == "list":
             lines = [f"ok {ip}\n", latest_line()]
             want = f.get("app", "") if RE_APP.fullmatch(f.get("app", "")) else ""
@@ -327,6 +333,8 @@ if __name__ == "__main__":
     ap.add_argument("--fake-client-ip", default="", help="report this as every client's public IP (tests)")
     ap.add_argument("--latest", default=LATEST_VERSION, help="the newest drop-in version to advertise")
     ap.add_argument("--latest-note", default=LATEST_NOTE)
+    ap.add_argument("--latest-wsock", default=LATEST_WSOCK_VERSION, help="the newest okplay wsock version to advertise")
+    ap.add_argument("--latest-wsock-note", default=LATEST_WSOCK_NOTE)
     ap.add_argument("--reports", default="", help="also append reports (a=report) to this file as JSON lines")
     args = ap.parse_args()
     REPORTS_FILE = args.reports
@@ -335,6 +343,8 @@ if __name__ == "__main__":
     FAKE_IP = args.fake_client_ip
     LATEST_VERSION = args.latest
     LATEST_NOTE = args.latest_note
+    LATEST_WSOCK_VERSION = args.latest_wsock
+    LATEST_WSOCK_NOTE = args.latest_wsock_note
     srv = ThreadingHTTPServer(("127.0.0.1", args.port), H)
     print(f"okplay rendezvous stand-in on http://127.0.0.1:{args.port}/okplay", flush=True)
     srv.serve_forever()

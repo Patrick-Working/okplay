@@ -415,10 +415,14 @@ int okp_sendto6(SOCKET s, int v4only, const void *buf, int len, const SOCKADDR_I
 int okp_recvfrom6(SOCKET s, int v4only, void *buf, int cap, SOCKADDR_IN6 *from);
 int okp_resolve(const char *host, uint16_t port_n, int family, SOCKADDR_IN6 *out, int max);
 void okp_udp_no_connreset(SOCKET s);
-#ifdef OKP_BUILTIN
-void DP_BUILTIN_OfferUpdate(const char *latest, const char *note_utf8);   /* builtin.c: the update box */
-void DP_BUILTIN_NetworkUnavailable(int err);   /* builtin.c: the "TCP/IP isn't working" box */
-void DP_BUILTIN_ServerUnreachable(const char *server, const char *why);   /* builtin.c: the "can't reach the server" box */
+#if defined(OKP_BUILTIN) || defined(OKP_WSOCK)
+/* the player-facing boxes, from any thread. Each edition decides when and how they show (the drop-in:
+ * winedplay builtin.c, okplay wsock: wsock.c); the box bodies are okbox.c's. */
+void okp_ui_offer_update(const char *latest, const char *note_utf8);   /* the update box */
+void okp_ui_server_unreachable(const char *server, const char *why);   /* the "can't reach the server" box */
+void okp_ui_network_unavailable(int err);                              /* the "TCP/IP isn't working" box */
+int okp_ui_ask_crash_report(const char *path);   /* 0 don't send, 1 send, 2 always send */
+int okp_ui_ask_conn_reports(void);               /* 1 yes, 0 no (report.c writes okplay.ini) */
 #endif
 int okp_win9x_paths(void);
 void okp_sha256_parts(const void *const *parts, const size_t *lens, int n, uint8_t out[32]);

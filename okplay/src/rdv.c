@@ -400,32 +400,39 @@ static char *rdv_post(rdv_conn *r, const char *body)
     LONG k = InterlockedIncrement(&fails);
     if (k == 3)
         okp_log(0, "rdv: can't reach the server %s - %s", okp_cfg.server, last_why);
-#ifdef OKP_BUILTIN
+#if defined(OKP_BUILTIN) || defined(OKP_WSOCK)
     /* tell the player once - but never over a running match: then it waits until the match is over */
     if (k >= 3 && !told) {
         if (in_match(r->ctx)) {
             if (k == 3) okp_log(1, "rdv: not showing the server box now - a match is in progress");
         } else if (!InterlockedExchange(&told, 1)) {
             okp_log(1, "rdv: showing the player the can't-reach-the-server box");
-            DP_BUILTIN_ServerUnreachable(okp_cfg.server, last_why);
+            okp_ui_server_unreachable(okp_cfg.server, last_why);
         }
     }
 #endif
     return NULL;
 }
 
-/* "latest <version> <note>" (okplay.php's newest drop-in): the drop-in offers the update. Only replies
- * to Online Play's own requests get here - classic connections and LAN Play never ask the server. */
+/* "latest <version> <note>" (okplay.php's newest drop-in) or "latest_wsock <version> <note>" (its newest
+ * okplay wsock): this edition offers the update. Only replies to Online Play's own requests get here -
+ * classic connections and LAN Play never ask the server. (Each edition matches only its own key with the
+ * space after it, so drop-ins of any age skip latest_wsock.) */
 static void check_latest(const char *rest)
 {
-#ifdef OKP_BUILTIN
+#if defined(OKP_BUILTIN) || defined(OKP_WSOCK)
+#ifdef OKP_WSOCK
+    static const char key[] = "latest_wsock ";
+#else
+    static const char key[] = "latest ";
+#endif
     const char *p = rest;
     while (p && *p) {
-        if (!strncmp(p, "latest ", 7)) {
+        if (!strncmp(p, key, sizeof(key) - 1)) {
             char ver[24] = "", notee[600] = "", note[256] = "";
-            if (sscanf(p, "latest %23s %599s", ver, notee) >= 1) {
+            if (sscanf(p + sizeof(key) - 1, "%23s %599s", ver, notee) >= 1) {
                 if (strcmp(notee, "-") != 0) okp_urldec(notee, note, sizeof(note));
-                DP_BUILTIN_OfferUpdate(ver, note);
+                okp_ui_offer_update(ver, note);
             }
             return;
         }

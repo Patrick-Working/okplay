@@ -26,8 +26,8 @@ static SOCKET udp4(uint16_t port, int reuse)
     if (s == INVALID_SOCKET) {
         int e = WSAGetLastError();
         okp_log(0, "LAN: socket: %d", e);
-#ifdef OKP_BUILTIN
-        DP_BUILTIN_NetworkUnavailable(e);
+#if defined(OKP_BUILTIN) || defined(OKP_WSOCK)
+        okp_ui_network_unavailable(e);
 #endif
         return s;
     }

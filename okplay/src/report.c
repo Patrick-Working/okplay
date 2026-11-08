@@ -27,11 +27,6 @@
 #define CONN_FILE  "okplay-conn-reports.txt"
 #define CONN_KEEP  4096        /* bytes of unsent connection lines kept (newest win) */
 
-#ifdef OKP_BUILTIN
-int DP_BUILTIN_AskCrashReport(const char *path);   /* builtin.c: 0 don't send, 1 send, 2 always send */
-int DP_BUILTIN_AskConnReports(void);               /* builtin.c: 1 yes, 0 no (written to okplay.ini) */
-#endif
-
 static int report_path(const char *name, char *out, int n)
 {
     const char *d = okp_log_dir();
@@ -121,7 +116,7 @@ static int conn_choice(void)   /* 1 yes, 0 no, -1 ask */
     if (t && *t && _stricmp(t, "ask")) return !_stricmp(t, "yes");
     if (!_stricmp(v, "yes") || !strcmp(v, "1")) return 1;
     if (!_stricmp(v, "no") || !strcmp(v, "0")) return 0;
-#ifdef OKP_BUILTIN
+#if defined(OKP_BUILTIN) || defined(OKP_WSOCK)
     return -1;
 #else
     return 0;   /* no box to ask with */
@@ -271,8 +266,8 @@ static DWORD WINAPI pending_thread(LPVOID unused)
             InterlockedExchange(&g_pending_busy, 0);
             return 0;
         } else {
-#ifdef OKP_BUILTIN
-            int r = DP_BUILTIN_AskCrashReport(path);
+#if defined(OKP_BUILTIN) || defined(OKP_WSOCK)
+            int r = okp_ui_ask_crash_report(path);
             send = r > 0;
             if (r == 2) okp_report_set_ini("crash_reports", "always");
 #endif
@@ -290,9 +285,9 @@ static DWORD WINAPI pending_thread(LPVOID unused)
     /* connection reports: the first answer (asked once per game run), or lines an earlier send left */
     if (exists(CONN_FILE, path, sizeof(path))) {
         int choice = conn_choice();
-#ifdef OKP_BUILTIN
+#if defined(OKP_BUILTIN) || defined(OKP_WSOCK)
         if (choice < 0 && !no_boxes() && !InterlockedExchange(&g_conn_asked, 1)) {
-            choice = DP_BUILTIN_AskConnReports();
+            choice = okp_ui_ask_conn_reports();
             okp_report_set_ini("connection_reports", choice ? "yes" : "no");
         }
 #endif

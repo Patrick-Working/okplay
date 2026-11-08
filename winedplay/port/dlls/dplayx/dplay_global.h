@@ -312,9 +312,12 @@ HRESULT DP_BUILTIN_AskJoinPassword( const GUID *instance, WCHAR *hashed, DWORD s
  * (okplay.ini build_check=ask|off) - DP_OK or DPERR_USERCANCEL */
 HRESULT DP_BUILTIN_CheckBuild( IDirectPlaySP *isp, const GUID *instance );
 void DP_BUILTIN_JoinFailed( HRESULT hr );
-void DP_BUILTIN_OfferUpdate( const char *latest, const char *note_utf8 );   /* from okplay rdv.c */
-void DP_BUILTIN_NetworkUnavailable( int err );   /* from okplay net.c/lan.c: no TCP/IP */
-void DP_BUILTIN_ServerUnreachable( const char *server, const char *why );   /* from okplay rdv.c */
+/* okplay's core boxes (okp.h okp_ui_*; builtin.c decides when, okplay/src/okbox.c draws them) */
+void okp_ui_offer_update( const char *latest, const char *note_utf8 );   /* from okplay rdv.c */
+void okp_ui_network_unavailable( int err );   /* from okplay net.c/lan.c: no TCP/IP */
+void okp_ui_server_unreachable( const char *server, const char *why );   /* from okplay rdv.c */
+int okp_ui_ask_crash_report( const char *path );   /* from okplay report.c: 0 don't send, 1 send, 2 always */
+int okp_ui_ask_conn_reports( void );               /* from okplay report.c: 1 yes, 0 no */
 
 /* important session events: always in the drop-in's session log, a trace otherwise */
 #ifdef OKP_BUILTIN

@@ -42,4 +42,17 @@ BOOL okbox_ask_host_password( const GUID *instance, WCHAR *hashed, DWORD size );
 int okbox_ask_join_password( const GUID *instance, WCHAR *hashed, DWORD size );    /* 1 = typed, 0 = cancelled */
 void okbox_wrong_password( void );
 int okbox_ask_mode( const char *what );   /* 1 = the game's original connection, 2 = Online Play, 3 = LAN Play */
+/* notices and questions (the core's okp_ui_* hooks call these - builtin.c in the drop-in, wsock.c in
+ * okplay wsock). Each shows its box on the calling thread and returns when it is closed: no threads,
+ * no once-per-run gating - the callers decide when. Texts and logs are the same in both editions. */
+int okbox_version_cmp( const char *a, const char *b );   /* <0, 0, >0: "0.7.10" > "0.7.9" */
+/* 1 = `latest` is newer than `current` and okplay.ini lets us ask (update_check, update_seen); logs either way */
+int okbox_update_wanted( const char *latest, const char *current );
+/* the update box: Download (the server's folder, from okplay.ini server=), Not Now, "Don't remind me"
+ * (okplay.ini update_seen=); OKP_TEST_UPDATE=download|later|never answers without a box */
+void okbox_offer_update( const char *latest, const char *note_utf8, const char *current );
+void okbox_server_unreachable( const char *server, const char *why );   /* "Can't reach the Online Play server" */
+void okbox_network_unavailable( void );                                 /* "TCP/IP networking isn't working" */
+int okbox_ask_crash_report( const char *path );   /* 0 don't send, 1 send, 2 always send (View Report asks again) */
+int okbox_ask_conn_reports( void );               /* 1 yes, 0 no */
 #endif

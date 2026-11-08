@@ -25,6 +25,8 @@
  *
  * Every "ok <ip>" reply also carries "latest <version> <note>" (note url-encoded, "-" if empty):
  * the newest drop-in, so older ones can offer an update. Drop-ins before 0.7.0 skip the line.
+ * The next line, "latest_wsock <version> <note>", is the same for okplay wsock (the Winsock edition);
+ * drop-ins skip it (they match "latest " with the space only).
  *
  * Rooms vanish TTL seconds after their last announce, so crashed hosts never
  * leave ghosts. The host proves ownership with the random tok from its first
@@ -106,8 +108,14 @@ const KNOWN_APPS = [
 const LATEST_VERSION = '0.8.2';
 const LATEST_NOTE    = 'Room list: matches on slower PCs no longer show as between games; a lobby settings fix.';
 
+// The newest okplay wsock (the Winsock edition, okplay/wsock/): the same notice there.
+const LATEST_WSOCK_VERSION = '0.1.3';
+const LATEST_WSOCK_NOTE    = '';
+
 function latest_line() {
-    return 'latest ' . LATEST_VERSION . ' ' . (LATEST_NOTE === '' ? '-' : rawurlencode(LATEST_NOTE)) . "\n";
+    return 'latest ' . LATEST_VERSION . ' ' . (LATEST_NOTE === '' ? '-' : rawurlencode(LATEST_NOTE)) . "\n"
+         . 'latest_wsock ' . LATEST_WSOCK_VERSION . ' '
+         . (LATEST_WSOCK_NOTE === '' ? '-' : rawurlencode(LATEST_WSOCK_NOTE)) . "\n";
 }
 
 header('Content-Type: text/plain; charset=utf-8');
@@ -482,7 +490,8 @@ case 'list':
                       'build' => $r['build'] ?? '', 'exe' => $r['exe'] ?? ''];
         }
         header('Access-Control-Allow-Origin: *');
-        $out = json_encode(['rooms' => $pub, 'tests' => $tests, 'now' => $now, 'latest' => LATEST_VERSION]);
+        $out = json_encode(['rooms' => $pub, 'tests' => $tests, 'now' => $now, 'latest' => LATEST_VERSION,
+                           'latest_wsock' => LATEST_WSOCK_VERSION]);
         break;
     }
     $out = "ok $ip\n" . latest_line();

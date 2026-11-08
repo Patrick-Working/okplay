@@ -1405,8 +1405,8 @@ int okp_net_start(okp_ctx *c)
         if (s == INVALID_SOCKET) {
             int e4 = WSAGetLastError();
             okp_log(0, "socket: IPv6 %d, IPv4 %d", e6, e4);
-#ifdef OKP_BUILTIN
-            DP_BUILTIN_NetworkUnavailable(e4);   /* tell the player why, not just the game */
+#if defined(OKP_BUILTIN) || defined(OKP_WSOCK)
+            okp_ui_network_unavailable(e4);   /* tell the player why, not just the game */
 #endif
             return 0;
         }
