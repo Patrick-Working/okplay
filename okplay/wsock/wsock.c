@@ -1742,6 +1742,7 @@ int WINAPI x_WSAStartup(WORD v, LPWSADATA d)
 int WINAPI x_WSACleanup(void)
 {
     if (!okw_on) return WSACleanup();
+    okp_log(2, "wsock: the game calls WSACleanup (it is done with the network)");
     int withdraw = 0;
     EnterCriticalSection(&okw_lock);
     if (ctx && (ctx->is_host || ctx->closing) && ctx->room && ctx->mode == OKP_MODE_ONLINE) {
@@ -1752,7 +1753,9 @@ int WINAPI x_WSACleanup(void)
     }
     LeaveCriticalSection(&okw_lock);
     if (withdraw) okp_rdv_close(ctx);
-    return WSACleanup();
+    int r = WSACleanup();
+    okp_log(2, "wsock: WSACleanup done (%d)", r);
+    return r;
 }
 int WINAPI x___WSAFDIsSet(SOCKET s, fd_set *f) { return __WSAFDIsSet(s, f); }
 

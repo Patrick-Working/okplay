@@ -252,12 +252,18 @@ def join(vm):
 
 
 def start_race(h, j):
-    n = len(re.findall("the game closed its room", h.newest_log()))
+    """Started when the lab build logs "race drawing started" (remote riders drawn again)."""
+    time.sleep(6)                             # the lobby takes a moment after the last race
+    n = len(re.findall("race drawing started", h.newest_log()))
+    for vm in (h, j):
+        vm.guard()
+        vm.ctl("move", 75, 467)               # the lobby ignores a click without a hover first
+    time.sleep(1.5)
     for vm in (h, j):
         vm.click(75, 467, 3)                  # Bulletin Board
     for vm in (h, j):
         vm.click(58, 433, 1)                  # The City
-    return h.wait_log("the game closed its room", 25, after=n)
+    return h.wait_log("race drawing started", 30, after=n)
 
 
 def ride(vms, secs):
@@ -306,43 +312,60 @@ RACE_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*race from (\w+), last 10 s: (\d+
                      r"p99 (\d+)\+?, max (\d+) steps, (\d+) over 20; stamps run (\d+)\.(\d) steps/s; longest wait (\d+) ms", re.M)
 
 
-def race_lines(text, since):
-    return [m for m in RACE_RE.finditer(text) if m.group(1) >= since]
+def secs(hms):
+    h, m, s = (int(x) for x in hms.split(":"))
+    return h * 3600 + m * 60 + s
 
 
+def steady(text, regex, settle=12):
+    """Rows of the race that just ran, on that machine's own clock (the VMs' clocks differ): from its
+    last "race drawing started" line plus `settle` seconds, so race starts and the time between races
+    are not counted."""
+    starts = re.findall(r"^(\d\d:\d\d:\d\d)\.\d+ .*race drawing started", text, re.M)
+    if not starts:
+        return []
+    t0 = secs(starts[-1]) + settle
+    return [m for m in regex.finditer(text) if secs(m.group(1)) >= t0]
+
+
+RACE_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*race from (\w+), last 10 s: (\d+) packets, (\d+) stamp steps; gap median (\d+), "
+                     r"p99 (\d+)\+?, max (\d+) steps, (\d+) over 20; stamps run (\d+)\.(\d) steps/s; longest wait (\d+) ms", re.M)
 AI = False
 HIST_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab history, last 10 s: (\d+) updates, (\d+) mix-ups", re.M)
 LAB_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab draw rider (\d+), last 10 s: (\d+) draws; dt median (\d+), max (\d+), "
-                    r"over 20 (\d+); movement avg (\d+) max (\d+); jumps (\d+)", re.M)
+                    r"over 20 (\d+); movement avg (\d+) max (\d+); jumps (\d+) \(change > \d+\); change median 2\^(\d+) "
+                    r"p99 2\^(\d+) max (\d+)", re.M)
 
 
-def lab_summary(texts, since):
-    rows = [m for t in texts for m in LAB_RE.finditer(t) if m.group(1) >= since and int(m.group(3)) >= 50]
-    hist = [m for t in texts for m in HIST_RE.finditer(t) if m.group(1) >= since]
-    hs = ""
+QUAL_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab quality rider (\d+), last 10 s: smooth (\d+) steps median 2\^(\d+) "
+                     r"p99 2\^(\d+) max (\d+); accuracy (\d+) checks median 2\^(\d+) p99 2\^(\d+) max (\d+)", re.M)
+
+
+def summarize(name, texts):
+    rows = [r for t in texts for r in steady(t, RACE_RE)]
+    lab = [r for t in texts for r in steady(t, LAB_RE) if int(r.group(3)) >= 50]
+    hist = [r for t in texts for r in steady(t, HIST_RE)]
+    if not rows:
+        return f"{name:10s}  no steady race windows"
+    out = (f"{name:10s}  win {len(rows):2d}  gap p99 {max(int(r.group(6)) for r in rows):3d} max {max(int(r.group(7)) for r in rows):4d}"
+           f" over20 {sum(int(r.group(8)) for r in rows):3d}  wait max {max(int(r.group(11)) for r in rows):5d} ms")
+    if lab:
+        draws = sum(int(r.group(3)) for r in lab)
+        out += (f" | drawn: dt max {max(int(r.group(5)) for r in lab):4d} over20 {sum(int(r.group(6)) for r in lab):4d}/{draws}"
+                f"  change p99 2^{max(int(r.group(11)) for r in lab):2d} max {max(int(r.group(12)) for r in lab):7d}"
+                f"  jumps {sum(int(r.group(9)) for r in lab):4d}")
+    qual = [r for t in texts for r in steady(t, QUAL_RE) if int(r.group(3)) >= 50]
+    if qual:
+        sm = sorted(int(r.group(5)) for r in qual)
+        acc = [r for r in qual if int(r.group(7)) >= 20]
+        out += f" | smooth p99 2^{sm[len(sm) // 2]:2d} (worst 2^{sm[-1]:2d})"
+        if acc:
+            am = sorted(int(r.group(8)) for r in acc)
+            ap = sorted(int(r.group(9)) for r in acc)
+            out += f", error median 2^{am[len(am) // 2]:2d} p99 2^{ap[len(ap) // 2]:2d} (worst 2^{ap[-1]:2d})"
     if hist:
-        hs = f" | history: {sum(int(m.group(3)) for m in hist)} mix-ups in {sum(int(m.group(2)) for m in hist)} updates"
-    if not rows:
-        return hs
-    draws = sum(int(r.group(3)) for r in rows)
-    jumps = sum(int(r.group(9)) for r in rows)
-    over = sum(int(r.group(6)) for r in rows)
-    dtmax = max(int(r.group(5)) for r in rows)
-    dtmed = sorted(int(r.group(4)) for r in rows)[len(rows) // 2]
-    return f"  | drawn: dt median {dtmed:2d} max {dtmax:4d}, over20 {over:5d}, jumps {jumps:4d} per {draws} draws" + hs
-
-
-def summarize(name, rows):
-    if not rows:
-        return f"{name:10s}  no race lines"
-    full = [r for r in rows if int(r.group(3)) >= 100] or rows
-    med = sorted(int(r.group(5)) for r in full)[len(full) // 2]
-    p99 = max(int(r.group(6)) for r in full)
-    mx = max(int(r.group(7)) for r in full)
-    over = sum(int(r.group(8)) for r in full)
-    rate = sorted(int(r.group(9)) for r in full)[len(full) // 2]
-    wait = max(int(r.group(11)) for r in full)
-    return f"{name:10s}  windows {len(full):2d}  gap median {med:2d}  p99 {p99:3d}  max {mx:4d}  over20 {over:4d}  steps/s {rate:3d}  longest wait {wait:5d} ms"
+        out += f" | history mix-ups {sum(int(r.group(3)) for r in hist)}/{sum(int(r.group(2)) for r in hist)}"
+    return out
 
 
 def main():
@@ -404,9 +427,7 @@ def main():
             log(f"{name}: racing {a.secs} s with {knobs or 'no test knobs'}")
             ride((h, j), a.secs)
             time.sleep(11)                         # one more 10 s report
-            th, tj = h.newest_log(), j.newest_log()
-            rows = race_lines(th, since) + race_lines(tj, since)
-            results.append(summarize(name, rows) + lab_summary((th, tj), since))
+            results.append(summarize(name, (h.newest_log(), j.newest_log())))
             log(results[-1])
             leave_race(h, j)
         except GameLost as e:
