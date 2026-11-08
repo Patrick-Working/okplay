@@ -289,15 +289,28 @@ def cancel_go_home(vm):
 
 
 def leave_race(h, j):
-    """The host's Escape ends the race for everyone ("... has terminated the race"); back in the lobby the
-    host lists its room again ("hosting room"), the signal to go on. The Escape comes from inside the game."""
+    """Both players quit with Escape - in a race the game reads it from its window messages, so it is posted
+    there from inside the game. The postcard ("Busted!") and the race results after it go on with a click;
+    a click in the middle of the lobby's picture does nothing, so a spare one is harmless. Back in the lobby
+    the host lists its room again ("hosting room"), the signal to go on."""
     n = len(re.findall("hosting room", h.newest_log()))
-    for _ in range(3):
-        h.guard()
-        h.script("KEY ESC 200 500\n")
-        if h.wait_log("hosting room", 15, after=n):
+    for vm in (j, h):                        # both quit (the host alone only leaves the race itself)
+        vm.guard()
+        vm.script("POST ESC 500\n")
+        time.sleep(3)
+    for attempt in range(6):
+        time.sleep(3)
+        for vm in (h, j):
+            vm.click(320, 240, 1)
+        if attempt >= 1 and h.wait_log("hosting room", 4, after=n):
             break
-    time.sleep(3)
+    else:
+        for vm in (h, j):
+            log(f"{vm.a}: not back in the lobby: {snap(vm, 'leave')}")
+    for _ in range(2):                       # the joiner may be a screen behind
+        time.sleep(3)
+        for vm in (h, j):
+            vm.click(320, 240, 1)
     for vm in (h, j):
         cancel_go_home(vm)
 
@@ -380,6 +393,7 @@ def main():
     ap.add_argument("--trace", action="store_true", help="wsock_trace=1 (first race packets dumped)")
     ap.add_argument("--set", default="", help="extra okplay.ini keys for every race, e.g. rr_clamp=1")
     ap.add_argument("--ai", action="store_true", help="host picks Limited A.I. bikers")
+    ap.add_argument("--repeat", type=int, default=1, help="run every setting this many times")
     a = ap.parse_args()
     global AI
     AI = a.ai
@@ -390,6 +404,8 @@ def main():
         BASE_INI[k.strip()] = v.strip()
     h, j = VM(a.host), VM(a.join)
     settings = [s for s in SETTINGS if not a.only or s[0] in a.only.split(",")]
+    if a.repeat > 1:
+        settings = [(f"{n}#{i + 1}", k) for i in range(a.repeat) for n, k in settings]
 
     for vm in (h, j):
         if vm.running():
@@ -413,10 +429,9 @@ def main():
     results = []
     for name, knobs in settings:
         try:
-            for vm in (h, j):
-                vm.write_ini(knobs)
+            for vm in (h, j):                  # the knobs act only while racing: in the lobby they
+                vm.write_ini({})                # lost the race-start handshake (dropout settings)
             time.sleep(3)
-            since = time.strftime("%H:%M:%S")
             if not start_race(h, j):
                 log(f"{name}: race did not start - trying once more (screens: {snap(h, name)} {snap(j, name)})")
                 for vm in (h, j):
@@ -424,8 +439,12 @@ def main():
                 if not start_race(h, j):
                     results.append(f"{name:10s}  race did not start")
                     continue
+            for vm in (h, j):
+                vm.write_ini(knobs)
             log(f"{name}: racing {a.secs} s with {knobs or 'no test knobs'}")
             ride((h, j), a.secs)
+            for vm in (h, j):
+                vm.write_ini({})
             time.sleep(11)                         # one more 10 s report
             results.append(summarize(name, (h.newest_log(), j.newest_log())))
             log(results[-1])
