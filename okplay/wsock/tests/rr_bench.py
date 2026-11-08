@@ -1,0 +1,433 @@
+#!/usr/bin/env python3
+"""rr_bench.py - automated Road Rash races between two Windows 98 VMs, for measuring okplay wsock.
+
+Drives the 1996 CD version on two okagent machines (see okagent/vmctl.py): installs the shim and an
+okplay.ini (LAN Play, no password boxes), starts both games, hosts on one and joins from the other through
+the game's own menus, then runs one race per test setting. The test knobs (test_delay_ms, test_jitter_ms,
+test_blackout_ms, test_blackout_every_ms, test_loss_pct) are rewritten in okplay.ini between races; the shim
+re-reads them every 2 s. Each machine's log gets a "race from ..." line every 10 s (stamp gaps per sender);
+those lines are collected per race and printed as a table.
+
+    python rr_bench.py --host WIN98B-... --join WIN98C-... [--dll wsock32.dll] [--secs 50] [--only NAME]
+
+Progress is checked through the shim's own log lines, not screenshots: "hosting room", "found room",
+"joining room" and "the game closed its room" (the host closes its room when a race starts). Menu clicks
+are positions on the game's 640x480 screen. The game is always left through its own windows (never
+killed): repeated force-kills on Windows 98 stopped its 33 ms timer until a reboot.
+"""
+import argparse, os, re, subprocess, sys, tempfile, time
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+VMCTL = os.path.normpath(os.path.join(HERE, "..", "..", "..", "okagent", "vmctl.py"))
+GAME_DIR = r"C:\ElectronicArts\RoadRash"
+EXE = GAME_DIR + r"\ROADRASH.EXE"
+
+BASE_INI = {
+    "server": "https://oldkid.net/aoe2net/okplay.php",
+    "loglevel": "3",
+    "wsock_mode": "lan",
+    "use_password": "off",
+    "wsock_trace": "0",
+    "rr_novideo": "1",       # lab build: no videos (the race-end ones took the game off screen)
+    "brand": "Oldkid.net Online Play",
+    "online_name": "Oldkid.net Online Play",
+    "lan_name": "Oldkid.net LAN Play",
+}
+
+# name, knobs (applied on both machines: each one delays what it receives)
+SETTINGS = [
+    ("lan", {}),
+    ("d40", {"test_delay_ms": 40}),
+    ("d40j20", {"test_delay_ms": 40, "test_jitter_ms": 20}),
+    ("d80j40l1", {"test_delay_ms": 80, "test_jitter_ms": 40, "test_loss_pct": 1}),
+    ("d100l3", {"test_delay_ms": 100, "test_loss_pct": 3}),
+    ("d150l5", {"test_delay_ms": 150, "test_loss_pct": 5}),
+    ("bo300", {"test_blackout_ms": 300, "test_blackout_every_ms": 5000}),
+    ("bo500", {"test_blackout_ms": 500, "test_blackout_every_ms": 5000}),
+    ("bo1000", {"test_blackout_ms": 1000, "test_blackout_every_ms": 6000}),
+    ("bo2000", {"test_blackout_ms": 2000, "test_blackout_every_ms": 8000}),
+]
+
+
+def log(msg):
+    print(time.strftime("%H:%M:%S"), msg, flush=True)
+
+
+class GameLost(Exception):
+    """The game is not on screen (minimized or gone): never click or type then - it would land on the
+    Windows desktop (a click at a menu position once selected a desktop icon)."""
+
+
+class VM:
+    def __init__(self, agent):
+        self.a = agent
+
+    def ctl(self, *args, check=False):
+        r = subprocess.run([sys.executable, VMCTL, "--agent", self.a] + [str(x) for x in args],
+                           capture_output=True, text=True, timeout=120)
+        if check and r.returncode:
+            raise RuntimeError(f"{self.a} {args}: {r.stdout}{r.stderr}")
+        return r.stdout
+
+    def guard(self):
+        ws = self.windows()
+        game = [w for w in ws if w["cls"] == "RashRoot"]
+        if not game or game[0]["rect"].startswith("3000,"):
+            raise GameLost(f"{self.a}: the game is {'minimized' if game else 'not running'}")
+
+    def click(self, x, y, wait=5.0):
+        self.guard()
+        self.ctl("click", x, y)
+        time.sleep(wait)
+
+    def key(self, k, hold=0.25, wait=0.8):
+        self.guard()
+        self.ctl("key", k, "down")
+        time.sleep(hold)
+        self.ctl("key", k, "up")
+        time.sleep(wait)
+
+    def windows(self):
+        out = []
+        for line in self.ctl("windows", "all").splitlines():
+            f = line.split("\t")
+            if len(f) >= 5:
+                out.append({"h": f[0], "pid": f[1], "rect": f[2], "cls": f[3], "title": f[4]})
+        return out
+
+    def dialogs(self):
+        return [(w["h"], w["title"]) for w in self.windows() if w["cls"] == "#32770"]
+
+    def game_pid(self):
+        for w in self.windows():
+            if w["cls"] == "RashRoot":
+                return w["pid"]
+        return None
+
+    def minimized(self):
+        return any(w["cls"] == "RashRoot" and w["rect"].startswith("3000,") for w in self.windows())
+
+    def close_dialogs(self, game_only=False):
+        """Windows' own boxes (logon, ...) are closed only while the game is not running: closing one
+        takes the focus, and Road Rash shows only black after losing it."""
+        pid = self.game_pid() if game_only else None
+        for w in self.windows():
+            if w["cls"] == "#32770" and (not game_only or w["pid"] == pid):
+                self.ctl("close", w["h"])
+                time.sleep(1)
+
+    def running(self):
+        return "ROADRASH" in self.ctl("ps").upper()
+
+    def script(self, text):
+        """Lab build: keys played from inside the game (rr_macro.txt). Used in races: keys sent from
+        outside (the agent's SendInput) at a race's end knocked the host's game off the screen."""
+        tmp = os.path.join(tempfile.gettempdir(), f"rr_macro_{self.a}.txt")
+        with open(tmp, "w") as f:
+            f.write(text)
+        self.put(tmp, GAME_DIR + r"\rr_macro.txt")
+
+    def put(self, local, remote):
+        self.ctl("put", local, remote, check=True)
+
+    def newest_log(self):
+        names = [l.split("\t")[2].strip() for l in self.ctl("ls", GAME_DIR + r"\logs\*").splitlines()
+                 if l.startswith("file\t")]
+        if not names:
+            return ""
+        tmp = os.path.join(tempfile.gettempdir(), f"rr_bench_{self.a}.log")
+        self.ctl("get", GAME_DIR + "\\logs\\" + sorted(names)[-1], tmp)
+        try:
+            return open(tmp, encoding="latin-1").read()
+        except OSError:
+            return ""
+
+    def wait_log(self, pattern, secs, after=0):
+        t0 = time.time()
+        while time.time() - t0 < secs:
+            text = self.newest_log()
+            if len(re.findall(pattern, text)) > after:
+                return True
+            time.sleep(2)
+        return False
+
+    def write_ini(self, knobs):
+        d = dict(BASE_INI)
+        d.update({k: str(v) for k, v in knobs.items()})
+        for k in ("test_delay_ms", "test_jitter_ms", "test_blackout_ms", "test_blackout_every_ms", "test_loss_pct"):
+            d.setdefault(k, "0")
+        tmp = os.path.join(tempfile.gettempdir(), f"rr_bench_{self.a}.ini")
+        with open(tmp, "w", newline="\r\n") as f:
+            f.write("[okplay]\n" + "".join(f"{k}={v}\n" for k, v in d.items()))
+        self.put(tmp, GAME_DIR + r"\okplay.ini")
+
+
+def start_game(vm):
+    for _ in range(3):
+        for _ in range(3):        # Windows' boxes first (the logon box comes a while after boot)
+            vm.close_dialogs()
+            time.sleep(2)
+        vm.ctl("run", EXE)
+        time.sleep(14)
+        try:
+            vm.close_dialogs(game_only=True)   # the game's own DirectSound warning
+            vm.click(322, 281, 8)     # past the first screen
+            vm.key("esc", wait=5)
+            vm.key("esc", wait=5)     # past the intro and credits: main menu
+            vm.guard()
+            return True
+        except GameLost:
+            log(f"{vm.a}: the game lost the focus (black screen) - closing and starting it again")
+        close_game(vm)
+    return False
+
+
+def close_game(vm, disconnect=False):
+    """Through its window (WM_CLOSE), never killed. Closed while still connected (lobby, race) the game's
+    process does not exit (seen on Windows 98 and 10; under investigation), so disconnect first."""
+    vm.close_dialogs(game_only=True)
+    if disconnect:
+        try:
+            vm.click(385, 466, 5)             # lobby: Disconnect
+        except GameLost:
+            pass
+    vm.ctl("close", "Road Rash")
+    for _ in range(20):
+        if not vm.running():
+            return True
+        time.sleep(2)
+    return False
+
+
+def to_main_menu(vm):
+    for _ in range(4):
+        vm.close_dialogs(game_only=True)
+        vm.key("esc", wait=2)
+
+
+def host(vm):
+    for attempt in range(3):
+        n = len(re.findall("hosting room", vm.newest_log()))
+        vm.click(396, 433)                    # Mano-a-Mano
+        vm.click(40, 416)                     # Host
+        vm.click(366, 139)                    # Level 1
+        vm.click(366, 139)                    # Disable cars
+        vm.click(366, 173)                    # TCP/IP
+        if any("Warning" in t for _, t in vm.dialogs()):   # landed on Modem: back out and retry
+            vm.close_dialogs(game_only=True)
+            to_main_menu(vm)
+            continue
+        vm.click(385, 175 if AI else 139)     # Limited A.I. bikers / Humans only
+        vm.key("enter", wait=4)               # rider
+        if vm.wait_log("hosting room", 20, after=n):
+            return True
+        log(f"{vm.a}: not hosting yet (attempt {attempt + 1}), back to the menu")
+        to_main_menu(vm)
+    return False
+
+
+def join(vm):
+    for attempt in range(3):
+        n = len(re.findall("joining room", vm.newest_log()))
+        vm.click(396, 433)                    # Mano-a-Mano
+        vm.click(40, 440)                     # Join
+        vm.click(366, 173, 6)                 # TCP/IP
+        if any("Warning" in t for _, t in vm.dialogs()):
+            vm.close_dialogs(game_only=True)
+            to_main_menu(vm)
+            continue
+        if not any("Pick from" in t for _, t in vm.dialogs()):
+            log(f"{vm.a}: no game list (attempt {attempt + 1})")
+            to_main_menu(vm)
+            continue
+        vm.wait_log("found room", 15)
+        time.sleep(3)
+        vm.click(77, 175, 1)                  # the first game in the list
+        vm.click(178, 332, 6)                 # OK
+        if vm.wait_log("joining room", 15, after=n):
+            vm.key("enter", wait=4)           # rider
+            return True
+        to_main_menu(vm)
+    return False
+
+
+def start_race(h, j):
+    n = len(re.findall("the game closed its room", h.newest_log()))
+    for vm in (h, j):
+        vm.click(75, 467, 3)                  # Bulletin Board
+    for vm in (h, j):
+        vm.click(58, 433, 1)                  # The City
+    return h.wait_log("the game closed its room", 25, after=n)
+
+
+def ride(vms, secs):
+    time.sleep(4)                             # countdown
+    for vm in vms:
+        vm.guard()
+        vm.script(f"HOLD UP {secs * 1000}\n")
+    t0 = time.time()
+    while time.time() - t0 < secs:
+        time.sleep(5)
+        for vm in vms:
+            vm.guard()
+
+
+def cancel_go_home(vm):
+    """Escape in the lobby opens the Restroom; a second one asks "Go Home?" - cancel (WM_CLOSE) and leave
+    the Restroom through Done."""
+    for h, title in vm.dialogs():
+        if "Go Home" in title:
+            vm.ctl("close", h)
+            time.sleep(2)
+            vm.key("esc", wait=2)
+
+
+def leave_race(h, j):
+    """The host's Escape ends the race for everyone ("... has terminated the race"); back in the lobby the
+    host lists its room again ("hosting room"), the signal to go on. The Escape comes from inside the game."""
+    n = len(re.findall("hosting room", h.newest_log()))
+    for _ in range(3):
+        h.guard()
+        h.script("KEY ESC 200 500\n")
+        if h.wait_log("hosting room", 15, after=n):
+            break
+    time.sleep(3)
+    for vm in (h, j):
+        cancel_go_home(vm)
+
+
+def snap(vm, tag):
+    path = os.path.join(tempfile.gettempdir(), f"rr_bench_{tag}_{vm.a}.png")
+    vm.ctl("shot", path)
+    return path
+
+
+RACE_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*race from (\w+), last 10 s: (\d+) packets, (\d+) stamp steps; gap median (\d+), "
+                     r"p99 (\d+)\+?, max (\d+) steps, (\d+) over 20; stamps run (\d+)\.(\d) steps/s; longest wait (\d+) ms", re.M)
+
+
+def race_lines(text, since):
+    return [m for m in RACE_RE.finditer(text) if m.group(1) >= since]
+
+
+AI = False
+HIST_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab history, last 10 s: (\d+) updates, (\d+) mix-ups", re.M)
+LAB_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab draw rider (\d+), last 10 s: (\d+) draws; dt median (\d+), max (\d+), "
+                    r"over 20 (\d+); movement avg (\d+) max (\d+); jumps (\d+)", re.M)
+
+
+def lab_summary(texts, since):
+    rows = [m for t in texts for m in LAB_RE.finditer(t) if m.group(1) >= since and int(m.group(3)) >= 50]
+    hist = [m for t in texts for m in HIST_RE.finditer(t) if m.group(1) >= since]
+    hs = ""
+    if hist:
+        hs = f" | history: {sum(int(m.group(3)) for m in hist)} mix-ups in {sum(int(m.group(2)) for m in hist)} updates"
+    if not rows:
+        return hs
+    draws = sum(int(r.group(3)) for r in rows)
+    jumps = sum(int(r.group(9)) for r in rows)
+    over = sum(int(r.group(6)) for r in rows)
+    dtmax = max(int(r.group(5)) for r in rows)
+    dtmed = sorted(int(r.group(4)) for r in rows)[len(rows) // 2]
+    return f"  | drawn: dt median {dtmed:2d} max {dtmax:4d}, over20 {over:5d}, jumps {jumps:4d} per {draws} draws" + hs
+
+
+def summarize(name, rows):
+    if not rows:
+        return f"{name:10s}  no race lines"
+    full = [r for r in rows if int(r.group(3)) >= 100] or rows
+    med = sorted(int(r.group(5)) for r in full)[len(full) // 2]
+    p99 = max(int(r.group(6)) for r in full)
+    mx = max(int(r.group(7)) for r in full)
+    over = sum(int(r.group(8)) for r in full)
+    rate = sorted(int(r.group(9)) for r in full)[len(full) // 2]
+    wait = max(int(r.group(11)) for r in full)
+    return f"{name:10s}  windows {len(full):2d}  gap median {med:2d}  p99 {p99:3d}  max {mx:4d}  over20 {over:4d}  steps/s {rate:3d}  longest wait {wait:5d} ms"
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--host", required=True)
+    ap.add_argument("--join", required=True)
+    ap.add_argument("--dll", default=os.path.join(HERE, "..", "bin", "lab", "wsock32.dll"),
+                    help="the shim to test; the default lab build (build.sh with OKW_LAB_SRC) has the in-game key "
+                         "scripts this bench uses in races")
+    ap.add_argument("--secs", type=int, default=50)
+    ap.add_argument("--only", default="")
+    ap.add_argument("--trace", action="store_true", help="wsock_trace=1 (first race packets dumped)")
+    ap.add_argument("--set", default="", help="extra okplay.ini keys for every race, e.g. rr_clamp=1")
+    ap.add_argument("--ai", action="store_true", help="host picks Limited A.I. bikers")
+    a = ap.parse_args()
+    global AI
+    AI = a.ai
+    if a.trace:
+        BASE_INI["wsock_trace"] = "1"
+    for kv in filter(None, a.set.split(",")):
+        k, v = kv.split("=", 1)
+        BASE_INI[k.strip()] = v.strip()
+    h, j = VM(a.host), VM(a.join)
+    settings = [s for s in SETTINGS if not a.only or s[0] in a.only.split(",")]
+
+    for vm in (h, j):
+        if vm.running():
+            sys.exit(f"{vm.a}: Road Rash is already running - close it first")
+        vm.put(os.path.abspath(a.dll), GAME_DIR + r"\WSOCK32.DLL")
+        vm.write_ini(settings[0][1])
+    def session():
+        log("starting both games")
+        for vm in (h, j):
+            if not start_game(vm):
+                raise GameLost(f"{vm.a}: the game would not start cleanly")
+        if not host(h):
+            raise GameLost("host never got to hosting")
+        log("host is hosting")
+        if not join(j):
+            raise GameLost("joiner never joined")
+        log("joined")
+
+    restarts = 0
+    session()
+    results = []
+    for name, knobs in settings:
+        try:
+            for vm in (h, j):
+                vm.write_ini(knobs)
+            time.sleep(3)
+            since = time.strftime("%H:%M:%S")
+            if not start_race(h, j):
+                log(f"{name}: race did not start - trying once more (screens: {snap(h, name)} {snap(j, name)})")
+                for vm in (h, j):
+                    cancel_go_home(vm)
+                if not start_race(h, j):
+                    results.append(f"{name:10s}  race did not start")
+                    continue
+            log(f"{name}: racing {a.secs} s with {knobs or 'no test knobs'}")
+            ride((h, j), a.secs)
+            time.sleep(11)                         # one more 10 s report
+            th, tj = h.newest_log(), j.newest_log()
+            rows = race_lines(th, since) + race_lines(tj, since)
+            results.append(summarize(name, rows) + lab_summary((th, tj), since))
+            log(results[-1])
+            leave_race(h, j)
+        except GameLost as e:
+            log(f"{name}: {e} (screens: {snap(h, name + '_lost')} {snap(j, name + '_lost')}) - restarting both games")
+            if not any(r.startswith(name) for r in results):
+                results.append(f"{name:10s}  game lost: {e}")
+            restarts += 1
+            for vm in (h, j):
+                if not close_game(vm):
+                    sys.exit(f"{vm.a}: the game does not close - restart that VM, then run again")
+            if restarts > 3:
+                break
+            session()
+
+    for vm in (h, j):
+        vm.write_ini({})
+    for vm in (j, h):
+        if not close_game(vm, disconnect=True):
+            log(f"{vm.a}: the game did not exit - restart that VM before the next run")
+    print("\n" + "\n".join(results))
+
+
+if __name__ == "__main__":
+    main()

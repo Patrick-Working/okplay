@@ -394,6 +394,175 @@ static void link_reports(void)   /* okw_lock held; every 10 s per player, when s
     }
 }
 
+/* ---------------------------------------------------------------- race measurement and test knobs
+ *
+ * Road Rash's race state (type 10, 76 bytes): byte 1 is a presence mask for up to three 24-byte records at
+ * +2, +26, +50; a record's first byte is kind (high nibble) and index (low nibble), and bytes 1..4 are the
+ * sender's step counter (little-endian). Per sender and record stream the shim logs, every 10 s, how far
+ * apart consecutive stamps are (in the sender's steps), how many steps per second the stamps advance, and
+ * the longest wait between two arrivals. Large stamp gaps are what the game turns into jumps.
+ *
+ * Test knobs (okplay.ini, for lab runs; all 0 = off): test_delay_ms, test_jitter_ms (uniform 0..N extra),
+ * test_blackout_ms + test_blackout_every_ms (drop everything from the other players for N ms every M ms),
+ * test_loss_pct, test_seed. They act on game packets arriving from other players, before the game sees them. */
+typedef struct {
+    uint64_t peer;
+    int used;
+    uint32_t last_stamp[3][16];
+    DWORD last_ms[3][16];
+    uint8_t seen[3][16];
+    uint32_t hist[66];          /* stamp gap 1..64 steps, 65 = more */
+    uint32_t n, over20, maxgap, max_wait_ms, pkts;
+    uint64_t stamp_sum, ms_sum;
+    DWORD report_ms;
+    int dumped;
+} okw_race;
+static okw_race races[OKP_MAX_PEERS];
+#ifdef OKW_LAB   /* lab builds only (build.sh OKW_LAB_SRC=...): game-specific measurement kept outside this repo */
+void rr_lab_init(void);
+void rr_lab_knobs(const char *ini);
+#endif
+static int t_delay, t_jitter, t_bo_len, t_bo_every, t_loss;
+static uint32_t t_rng = 1;
+static DWORD t_start_ms;
+static uint32_t t_dropped;
+typedef struct { DWORD due; uint64_t from; uint16_t sport, dport; int len; uint8_t d[300]; } okw_pend;
+static okw_pend pend[512];
+static int npend;
+
+static DWORD now_ms(void)
+{
+    static LARGE_INTEGER f;
+    LARGE_INTEGER c;
+    if (!f.QuadPart && !QueryPerformanceFrequency(&f)) return GetTickCount();
+    QueryPerformanceCounter(&c);
+    return (DWORD)(c.QuadPart * 1000 / f.QuadPart);
+}
+
+static okw_race *race_of(uint64_t peer)
+{
+    okw_race *fr = NULL;
+    for (int i = 0; i < OKP_MAX_PEERS; i++) {
+        if (races[i].used && races[i].peer == peer) return &races[i];
+        if (!races[i].used && !fr) fr = &races[i];
+    }
+    if (!fr) return NULL;
+    memset(fr, 0, sizeof(*fr));
+    fr->used = 1;
+    fr->peer = peer;
+    fr->report_ms = now_ms();
+    return fr;
+}
+
+static void race_measure(uint64_t from, const uint8_t *p, int len)   /* okw_lock held */
+{
+    if (len < 2 || p[0] != 10) return;
+    okw_race *R = race_of(from);
+    if (!R) return;
+    DWORD now = now_ms();
+    R->pkts++;
+    if (R->dumped < 12) {   /* the first few race packets in the trace, to check the layout */
+        R->dumped++;
+        tr("race pkt from %016llx len %d mask %02x | %02x %02x%02x%02x%02x | %02x %02x%02x%02x%02x | %02x %02x%02x%02x%02x",
+           (unsigned long long)from, len, p[1], p[2], p[3], p[4], p[5], p[6], len > 30 ? p[26] : 0, len > 30 ? p[27] : 0,
+           len > 30 ? p[28] : 0, len > 30 ? p[29] : 0, len > 30 ? p[30] : 0, len > 54 ? p[50] : 0, len > 54 ? p[51] : 0,
+           len > 54 ? p[52] : 0, len > 54 ? p[53] : 0, len > 54 ? p[54] : 0);
+    }
+    for (int slot = 0; slot < 3; slot++) {
+        if (!(p[1] & (1 << slot))) continue;
+        int off = 2 + 24 * slot;
+        if (off + 5 > len) break;
+        int kind = p[off] >> 4, idx = p[off] & 15;
+        if (kind > 2) continue;
+        uint32_t st;
+        memcpy(&st, p + off + 1, 4);
+        if (R->seen[kind][idx]) {
+            int d = (int32_t)(st - R->last_stamp[kind][idx]);
+            if (d > 0) {
+                R->hist[d > 64 ? 65 : d]++;
+                R->n++;
+                if (d > 20) R->over20++;
+                if ((uint32_t)d > R->maxgap) R->maxgap = d;
+                DWORD w = now - R->last_ms[kind][idx];
+                if (w > R->max_wait_ms) R->max_wait_ms = w;
+                R->stamp_sum += d;
+                R->ms_sum += w;
+            }
+        }
+        R->seen[kind][idx] = 1;
+        R->last_stamp[kind][idx] = st;
+        R->last_ms[kind][idx] = now;
+    }
+}
+
+static void race_reports(void)   /* okw_lock held */
+{
+    DWORD now = now_ms();
+    for (int i = 0; i < OKP_MAX_PEERS; i++) {
+        okw_race *R = &races[i];
+        if (!R->used || now - R->report_ms < 10000) continue;
+        R->report_ms = now;
+        if (!R->n) { R->pkts = 0; continue; }
+        uint32_t med = 0, p99 = 0, acc = 0;
+        for (int g = 1; g <= 65; g++) {
+            acc += R->hist[g];
+            if (!med && acc * 2 >= R->n) med = g;
+            if (!p99 && acc * 100 >= R->n * 99) p99 = g;
+        }
+        okp_log(2, "wsock: race from %016llx, last 10 s: %u packets, %u stamp steps; gap median %u, p99 %u%s, max %u "
+                "steps, %u over 20; stamps run %u.%u steps/s; longest wait %u ms%s",
+                (unsigned long long)R->peer, R->pkts, R->n, med, p99, p99 == 65 ? "+" : "", R->maxgap, R->over20,
+                R->ms_sum ? (uint32_t)(R->stamp_sum * 1000 / R->ms_sum) : 0,
+                R->ms_sum ? (uint32_t)(R->stamp_sum * 10000 / R->ms_sum % 10) : 0, R->max_wait_ms,
+                t_dropped ? " (test knobs on)" : "");
+        memset(R->hist, 0, sizeof(R->hist));
+        R->n = R->over20 = R->maxgap = R->max_wait_ms = R->pkts = 0;
+        R->stamp_sum = R->ms_sum = 0;
+    }
+}
+
+static uint32_t t_rand(void)
+{
+    t_rng ^= t_rng << 13;
+    t_rng ^= t_rng >> 17;
+    t_rng ^= t_rng << 5;
+    return t_rng;
+}
+
+/* a game packet from another player: measured, then to the game - now, or later with the test knobs */
+static void game_in(uint64_t from, uint16_t sport, uint16_t dport, const uint8_t *d, int len)   /* okw_lock held */
+{
+    if (t_loss && (int)(t_rand() % 100) < t_loss) { t_dropped++; return; }
+    if (!t_delay && !t_jitter && !t_bo_len) {
+        race_measure(from, d, len);
+        deliver(standin_of(from), sport, dport, d, len);
+        return;
+    }
+    DWORD now = now_ms();
+    if (!t_start_ms) t_start_ms = now;
+    if (t_bo_len && t_bo_every && (now - t_start_ms) % (DWORD)t_bo_every < (DWORD)t_bo_len) { t_dropped++; return; }
+    if (npend >= (int)(sizeof(pend) / sizeof(pend[0])) || len > (int)sizeof(pend[0].d)) { t_dropped++; return; }
+    okw_pend *q = &pend[npend++];
+    q->due = now + t_delay + (t_jitter ? t_rand() % (DWORD)(t_jitter + 1) : 0);
+    q->from = from; q->sport = sport; q->dport = dport; q->len = len;
+    memcpy(q->d, d, len);
+}
+
+static void release_due(void)   /* okw_lock held: packets whose test delay is over, earliest first */
+{
+    DWORD now = now_ms();
+    for (;;) {
+        int best = -1;
+        for (int i = 0; i < npend; i++)
+            if ((int32_t)(now - pend[i].due) >= 0 && (best < 0 || (int32_t)(pend[i].due - pend[best].due) < 0)) best = i;
+        if (best < 0) return;
+        okw_pend q = pend[best];
+        pend[best] = pend[--npend];
+        race_measure(q.from, q.d, q.len);
+        deliver(standin_of(q.from), q.sport, q.dport, q.d, q.len);
+    }
+}
+
 static void okw_rx(void *c, uint64_t from, const void *data, int len)   /* okplay's net thread */
 {
     (void)c;
@@ -412,9 +581,10 @@ static void okw_rx(void *c, uint64_t from, const void *data, int len)   /* okpla
                 memcpy(&e, d8 + off, sizeof(e));
                 off += sizeof(e);
                 if (off + e.len > len) break;
-                if (seq_accept(L, e.seq, i < n - 1)) deliver(standin_of(from), e.sport, e.dport, d8 + off, e.len);
+                if (seq_accept(L, e.seq, i < n - 1)) game_in(from, e.sport, e.dport, d8 + off, e.len);
                 off += e.len;
             }
+            release_due();
         }
         LeaveCriticalSection(&okw_lock);
         return;
@@ -432,7 +602,8 @@ static void okw_rx(void *c, uint64_t from, const void *data, int len)   /* okpla
     } else if (ctx && ctx->is_host && host_has_pw && !is_authed(from)) {
         /* a password game: nothing from a joiner reaches the game before its password matched */
     } else {
-        deliver(standin_of(from), h->sport, h->dport, body, blen);
+        game_in(from, h->sport, h->dport, body, blen);
+        release_due();
     }
     LeaveCriticalSection(&okw_lock);
 }
@@ -582,6 +753,15 @@ static void start_okplay(void)   /* okw_lock held; the first time the game uses 
         snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
         int r = GetPrivateProfileIntA("okplay", "wsock_redundancy", -1, ini);
         redundancy = r >= 0 ? r != 0 : !want_lan;   /* default: on for Online Play, off on a LAN */
+        t_delay = GetPrivateProfileIntA("okplay", "test_delay_ms", 0, ini);
+        t_jitter = GetPrivateProfileIntA("okplay", "test_jitter_ms", 0, ini);
+        t_bo_len = GetPrivateProfileIntA("okplay", "test_blackout_ms", 0, ini);
+        t_bo_every = GetPrivateProfileIntA("okplay", "test_blackout_every_ms", 0, ini);
+        t_loss = GetPrivateProfileIntA("okplay", "test_loss_pct", 0, ini);
+        t_rng = (uint32_t)GetPrivateProfileIntA("okplay", "test_seed", 1, ini) | 1;
+        if (t_delay || t_jitter || t_bo_len || t_loss)
+            okp_log(1, "wsock: TEST KNOBS: incoming game packets delayed %d ms + 0..%d ms jitter, blackout %d ms every %d ms (seed %u)",
+                    t_delay, t_jitter, t_bo_len, t_bo_every, t_rng);
     }
     char b[20];
     okp_log(1, "wsock: okplay " OKP_VERSION_STR " %s for a Winsock game, peer %016llx, stand-in address %s", c->mode_name,
@@ -630,6 +810,9 @@ static void end_session(void)   /* no lock held */
     socks_gone = 0;
     room_closed = 0;
     memset(links, 0, sizeof(links));
+    memset(races, 0, sizeof(races));
+    npend = 0;
+    t_start_ms = 0;
     LeaveCriticalSection(&okw_lock);
     if (!c) return;
     okp_log(1, "wsock: the game left network play - okplay stops; the next TCP/IP game asks again");
@@ -724,6 +907,31 @@ static void okw_tick(void)   /* okw_lock held */
 {
     if (!started && mode_choice >= 2) start_okplay();   /* (re)started in the mode the player picked */
     link_reports();
+    release_due();
+    race_reports();
+    {   /* the test knobs are read again every 2 s, so a lab script can change them between races */
+        static DWORD knob_ms;
+        DWORD t = now_ms();
+        if (t - knob_ms >= 2000) {
+            char ini[MAX_PATH];
+            int d, j, bl, be, lo;
+            knob_ms = t;
+            snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
+            d = GetPrivateProfileIntA("okplay", "test_delay_ms", 0, ini);
+            j = GetPrivateProfileIntA("okplay", "test_jitter_ms", 0, ini);
+            bl = GetPrivateProfileIntA("okplay", "test_blackout_ms", 0, ini);
+            be = GetPrivateProfileIntA("okplay", "test_blackout_every_ms", 0, ini);
+            lo = GetPrivateProfileIntA("okplay", "test_loss_pct", 0, ini);
+#ifdef OKW_LAB
+            rr_lab_knobs(ini);
+#endif
+            if (d != t_delay || j != t_jitter || bl != t_bo_len || be != t_bo_every || lo != t_loss) {
+                t_delay = d; t_jitter = j; t_bo_len = bl; t_bo_every = be; t_loss = lo;
+                t_start_ms = 0;
+                okp_log(1, "wsock: TEST KNOBS now: delay %d ms + 0..%d ms jitter, %d%% loss, blackout %d ms every %d ms", d, j, lo, bl, be);
+            }
+        }
+    }
     DWORD now = okp_now();
     if (ctx && auth_state == 1 && now - auth_tick >= 500) {   /* our password, until the host answers */
         uint8_t a[64];
@@ -1562,6 +1770,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
         WSAStartup(MAKEWORD(2, 2), &w);
         okp_log_init(inst);
         okp_crash_install(inst);   /* a crash leaves okplay-crash-*.dmp in logs\ */
+#ifdef OKW_LAB
+        rr_lab_init();
+#endif
         InitializeCriticalSection(&okw_ask_lock);
         box_done = CreateEventA(NULL, TRUE, TRUE, NULL);
         {
