@@ -135,6 +135,7 @@ static int mode_provisional;       /* okplay was started before the Online/LAN b
 static DWORD socks_gone_tick;      /* when the game closed its last UDP socket */
 static int socks_gone;             /* it has none open since then */
 static DWORD room_closed_tick;     /* host: when the game closed its room */
+static volatile DWORD last_race_tick;   /* the last in-race packet: notices wait until a race is over */
 static int room_closed;
 
 /* ---------------------------------------------------------------- stand-in addresses */
@@ -471,6 +472,7 @@ static void race_measure(uint64_t from, const uint8_t *p, int len)   /* okw_lock
     rr_lab_game_in(from, p, len);
 #endif
     if (len < 2 || p[0] != 10) return;
+    last_race_tick = GetTickCount();
     okw_race *R = race_of(from);
     if (!R) return;
     DWORD now = now_ms();
@@ -834,6 +836,15 @@ static void end_session(void)   /* no lock held */
     LeaveCriticalSection(&okw_lock);
     if (!c) return;
     okp_log(1, "wsock: the game left network play - okplay stops; the next TCP/IP game asks again");
+    if (c->sess_role == 2 && c->host_peer) {   /* a joiner that never heard from its host */
+        int heard = 0;
+        EnterCriticalSection(&c->lock);
+        for (int i = 0; i < OKP_MAX_PEERS; i++)
+            if (c->peers[i].used && c->peers[i].id == c->host_peer && c->peers[i].rx_pkts) heard = 1;
+        LeaveCriticalSection(&c->lock);
+        if (!heard) okp_report_session_result(c, "no_path");
+    }
+    okp_report_session_end(c);   /* report.c: one connection line for this game */
     stop_ctx(c, withdraw);
 }
 
@@ -873,6 +884,7 @@ static void host_room(void)   /* okw_lock held */
     if (ctx->mode == OKP_MODE_LAN && !okp_lan_open_listen(ctx))
         okp_log(0, "wsock: LAN discovery port %u unavailable - joiners will not see this game", OKP_LAN_PORT);
     okp_log(1, "wsock: hosting room %08x", ctx->room);
+    okp_report_session_begin(ctx, 1);
     okp_rdv_wake(ctx);
 }
 
@@ -893,6 +905,7 @@ static void join_room(uint64_t host)   /* okw_lock held */
         LeaveCriticalSection(&ctx->lock);
         ctx->session_open = 1;
         okp_log(1, "wsock: joining room %08x host %016llx (%d candidates)", room, (unsigned long long)host, nc);
+        okp_report_session_begin(ctx, 0);
         if (ctx->mode == OKP_MODE_ONLINE) okp_rdv_knock(ctx, room);
         return;
     }
@@ -904,6 +917,8 @@ static void join_room(uint64_t host)   /* okw_lock held */
 static void leave_room(uint64_t host)   /* okw_lock held */
 {
     if (!ctx || ctx->is_host || ctx->host_peer != host) return;
+    okp_report_session_result(ctx, "refused");   /* the host turned us away (password): this try ends */
+    okp_report_session_end(ctx);
     EnterCriticalSection(&ctx->lock);
     okp_peer *p = okp_peer_get(ctx, host, 0);
     if (p) {
@@ -1035,6 +1050,21 @@ void *const okw_imp_CreateThread __asm__("__imp__CreateThread@24") = (void *)okw
  * game's network keeps going (its tick runs on a multimedia-timer thread, not on messages). box_open
  * also makes any call that still comes back in go on without a box. */
 typedef struct { int kind; GUID g; WCHAR w[64]; INT_PTR r; } okw_box;
+
+/* Notices from okplay's core - a newer version, the room server out of reach, TCP/IP not working, a crash
+ * report or connection reports waiting (the DirectPlay drop-in has the same boxes and shows them at once on
+ * their own thread). Over a full-screen game a window of ours at a random moment knocks the game to the
+ * desktop, so here they wait for a safe moment: a game network call, no box open, no race packet for 5 s;
+ * then run_box shows them on the game's own thread with its messages held, like the other boxes. The two
+ * questions come from report.c's own thread, which waits for the answer. */
+static CRITICAL_SECTION ui_lock;
+static volatile LONG ui_pending;
+static struct { int on; char latest[24], note[256]; } ui_update;
+static struct { int on; char server[160], why[200]; } ui_unreach;
+static struct { int on; } ui_nonet;
+static struct { int on; char path[MAX_PATH]; INT_PTR answer; HANDLE done; } ui_crash;
+static struct { int on; INT_PTR answer; HANDLE done; } ui_conn;
+static WCHAR build_text[600];   /* the different-build question */
 static volatile LONG box_open;
 /* While a box is open the game's other threads wait as soon as they touch the network: Road Rash's join
  * handshake runs on a multimedia-timer thread with its own 5 s clock, which ran out while the player was
@@ -1092,6 +1122,23 @@ static INT_PTR run_box(okw_box *b)
     if (b->kind == 0) b->r = okbox_ask_mode("TCP/IP");
     else if (b->kind == 1) b->r = okbox_ask_host_password(&b->g, b->w, 64);
     else if (b->kind == 3) b->r = (okbox_wrong_password(), 1);
+    else if (b->kind == 4) b->r = (okbox_offer_update(ui_update.latest, ui_update.note, OKP_VERSION_STR), 1);
+    else if (b->kind == 5) b->r = (okbox_server_unreachable(ui_unreach.server, ui_unreach.why), 1);
+    else if (b->kind == 6) b->r = (okbox_network_unavailable(), 1);
+    else if (b->kind == 7) b->r = okbox_ask_crash_report(ui_crash.path);
+    else if (b->kind == 8) b->r = okbox_ask_conn_reports();
+    else if (b->kind == 9) {
+        struct pw_dialog d;
+        WCHAR title[96];
+        memset(&d, 0, sizeof(d));
+        okbox_brand(title, 96);
+        d.title = title;
+        d.text = build_text;
+        d.text_cy = 64;
+        d.ok = L"Join anyway";
+        d.cancel = L"Cancel";
+        b->r = okbox_show(&d) == IDOK;
+    }
     else b->r = okbox_ask_join_password(&b->g, b->w, 64);
     InterlockedExchange(&box_open, 0);
     if (h) UnhookWindowsHookEx(h);
@@ -1099,6 +1146,82 @@ static INT_PTR run_box(okw_box *b)
     for (int i = 0; i < ndeferred; i++) PostMessageA(deferred[i].w, deferred[i].m, deferred[i].wp, deferred[i].lp);
     ndeferred = 0;
     return b->r;
+}
+
+void okp_ui_offer_update(const char *latest, const char *note_utf8)   /* any thread, from rdv.c */
+{
+    static LONG offered;
+    if (!latest || !*latest || offered || !strcmp(latest, OKP_VERSION_STR)) return;
+    if (InterlockedExchange(&offered, 1) || !okbox_update_wanted(latest, OKP_VERSION_STR)) return;
+    EnterCriticalSection(&ui_lock);
+    lstrcpynA(ui_update.latest, latest, sizeof(ui_update.latest));
+    lstrcpynA(ui_update.note, note_utf8 ? note_utf8 : "", sizeof(ui_update.note));
+    ui_update.on = 1;
+    LeaveCriticalSection(&ui_lock);
+    InterlockedExchange(&ui_pending, 1);
+}
+
+void okp_ui_server_unreachable(const char *server, const char *why)   /* once per game run (rdv.c decides when) */
+{
+    static LONG shown;
+    if (InterlockedExchange(&shown, 1)) return;
+    EnterCriticalSection(&ui_lock);
+    lstrcpynA(ui_unreach.server, server ? server : "", sizeof(ui_unreach.server));
+    lstrcpynA(ui_unreach.why, why ? why : "", sizeof(ui_unreach.why));
+    ui_unreach.on = 1;
+    LeaveCriticalSection(&ui_lock);
+    InterlockedExchange(&ui_pending, 1);
+}
+
+void okp_ui_network_unavailable(int err)
+{
+    static LONG shown;
+    okp_log(0, "network: no internet socket can be created (Winsock error %d) - TCP/IP isn't installed or "
+               "isn't bound to a network card; Online and LAN Play can't start", err);
+    if (InterlockedExchange(&shown, 1)) return;
+    ui_nonet.on = 1;
+    InterlockedExchange(&ui_pending, 1);
+}
+
+static INT_PTR ui_ask(int crash, const char *path)   /* report.c's thread: wait until the game shows it */
+{
+    HANDLE done = CreateEventA(NULL, TRUE, FALSE, NULL);
+    if (!done) return 0;
+    EnterCriticalSection(&ui_lock);
+    if (crash) { lstrcpynA(ui_crash.path, path, sizeof(ui_crash.path)); ui_crash.done = done; ui_crash.on = 1; }
+    else { ui_conn.done = done; ui_conn.on = 1; }
+    LeaveCriticalSection(&ui_lock);
+    InterlockedExchange(&ui_pending, 1);
+    WaitForSingleObject(done, INFINITE);   /* the game closing first: asked again next time */
+    CloseHandle(done);
+    return crash ? ui_crash.answer : ui_conn.answer;
+}
+int okp_ui_ask_crash_report(const char *path) { return (int)ui_ask(1, path); }
+int okp_ui_ask_conn_reports(void) { return (int)ui_ask(0, NULL); }
+
+/* a game network call, no lock held: show what waits if this is a safe moment */
+static void ui_show_pending(void)
+{
+    if (!ui_pending || box_open || GetTickCount() - last_race_tick < 5000) return;
+    if (!TryEnterCriticalSection(&okw_ask_lock)) return;   /* the mode box's own lock: one box at a time */
+    for (;;) {
+        okw_box b;
+        memset(&b, 0, sizeof(b));
+        EnterCriticalSection(&ui_lock);
+        b.kind = ui_update.on ? 4 : ui_unreach.on ? 5 : ui_nonet.on ? 6 : ui_crash.on ? 7 : ui_conn.on ? 8 : 0;
+        if (!b.kind) InterlockedExchange(&ui_pending, 0);
+        LeaveCriticalSection(&ui_lock);
+        if (!b.kind) break;
+        INT_PTR r = run_box(&b);
+        EnterCriticalSection(&ui_lock);
+        if (b.kind == 4) ui_update.on = 0;
+        else if (b.kind == 5) ui_unreach.on = 0;
+        else if (b.kind == 6) ui_nonet.on = 0;
+        else if (b.kind == 7) { ui_crash.on = 0; ui_crash.answer = r; SetEvent(ui_crash.done); }
+        else { ui_conn.on = 0; ui_conn.answer = r; SetEvent(ui_conn.done); }
+        LeaveCriticalSection(&ui_lock);
+    }
+    LeaveCriticalSection(&okw_ask_lock);
 }
 
 /* the first UDP socket (or own-address lookup) of a game run: Online Play, LAN Play or the original TCP/IP.
@@ -1132,6 +1255,7 @@ static int choose_mode(void)
         }
         okp_log(1, "wsock: %s (okplay.ini wsock_mode=%s)", m == 2 ? "Online Play" : m == 3 ? "LAN Play" :
                 "the game's original TCP/IP - okplay stays out", v);
+        if (m >= 2) okp_reports_kick();   /* report.c: a crash report or connection reports waiting (asks first) */
         InterlockedExchange(&mode_choice, m);
         if (mode_provisional) {   /* it started as Online Play while the box was open: the answer decides */
             mode_provisional = 0;
@@ -1246,6 +1370,77 @@ static void boxes_before_send(uint32_t ip)
     if (need) ask_join_password(host, room);
 }
 
+/* ---------------------------------------------------------------- game builds */
+
+/* Builds of the game that race each other (fingerprint = okp_exe_build: the first 16 hex digits of the exe's
+ * SHA-256; every room carries its host's). The DirectPlay drop-in asks whenever the host's build differs;
+ * Road Rash's builds differ without mattering (the Steam exe and the 1996 CD exe race each other, and many CD
+ * players run a no-CD exe), so here the question comes only when a build is not in this list. */
+static const struct { const char *build, *what; } rr_builds[] = {
+    { "73d7f9744b5b1a94", "Road Rash CD (1996), ROADRASH.EXE" },
+    { "9e40e25737149ab0", "Road Rash (Steam), RoadRash95.exe" },
+    { "9c32eadc287cc8eb", "Road Rash CD with okplay's lab no-CD patch (testing)" },
+};
+
+static const char *rr_build_name(const char *b)
+{
+    for (unsigned i = 0; i < sizeof(rr_builds) / sizeof(rr_builds[0]); i++)
+        if (!strcmp(b, rr_builds[i].build)) return rr_builds[i].what;
+    return NULL;
+}
+
+/* the player picked the room of `host`: 1 = go on (same or known builds, or "Join anyway"), 0 = stay in the
+ * list. okplay.ini build_check=ask (default) | off. Tests: OKP_TEST_BUILD_ANSWER=join|cancel. No lock held. */
+static int build_ok(uint64_t host, const char *theirs, const char *theirs_exe)
+{
+    static uint64_t agreed;   /* "Join anyway" for this host: not asked again */
+    char ini[MAX_PATH], mode[16] = "", mine[17] = "", mine_exe[64] = "";
+    snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
+    GetPrivateProfileStringA("okplay", "build_check", "ask", mode, sizeof(mode), ini);
+    if (!_stricmp(mode, "off") || !theirs[0]) return 1;   /* (a host before 0.8.1's core sends none) */
+    okp_exe_build(mine, mine_exe, sizeof(mine_exe));
+#ifdef OKW_LAB   /* lab builds: okplay.ini wsock_test_build=<16 hex> stands in for our own build (bench tests) */
+    {
+        char fake[17] = "";
+        GetPrivateProfileStringA("okplay", "wsock_test_build", "", fake, sizeof(fake), ini);
+        if (strlen(fake) == 16) { lstrcpynA(mine, fake, sizeof(mine)); okp_log(1, "build: testing as build %s", mine); }
+    }
+#endif
+    if (!mine[0] || !strcmp(mine, theirs)) {
+        okp_log(2, "build: the host runs the same build of the game (%s)", mine);
+        return 1;
+    }
+    const char *a = rr_build_name(theirs), *b = rr_build_name(mine);
+    if (a && b) {
+        okp_log(1, "build: the host runs %s (%s), we run %s (%s) - builds that race each other", a, theirs, b, mine);
+        return 1;
+    }
+    okp_log(1, "build: the host runs another build of the game - theirs %s %s%s, ours %s %s%s", theirs_exe, theirs,
+            a ? "" : " (not in the known list)", mine_exe, mine, b ? "" : " (not in the known list)");
+    if (host == agreed) return 1;
+    char test[16] = "";
+    GetEnvironmentVariableA("OKP_TEST_BUILD_ANSWER", test, sizeof(test));
+    int go;
+    if (test[0]) go = !_stricmp(test, "join");
+    else {
+        WCHAR tw[64], mw[64];
+        MultiByteToWideChar(CP_UTF8, 0, theirs_exe[0] ? theirs_exe : "?", -1, tw, 64);
+        MultiByteToWideChar(CP_UTF8, 0, mine_exe[0] ? mine_exe : "?", -1, mw, 64);
+        _snwprintf(build_text, 599,
+                   L"The host is running a different version of the game.\n\n"
+                   L"Theirs: %ls (build %.8hs)\nYours: %ls (build %.8hs)\n\n"
+                   L"Joining will probably fail, or the game will go out of sync. Join anyway?", tw, theirs, mw, mine);
+        build_text[599] = 0;
+        okw_box bx;
+        memset(&bx, 0, sizeof(bx));
+        bx.kind = 9;
+        go = (int)run_box(&bx);
+    }
+    okp_log(1, "build: %s", go ? "joining anyway" : "the player cancelled the join - back to the list");
+    if (go) agreed = host;
+    return go;
+}
+
 /* ---------------------------------------------------------------- the game's room list */
 
 /* A game that lists LAN games in a Windows dialog (Road Rash: "Pick from among the available TCP/IP games")
@@ -1272,10 +1467,11 @@ static int list_pick_ok(HWND dlg)
     it.cchTextMax = sizeof(text);
     SendMessageA(lv, LVM_GETITEMTEXTA, (WPARAM)idx, (LPARAM)&it);
     char *pw = strstr(text, " (pw)");
-    if (!pw) return 1;   /* not a locked room */
-    *pw = 0;
+    int locked = pw != NULL;
+    if (pw) *pw = 0;
     uint64_t host = 0;
     uint32_t room = 0;
+    char theirs[17] = "", theirs_exe[64] = "";
     EnterCriticalSection(&okw_lock);
     EnterCriticalSection(&ctx->lock);
     for (int i = 0; i < ctx->nrooms && !host; i++) {
@@ -1284,14 +1480,18 @@ static int list_pick_ok(HWND dlg)
         int al = room_advert(&ctx->rooms[i], &port, &ad);
         uint32_t fl = 0;
         if (ctx->rooms[i].enumlen >= 16) memcpy(&fl, ctx->rooms[i].enumblob + 8 + 4, 4);
-        if (al == 57 && (fl & 0x400) && !strncmp((const char *)ad + 37, text, strlen(text))) {
+        if (al == 57 && !(fl & 0x400) == !locked && !strncmp((const char *)ad + 37, text, strlen(text))) {
             host = ctx->rooms[i].host;
             room = ctx->rooms[i].room;
+            lstrcpynA(theirs, ctx->rooms[i].build, sizeof(theirs));
+            lstrcpynA(theirs_exe, ctx->rooms[i].exe, sizeof(theirs_exe));
         }
     }
     LeaveCriticalSection(&ctx->lock);
     int known = host && auth_host == host && (auth_state == 1 || auth_state == 2);
     LeaveCriticalSection(&okw_lock);
+    if (host && !build_ok(host, theirs, theirs_exe)) return 0;   /* stay in the list */
+    if (!locked) return 1;
     if (!host || known) return 1;
     okp_log(1, "wsock: the player picked a locked room (%s) - asking for its password", text);
     okw_box b;
@@ -1556,6 +1756,7 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
 {
     if (!okw_on) return sendto(s, b, len, f, a, al);
     wait_for_box();
+    ui_show_pending();
     if (a && al >= (int)sizeof(struct sockaddr_in)) {
         uint32_t ip = ((const struct sockaddr_in *)a)->sin_addr.s_addr;
         if (room_closed && (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF)) check_new_game();
@@ -1651,6 +1852,7 @@ int WINAPI x_recvfrom(SOCKET s, char *b, int len, int f, struct sockaddr *a, int
 {
     if (!okw_on) return recvfrom(s, b, len, f, a, al);
     wait_for_box();
+    ui_show_pending();
     int handled;
     int r = do_recv(s, b, len, a, al, &handled);
     return handled ? r : recvfrom(s, b, len, f, a, al);
@@ -1813,6 +2015,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
         rr_lab_init();
 #endif
         InitializeCriticalSection(&okw_ask_lock);
+        InitializeCriticalSection(&ui_lock);
         box_done = CreateEventA(NULL, TRUE, TRUE, NULL);
         {
             static char ini[MAX_PATH];
