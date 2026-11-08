@@ -24,6 +24,7 @@
  * Status (2026-11-05): first version. Not yet: the Online/LAN + password window, IPX. */
 #define WIN32_LEAN_AND_MEAN
 #include "okp.h"
+#include <mmsystem.h>
 #include "okbox.h"
 #include <commctrl.h>
 #include <stdio.h>
@@ -1998,6 +1999,111 @@ int WINAPI x_WSACleanup(void)
 }
 int WINAPI x___WSAFDIsSet(SOCKET s, fd_set *f) { return __WSAFDIsSet(s, f); }
 
+/* ---------------------------------------------------------------- the exit watch
+ *
+ * Closed in the middle of a race, Road Rash's window goes but the game never reaches its own shutdown: the process
+ * stays, with no window, until it is ended in Task Manager (on Windows 98, often a restart). When this process has
+ * had no window of its own for exit_watch seconds (okplay.ini, default 10, 0 = off), okplay stops the game's
+ * multimedia timers and ends the process. (A timer left running by a game ended on Windows 98 broke the next run's
+ * 33 ms tick until Windows restarted; stopped first, the next run is as usual - tested on Windows 98.) */
+static UINT ew_tmrs[16];
+static volatile LONG ew_n;
+static MMRESULT (WINAPI *ew_real_tse)(UINT, UINT, LPTIMECALLBACK, DWORD_PTR, UINT);
+static MMRESULT (WINAPI *ew_real_tke)(UINT);
+
+static MMRESULT WINAPI ew_tse(UINT delay, UINT res, LPTIMECALLBACK cb, DWORD_PTR user, UINT ev)
+{
+    MMRESULT id = ew_real_tse(delay, res, cb, user, ev);
+    if (id) {
+        LONG i = InterlockedIncrement(&ew_n) - 1;
+        if (i < 16) ew_tmrs[i] = id; else InterlockedDecrement(&ew_n);
+    }
+    return id;
+}
+
+static MMRESULT WINAPI ew_tke(UINT id)
+{
+    for (LONG i = 0; i < ew_n && i < 16; i++) if (ew_tmrs[i] == id) ew_tmrs[i] = 0;
+    return ew_real_tke(id);
+}
+
+/* the game's import of `fn` from `dll` now calls `to` (the exe's import table, in memory only) */
+static int hook_exe_import(const char *dll, const char *fn, void *to, void **orig)
+{
+    uint8_t *base = (uint8_t *)GetModuleHandleA(NULL);
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(base + ((IMAGE_DOS_HEADER *)base)->e_lfanew);
+    IMAGE_DATA_DIRECTORY *dd = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    HMODULE m = GetModuleHandleA(dll);
+    void *real = m ? (void *)GetProcAddress(m, fn) : NULL;
+    if (!dd->VirtualAddress || !real) return 0;
+    for (IMAGE_IMPORT_DESCRIPTOR *d = (IMAGE_IMPORT_DESCRIPTOR *)(base + dd->VirtualAddress); d->Name; d++) {
+        if (_stricmp((char *)(base + d->Name), dll)) continue;
+        for (void **slot = (void **)(base + d->FirstThunk); *slot; slot++) {
+            if (*slot != real) continue;
+            DWORD old;
+            if (!VirtualProtect(slot, sizeof(*slot), PAGE_READWRITE, &old)) return 0;
+            *orig = *slot;
+            *slot = to;
+            VirtualProtect(slot, sizeof(*slot), old, &old);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static BOOL CALLBACK ew_any_window(HWND w, LPARAM lp)
+{
+    DWORD pid = 0;
+    GetWindowThreadProcessId(w, &pid);
+    if (pid == GetCurrentProcessId() && IsWindowVisible(w)) { *(int *)lp = 1; return FALSE; }
+    return TRUE;
+}
+
+static DWORD WINAPI ew_backstop(LPVOID arg)
+{
+    (void)arg;
+    Sleep(6000);
+    okp_log(0, "exit watch: the process did not end within 6 s - ending it now");
+    TerminateProcess(GetCurrentProcess(), 0);
+    return 0;
+}
+
+static DWORD WINAPI ew_thread(LPVOID arg)
+{
+    int secs = (int)(INT_PTR)arg, seen = 0, gone = 0;
+    for (;;) {
+        Sleep(1000);
+        int any = 0;
+        EnumWindows(ew_any_window, (LPARAM)&any);
+        if (any) { seen = 1; gone = 0; continue; }
+        if (!seen) continue;   /* (no window yet: still starting) */
+        if (++gone == 1) okp_log(2, "exit watch: the game has no window any more - waiting for it to end");
+        if (gone < secs) continue;
+        int k = 0;
+        for (LONG i = 0; i < ew_n && i < 16; i++)
+            if (ew_tmrs[i] && ew_real_tke) { ew_real_tke(ew_tmrs[i]); ew_tmrs[i] = 0; k++; }
+        okp_log(0, "exit watch: the game's window closed %d s ago but the game did not end - %d timer(s) stopped, "
+                   "ending it (okplay.ini exit_watch=0 turns this off)", gone, k);
+        DWORD id;
+        CloseHandle(CreateThread(NULL, 0, ew_backstop, NULL, 0, &id));
+        ExitProcess(0);
+    }
+    return 0;
+}
+
+static void exit_watch_start(const char *ini)
+{
+    int secs = GetPrivateProfileIntA("okplay", "exit_watch", 10, ini);
+    if (secs <= 0) { okp_log(2, "exit watch: off (okplay.ini exit_watch=0)"); return; }
+    if (secs < 3) secs = 3;
+    int t = hook_exe_import("WINMM.DLL", "timeSetEvent", (void *)ew_tse, (void **)&ew_real_tse);
+    hook_exe_import("WINMM.DLL", "timeKillEvent", (void *)ew_tke, (void **)&ew_real_tke);
+    DWORD id;
+    CloseHandle(CreateThread(NULL, 0, ew_thread, (LPVOID)(INT_PTR)secs, 0, &id));
+    okp_log(2, "exit watch: on - a game left running %d s after its window closed is ended%s", secs,
+            t ? "" : " (its timers are not seen)");
+}
+
 BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
 {
     (void)res;
@@ -2023,6 +2129,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
             snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
             okbox_init(inst, NULL, ini);
             okbox_set_topmost(TRUE);
+            exit_watch_start(ini);
             InitializeCriticalSection(&tr_lock);
             tr_on = GetPrivateProfileIntA("okplay", "wsock_trace", 0, ini);
             if (tr_on) { DWORD id; CloseHandle(CreateThread(NULL, 0, tr_writer, NULL, 0, &id)); }
