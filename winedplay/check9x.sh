@@ -6,6 +6,8 @@
 #     refuses to start the game ("A required .DLL file ... was not found" / "linked to missing export").
 #  2. system "W" functions: Windows 9x exports most of them only as stubs that fail. Allowed only if
 #     listed in win98-exports/ALLOWED_W.txt (really implemented on 9x, or only called on NT).
+#     Also refused: the few other functions 9x exports only as failing stubs (win98-exports/STUBS_9X.txt,
+#     e.g. TryEnterCriticalSection - it always says "busy" there).
 #  3. no instruction newer than the Pentium MMX (i586): no cmov/fcmov/fcomi (P6), no SSE.
 #     MinGW's prebuilt pseudo-relocator has cmov in the code that patches each pseudo relocation; with
 #     none in the DLL (list start == end) that code never runs, so only then is it let through.
@@ -31,6 +33,8 @@ for dll in "$@"; do
             echo "check9x: $name imports $lib!$fn - Windows 98 has no $lib"; bad_here=1
         elif ! grep -qx "$fn" "$EXP/$up.txt"; then
             echo "check9x: $name imports $lib!$fn - Windows 98's $lib doesn't export it"; bad_here=1
+        elif grep -qx "$fn" $EXP/STUBS_9X.txt; then
+            echo "check9x: $name imports $lib!$fn - Windows 9x exports it only as a stub that fails (see STUBS_9X.txt)"; bad_here=1
         elif [[ $up =~ ^(KERNEL32|USER32|GDI32|ADVAPI32|SHELL32|COMDLG32|COMCTL32)$ && $fn =~ W$ ]] &&
              ! grep -qx "$fn" $EXP/ALLOWED_W.txt; then
             echo "check9x: $name imports $lib!$fn - a Unicode function Windows 9x only stubs (see ALLOWED_W.txt)"; bad_here=1

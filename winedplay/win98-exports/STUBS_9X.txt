@@ -1,0 +1,4 @@
+# Exported by Windows 95/98/Me but only as stubs that fail (MSDN: not supported on 95/98/Me).
+TryEnterCriticalSection
+SignalObjectAndWait
+SwitchToThread
