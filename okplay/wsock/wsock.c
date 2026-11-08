@@ -292,9 +292,15 @@ static DWORD WINAPI wrong_password_box(LPVOID arg)
     return 0;
 }
 
+#ifdef OKW_LAB
+void rr_lab_ctrl(uint64_t from, const uint8_t *b, int n);
+#endif
 static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held */
 {
     if (n < 1) return;
+#ifdef OKW_LAB
+    if (b[0] == 'L') { rr_lab_ctrl(from, b + 1, n - 1); return; }
+#endif
     if (b[0] == 'V') {   /* the other shim speaks the sequenced format */
         okw_link *L = link_of(from, 1);
         if (L && !L->caps) {
@@ -421,6 +427,9 @@ static okw_race races[OKP_MAX_PEERS];
 #ifdef OKW_LAB   /* lab builds only (build.sh OKW_LAB_SRC=...): game-specific measurement kept outside this repo */
 void rr_lab_init(void);
 void rr_lab_knobs(const char *ini);
+void rr_lab_game_out(const uint8_t *d, int len);            /* a game packet this player sends */
+void rr_lab_ctrl(uint64_t from, const uint8_t *b, int n);   /* an 'L' message from another player's lab build */
+int rr_lab_ctrl_due(uint8_t *b, int max);                   /* a message for every other player now, or 0 */
 #endif
 static int t_delay, t_jitter, t_bo_len, t_bo_every, t_loss;
 static uint32_t t_rng = 1;
@@ -909,6 +918,17 @@ static void okw_tick(void)   /* okw_lock held */
     link_reports();
     release_due();
     race_reports();
+#ifdef OKW_LAB
+    {   /* the lab build's own messages between players (lab measurement only) */
+        uint8_t lb[256];
+        int ln = rr_lab_ctrl_due(lb + 1, (int)sizeof(lb) - 1);
+        if (ln > 0) {
+            lb[0] = 'L';
+            for (int i = 0; i < OKP_MAX_PEERS; i++)
+                if (links[i].used) send_to_peer(links[i].peer, 0, 0, OKW_CTRL, lb, ln + 1);
+        }
+    }
+#endif
     {   /* the test knobs are read again every 2 s, so a lab script can change them between races */
         static DWORD knob_ms;
         DWORD t = now_ms();
@@ -917,6 +937,7 @@ static void okw_tick(void)   /* okw_lock held */
             int d, j, bl, be, lo;
             knob_ms = t;
             snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
+            WritePrivateProfileStringA(NULL, NULL, NULL, ini);   /* Windows 9x caches .ini files: re-read it */
             d = GetPrivateProfileIntA("okplay", "test_delay_ms", 0, ini);
             j = GetPrivateProfileIntA("okplay", "test_jitter_ms", 0, ini);
             bl = GetPrivateProfileIntA("okplay", "test_blackout_ms", 0, ini);
@@ -1540,6 +1561,9 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
         LeaveCriticalSection(&okw_lock);
         return r;
     }
+#ifdef OKW_LAB
+    rr_lab_game_out((const uint8_t *)b, len);
+#endif
     int r = do_send(k, in->sin_addr.s_addr, ntohs(in->sin_port), b, len);
     okw_tick();
     LeaveCriticalSection(&okw_lock);

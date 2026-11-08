@@ -298,21 +298,51 @@ def leave_race(h, j):
         vm.guard()
         vm.script("POST ESC 500\n")
         time.sleep(3)
-    for attempt in range(6):
+    t0 = time.time()
+    while True:                              # a black loading screen can hold a machine back for a while
         time.sleep(3)
         for vm in (h, j):
+            # a host left alone watching the race ("You are the master") needs another Escape; the lab
+            # posts this one only while a race runs, so it never reaches the lobby (the Restroom)
+            vm.script("RACEPOST ESC 300\n")
             vm.click(320, 240, 1)
-        if attempt >= 1 and h.wait_log("hosting room", 4, after=n):
+        if time.time() - t0 > 8 and h.wait_log("hosting room", 2, after=n):
             break
-    else:
-        for vm in (h, j):
-            log(f"{vm.a}: not back in the lobby: {snap(vm, 'leave')}")
-    for _ in range(2):                       # the joiner may be a screen behind
+        if time.time() - t0 > 90:
+            for vm in (h, j):
+                log(f"{vm.a}: not back in the lobby: {snap(vm, 'leave')}")
+            break
+    for _ in range(3):                       # the joiner may be a screen behind
         time.sleep(3)
         for vm in (h, j):
             vm.click(320, 240, 1)
     for vm in (h, j):
         cancel_go_home(vm)
+
+
+def apply_knobs(vms, knobs):
+    """Writes the test knobs and waits for each game's log to confirm them ("TEST KNOBS now: ...")."""
+    if not any(int(v) for x, v in knobs.items() if x.startswith("test_")):
+        for vm in vms:                       # lab switches only: the shim reads them with the same 2 s reload
+            vm.write_ini(knobs)
+        time.sleep(3)
+        return True
+    k = {x: knobs.get(x, 0) for x in ("test_delay_ms", "test_jitter_ms", "test_loss_pct", "test_blackout_ms",
+                                       "test_blackout_every_ms")}
+    line = re.escape(f"TEST KNOBS now: delay {k['test_delay_ms']} ms + 0..{k['test_jitter_ms']} ms jitter, "
+                     f"{k['test_loss_pct']}% loss, blackout {k['test_blackout_ms']} ms every "
+                     f"{k['test_blackout_every_ms']} ms")
+    ok = True
+    for vm in vms:
+        n = len(re.findall(line, vm.newest_log()))
+        for _ in range(2):
+            vm.write_ini(knobs)
+            if vm.wait_log(line, 8, after=n):
+                break
+        else:
+            log(f"{vm.a}: the test knobs were not taken up")
+            ok = False
+    return ok
 
 
 def snap(vm, tag):
@@ -350,6 +380,7 @@ LAB_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab draw rider (\d+), last 10 s: 
                     r"p99 2\^(\d+) max (\d+)", re.M)
 
 
+OFF_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab quality rider .*clock offset (-?\d+\.\d) steps", re.M)
 QUAL_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab quality rider (\d+), last 10 s: smooth (\d+) steps median 2\^(\d+) "
                      r"p99 2\^(\d+) max (\d+); accuracy (\d+) checks median 2\^(\d+) p99 2\^(\d+) max (\d+)", re.M)
 
@@ -359,8 +390,8 @@ def summarize(name, texts):
     lab = [r for t in texts for r in steady(t, LAB_RE) if int(r.group(3)) >= 50]
     hist = [r for t in texts for r in steady(t, HIST_RE)]
     if not rows:
-        return f"{name:10s}  no steady race windows"
-    out = (f"{name:10s}  win {len(rows):2d}  gap p99 {max(int(r.group(6)) for r in rows):3d} max {max(int(r.group(7)) for r in rows):4d}"
+        return f"{name:22s}  no steady race windows"
+    out = (f"{name:22s}  win {len(rows):2d}  gap p99 {max(int(r.group(6)) for r in rows):3d} max {max(int(r.group(7)) for r in rows):4d}"
            f" over20 {sum(int(r.group(8)) for r in rows):3d}  wait max {max(int(r.group(11)) for r in rows):5d} ms")
     if lab:
         draws = sum(int(r.group(3)) for r in lab)
@@ -378,6 +409,12 @@ def summarize(name, texts):
             out += f", error median 2^{am[len(am) // 2]:2d} p99 2^{ap[len(ap) // 2]:2d} (worst 2^{ap[-1]:2d})"
     if hist:
         out += f" | history mix-ups {sum(int(r.group(3)) for r in hist)}/{sum(int(r.group(2)) for r in hist)}"
+    offs = []                                # the lab's clock-offset estimate, each side (host first)
+    for t in texts:
+        o = sorted(float(m.group(2)) for m in steady(t, OFF_RE))
+        offs.append(f"{o[len(o) // 2]:+.1f}" if o else "?")
+    if any(o != "?" for o in offs):
+        out += f" | clock offset {' / '.join(offs)} steps"
     return out
 
 
@@ -394,6 +431,8 @@ def main():
     ap.add_argument("--set", default="", help="extra okplay.ini keys for every race, e.g. rr_clamp=1")
     ap.add_argument("--ai", action="store_true", help="host picks Limited A.I. bikers")
     ap.add_argument("--repeat", type=int, default=1, help="run every setting this many times")
+    ap.add_argument("--variants", default="", help="name:k=v,k=v;name:... - every setting is raced once per "
+                    "variant, one after the other in the same session (fairer than a session per variant)")
     a = ap.parse_args()
     global AI
     AI = a.ai
@@ -404,6 +443,12 @@ def main():
         BASE_INI[k.strip()] = v.strip()
     h, j = VM(a.host), VM(a.join)
     settings = [s for s in SETTINGS if not a.only or s[0] in a.only.split(",")]
+    if a.variants:
+        vs = []
+        for v in filter(None, a.variants.split(";")):
+            vn, _, kv = v.partition(":")
+            vs.append((vn, dict(x.split("=", 1) for x in filter(None, kv.split(",")))))
+        settings = [(f"{n}/{vn}", {**k, **vk}) for n, k in settings for vn, vk in vs]
     if a.repeat > 1:
         settings = [(f"{n}#{i + 1}", k) for i in range(a.repeat) for n, k in settings]
 
@@ -437,10 +482,15 @@ def main():
                 for vm in (h, j):
                     cancel_go_home(vm)
                 if not start_race(h, j):
-                    results.append(f"{name:10s}  race did not start")
+                    results.append(f"{name:22s}  race did not start")
                     continue
-            for vm in (h, j):
-                vm.write_ini(knobs)
+            if not apply_knobs((h, j), knobs):
+                results.append(f"{name:22s}  test knobs not taken up - no result")
+                ride((h, j), a.secs)
+                for vm in (h, j):
+                    vm.write_ini({})
+                leave_race(h, j)
+                continue
             log(f"{name}: racing {a.secs} s with {knobs or 'no test knobs'}")
             ride((h, j), a.secs)
             for vm in (h, j):
@@ -452,7 +502,7 @@ def main():
         except GameLost as e:
             log(f"{name}: {e} (screens: {snap(h, name + '_lost')} {snap(j, name + '_lost')}) - restarting both games")
             if not any(r.startswith(name) for r in results):
-                results.append(f"{name:10s}  game lost: {e}")
+                results.append(f"{name:22s}  game lost: {e}")
             restarts += 1
             for vm in (h, j):
                 if not close_game(vm):
