@@ -266,11 +266,20 @@ def start_race(h, j):
     return h.wait_log("race drawing started", 30, after=n)
 
 
-def ride(vms, secs):
+def ride(vms, secs, how=None):
+    """how: "full" (throttle held), "pack:ON,OFF" (throttle pulses in ms, about the AI bikers' pace) or
+    "split:ON,OFF" (the host waits at the start, the joiner rides in pulses: the AI bikers go to the joiner and
+    the host draws them from the joiner's records - where they were seen flying)."""
     time.sleep(4)                             # countdown
-    for vm in vms:
+    mode, _, arg = (how or f"{RIDE}:{PACK_ON},{PACK_OFF}").partition(":")
+    on, off = (int(x) for x in arg.replace("/", ",").split(",")) if arg else (PACK_ON, PACK_OFF)
+    n = min(120, secs * 1000 // (on + off) * 2)
+    pulses = "".join(f"HOLD UP {on}\nWAIT {off}\n" for _ in range(n // 2))
+    texts = {"full": [f"HOLD UP {secs * 1000}\n"] * 2, "pack": [pulses] * 2,
+             "split": [f"WAIT {secs * 1000}\n", pulses]}[mode]
+    for vm, text in zip(vms, texts):
         vm.guard()
-        vm.script(f"HOLD UP {secs * 1000}\n")
+        vm.script(text)
     t0 = time.time()
     while time.time() - t0 < secs:
         time.sleep(5)
@@ -374,12 +383,17 @@ def steady(text, regex, settle=12):
 RACE_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*race from (\w+), last 10 s: (\d+) packets, (\d+) stamp steps; gap median (\d+), "
                      r"p99 (\d+)\+?, max (\d+) steps, (\d+) over 20; stamps run (\d+)\.(\d) steps/s; longest wait (\d+) ms", re.M)
 AI = False
+RIDE = "full"
+PACK_ON, PACK_OFF = 300, 400
 HIST_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab history, last 10 s: (\d+) updates, (\d+) mix-ups", re.M)
 LAB_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab draw rider (\d+), last 10 s: (\d+) draws; dt median (\d+), max (\d+), "
                     r"over 20 (\d+); movement avg (\d+) max (\d+); jumps (\d+) \(change > \d+\); change median 2\^(\d+) "
                     r"p99 2\^(\d+) max (\d+)", re.M)
 
 
+RIDER_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab rider (\d+), last 10 s: (\d+) records \((\d+) while this machine ran "
+                      r"it too\), (\d+) draws, (\d+) in the air \(max \+(-?\d+) over its last real height\), (\d+) record "
+                      r"height jumps", re.M)
 OFF_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab quality rider .*clock offset (-?\d+\.\d) steps", re.M)
 QUAL_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab quality rider (\d+), last 10 s: smooth (\d+) steps median 2\^(\d+) "
                      r"p99 2\^(\d+) max (\d+); accuracy (\d+) checks median 2\^(\d+) p99 2\^(\d+) max (\d+)", re.M)
@@ -415,6 +429,17 @@ def summarize(name, texts):
         offs.append(f"{o[len(o) // 2]:+.1f}" if o else "?")
     if any(o != "?" for o in offs):
         out += f" | clock offset {' / '.join(offs)} steps"
+    ai_q = [r for r in qual if int(r.group(2)) >= 2]
+    if ai_q:
+        sm = sorted(int(r.group(5)) for r in ai_q)
+        out += f" | AI smooth p99 2^{sm[len(sm) // 2]:2d} (worst 2^{sm[-1]:2d}, {sum(int(r.group(3)) for r in ai_q)} steps)"
+    rid = [r for t in texts for r in steady(t, RIDER_RE)]  # per rider: riders 0-1 are the players, 2+ AI bikers
+    for label, sel in (("players", lambda n: n < 2), ("AI", lambda n: n >= 2)):
+        rs = [r for r in rid if sel(int(r.group(2)))]
+        if rs and sum(int(r.group(5)) for r in rs):
+            out += (f" | {label}: in the air {sum(int(r.group(6)) for r in rs)}/{sum(int(r.group(5)) for r in rs)} draws"
+                    f" (max +{max(int(r.group(7)) for r in rs)}), record height jumps {sum(int(r.group(8)) for r in rs)}"
+                    f", run by both machines {sum(int(r.group(4)) for r in rs)}/{sum(int(r.group(3)) for r in rs)} records")
     return out
 
 
@@ -430,12 +455,17 @@ def main():
     ap.add_argument("--trace", action="store_true", help="wsock_trace=1 (first race packets dumped)")
     ap.add_argument("--set", default="", help="extra okplay.ini keys for every race, e.g. rr_clamp=1")
     ap.add_argument("--ai", action="store_true", help="host picks Limited A.I. bikers")
+    ap.add_argument("--ride", default="full", help="full (throttle held) or pack:ON,OFF (throttle pulses in ms, "
+                    "to stay among the AI bikers)")
     ap.add_argument("--repeat", type=int, default=1, help="run every setting this many times")
     ap.add_argument("--variants", default="", help="name:k=v,k=v;name:... - every setting is raced once per "
                     "variant, one after the other in the same session (fairer than a session per variant)")
     a = ap.parse_args()
-    global AI
+    global AI, RIDE, PACK_ON, PACK_OFF
     AI = a.ai
+    RIDE = a.ride.split(":")[0]
+    if ":" in a.ride:
+        PACK_ON, PACK_OFF = (int(x) for x in a.ride.split(":")[1].split(","))
     if a.trace:
         BASE_INI["wsock_trace"] = "1"
     for kv in filter(None, a.set.split(",")):
@@ -473,6 +503,8 @@ def main():
     session()
     results = []
     for name, knobs in settings:
+        knobs = dict(knobs)
+        how = knobs.pop("ride", None)
         try:
             for vm in (h, j):                  # the knobs act only while racing: in the lobby they
                 vm.write_ini({})                # lost the race-start handshake (dropout settings)
@@ -486,13 +518,13 @@ def main():
                     continue
             if not apply_knobs((h, j), knobs):
                 results.append(f"{name:22s}  test knobs not taken up - no result")
-                ride((h, j), a.secs)
+                ride((h, j), a.secs, how)
                 for vm in (h, j):
                     vm.write_ini({})
                 leave_race(h, j)
                 continue
             log(f"{name}: racing {a.secs} s with {knobs or 'no test knobs'}")
-            ride((h, j), a.secs)
+            ride((h, j), a.secs, how)
             for vm in (h, j):
                 vm.write_ini({})
             time.sleep(11)                         # one more 10 s report

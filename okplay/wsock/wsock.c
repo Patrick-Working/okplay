@@ -428,6 +428,8 @@ static okw_race races[OKP_MAX_PEERS];
 void rr_lab_init(void);
 void rr_lab_knobs(const char *ini);
 void rr_lab_game_out(const uint8_t *d, int len);            /* a game packet this player sends */
+void rr_lab_game_in(uint64_t from, const uint8_t *d, int len);   /* a game packet from another player, as delivered */
+int rr_lab_game_filter(uint64_t from, const uint8_t *d, int len, uint8_t *copy);   /* 1: deliver `copy` instead */
 void rr_lab_ctrl(uint64_t from, const uint8_t *b, int n);   /* an 'L' message from another player's lab build */
 int rr_lab_ctrl_due(uint8_t *b, int max);                   /* a message for every other player now, or 0 */
 #endif
@@ -465,6 +467,9 @@ static okw_race *race_of(uint64_t peer)
 
 static void race_measure(uint64_t from, const uint8_t *p, int len)   /* okw_lock held */
 {
+#ifdef OKW_LAB
+    rr_lab_game_in(from, p, len);
+#endif
     if (len < 2 || p[0] != 10) return;
     okw_race *R = race_of(from);
     if (!R) return;
@@ -542,6 +547,10 @@ static uint32_t t_rand(void)
 static void game_in(uint64_t from, uint16_t sport, uint16_t dport, const uint8_t *d, int len)   /* okw_lock held */
 {
     if (t_loss && (int)(t_rand() % 100) < t_loss) { t_dropped++; return; }
+#ifdef OKW_LAB
+    uint8_t lab_copy[512];
+    if (len <= (int)sizeof(lab_copy) && rr_lab_game_filter(from, d, len, lab_copy)) d = lab_copy;
+#endif
     if (!t_delay && !t_jitter && !t_bo_len) {
         race_measure(from, d, len);
         deliver(standin_of(from), sport, dport, d, len);
@@ -1501,8 +1510,14 @@ int WINAPI x_getsockname(SOCKET s, struct sockaddr *a, int *l)
     return 0;
 }
 
+#ifdef OKW_LAB
+void rr_lab_game_out(const uint8_t *d, int len);
+#endif
 static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int len)   /* lock held */
 {
+#ifdef OKW_LAB
+    rr_lab_game_out((const uint8_t *)b, len);
+#endif
     if (!ctx && !started && mode_choice >= 2) start_okplay();
     if (!ctx) return len;
     if (!k->port) k->port = next_eph++;
@@ -1561,9 +1576,6 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
         LeaveCriticalSection(&okw_lock);
         return r;
     }
-#ifdef OKW_LAB
-    rr_lab_game_out((const uint8_t *)b, len);
-#endif
     int r = do_send(k, in->sin_addr.s_addr, ntohs(in->sin_port), b, len);
     okw_tick();
     LeaveCriticalSection(&okw_lock);
