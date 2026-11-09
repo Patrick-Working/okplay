@@ -17,6 +17,14 @@
  *    the shim joins that room.
  *  - Packets travel as okplay datagrams (unreliable): the games resend what they need themselves.
  *
+ * TCP games (Need for Speed III, profile "nfs3"): stream sockets are virtual too. Each connection travels as
+ * 'W','T' frames on okplay's reliable lane (whole and in order, like TCP), with a credit window per connection;
+ * listen/accept/connect/send/recv/shutdown/closesocket and select (emulated: an event, not polling) behave as
+ * Windows' TCP for the patterns such games use (tests/tcpsim.c copies them; tests/tcp_run.py compares the two).
+ * listen() on a nonzero port makes this PC the host of a room. Not yet: the room list for joining (a joiner goes
+ * to a stand-in address, the host it went to before, or the only TCP room listed), SYN adoption, passwords and the
+ * build check for TCP rooms, peer-loss detection (okp_peer_info polling) and "bye" resets at exit.
+ *
  * First game: Road Rash (TCP/IP mode: adverts on 6995, join on 6996, one connected socket per link).
  * Settings: okplay.ini [okplay] wsock_mode=online|lan (default online); server, key, logs as the drop-in.
  * Calls other than UDP over IPv4 go to Windows' Winsock 2 (ws2_32.dll) unchanged.
@@ -87,10 +95,40 @@ typedef struct okw_pkt {
     uint8_t data[1];
 } okw_pkt;
 
+/* Stream (TCP) sockets, for games that play over TCP (Need for Speed III): each connection is carried over
+ * okplay's reliable lane as 'W','T' frames (below), so it arrives whole and in order like a TCP stream, through
+ * the same hole-punched path or relay as everything else. Ports are virtual, per process. */
+enum { K_UDP = 1, K_TCP = 2 };
+enum { T_NEW, T_BOUND, T_LISTEN, T_SYN_SENT, T_ESTAB, T_FAILED };
+#define OKW_MAX_CONNS 32
+#define OKW_BACKLOG 8
+#define OKW_TDATA_MAX 1100   /* stream bytes per frame: header + body stay under okplay's 1200-byte datagram */
+typedef struct okw_tconn {          /* one stream connection (also one waiting in a listener's backlog) */
+    int used, state;
+    uint64_t peer;                  /* the other player's okplay id */
+    uint32_t id;                    /* chosen by the side that connected (random, nonzero) */
+    int initiator;                  /* 1 = we connected; frames carry it, so the two sides' ids can't collide */
+    uint16_t lport, rport;          /* virtual ports (ours, theirs) */
+    uint32_t rip;                   /* their stand-in, network order */
+    uint32_t snd_next, snd_limit, snd_wnd;   /* our next byte's offset; we may send below snd_limit; their window */
+    int wr_shut, rd_shut;           /* FIN sent / shutdown(SD_RECEIVE) */
+    uint8_t *ring;                  /* bytes the game hasn't read; cap = our window */
+    uint32_t cap, head, count;
+    uint32_t rx_next;               /* the offset expected next (the lane kept the stream whole) */
+    uint32_t consumed, adv;         /* bytes the game has read; the last such count told to the sender */
+    int fin_rx, err, so_error;      /* their FIN came; pending error for recv/send; SO_ERROR of a failed connect */
+    int rst_sent, rst_rx;
+    uint32_t rx_gen;                /* bumped on every arrival (data, FIN, RST): select's no-progress rule */
+    uint32_t sel_gen;
+    int sel_shown, sel_consumed;
+    DWORD t_state;
+} okw_tconn;
+
 #define OKW_MAX_SOCKS 64
 typedef struct {
     SOCKET s;            /* the real handle the game holds (never used for I/O) */
     int used;
+    int kind;            /* K_UDP, K_TCP (a TCP socket is virtual only once Online/LAN Play was chosen) */
     uint16_t port;       /* bound port, host order (0 = not bound) */
     uint32_t bound_ip;   /* network order, as the game asked (informational) */
     uint32_t peer_ip;    /* connected peer (0 = not connected) */
@@ -98,6 +136,13 @@ typedef struct {
     int nonblock, bcast;
     okw_pkt *q, *qtail;
     int qbytes, qn;
+    /* K_TCP */
+    int tstate, explicit_port;      /* T_*; bind asked for a nonzero port (listen on one = hosting) */
+    okw_tconn *c;                   /* T_SYN_SENT / T_ESTAB / T_FAILED */
+    okw_tconn *backlog[OKW_BACKLOG];   /* T_LISTEN: connections the game hasn't accepted yet, oldest first */
+    int nbacklog, backlog_max;
+    int keepalive, nodelay;         /* recorded, no effect (frames go at once anyway) */
+    struct linger linger;
 } okw_sock;
 
 static CRITICAL_SECTION okw_lock;
@@ -139,6 +184,30 @@ static int socks_gone;             /* it has none open since then */
 static DWORD room_closed_tick;     /* host: when the game closed its room */
 static volatile DWORD last_race_tick;   /* the last in-race packet: notices wait until a race is over */
 static int room_closed;
+static okw_tconn conns[OKW_MAX_CONNS];
+static uint32_t tcp_window = 65536;   /* okplay.ini wsock_tcp_window: receive buffer per connection */
+static HANDLE okw_ev;                 /* manual-reset: set whenever a virtual socket may have become ready */
+static volatile LONG okw_waiters;     /* threads waiting on okw_ev (select, blocking calls) */
+static uint64_t picked_host;          /* joiner: the room host a stream connect went to (its retries go there too) */
+
+/* Per-game profiles: which socket types are carried over okplay, and what makes a PC the host. */
+#define OKW_UDP 1
+#define OKW_TCP 2
+#define HOST_BCAST 1      /* UDP: the game's first broadcast */
+#define HOST_LISTEN 2     /* TCP: listen() on a socket bound to a nonzero port (a joiner binds port 0) */
+typedef struct {
+    const char *id;       /* OKP_WSOCK_GAME / okplay.ini wsock_game= */
+    const char *exes;     /* exe names that pick it, "a.exe,b.exe"; NULL = only by id */
+    const char *name;     /* room name */
+    int kinds, host_rule;
+} okw_game;
+static const okw_game okw_profiles[] = {
+    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST },   /* Road Rash: CD, Steam/GOG */
+    /* Need for Speed III: TCP only (its IPX sockets pass through). Not picked by exe name yet: rooms and the join
+     * list for TCP games come first; tests pick it with OKP_WSOCK_GAME=nfs3. */
+    { "nfs3", NULL, "Need for Speed III", OKW_TCP, HOST_LISTEN },
+};
+static const okw_game *game = &okw_profiles[0];
 
 /* ---------------------------------------------------------------- stand-in addresses */
 
@@ -192,11 +261,19 @@ static const char *ip_s(uint32_t ip, char *b)
 void okp_self_probe(okp_ctx *c) { (void)c; }   /* the room record is refreshed from each broadcast */
 void okp_inject_rooms(okp_ctx *c) { (void)c; } /* rooms reach the game from okw_tick */
 
-static okw_sock *sock_of(SOCKET s)   /* okw_lock held */
+static okw_sock *sock_of(SOCKET s)   /* okw_lock held; a virtual UDP socket */
 {
-    for (int i = 0; i < OKW_MAX_SOCKS; i++) if (socks[i].used && socks[i].s == s) return &socks[i];
+    for (int i = 0; i < OKW_MAX_SOCKS; i++) if (socks[i].used && socks[i].s == s && socks[i].kind == K_UDP) return &socks[i];
     return NULL;
 }
+
+static okw_sock *tsock_of(SOCKET s)   /* okw_lock held; a TCP socket in the table (virtual once mode_choice >= 2) */
+{
+    for (int i = 0; i < OKW_MAX_SOCKS; i++) if (socks[i].used && socks[i].s == s && socks[i].kind == K_TCP) return &socks[i];
+    return NULL;
+}
+
+static void wake(void) { if (okw_ev) SetEvent(okw_ev); }
 
 /* okplay.ini wsock_trace=1: every game packet the shim carries, into the log. Lines are kept in memory and
  * written by a thread of their own: the game sends from a multimedia-timer callback, and on Windows 9x file
@@ -249,6 +326,7 @@ static void queue_pkt(okw_sock *k, uint32_t from_ip, uint16_t from_port, const v
     k->qtail = p;
     k->qn++;
     k->qbytes += len;
+    wake();   /* (select) */
 }
 
 /* deliver to the game: the socket bound to dport that is connected to this sender, else an unconnected one */
@@ -257,7 +335,7 @@ static void deliver(uint32_t from_ip, uint16_t sport, uint16_t dport, const void
     int n = 0;
     for (int i = 0; i < OKW_MAX_SOCKS; i++) {
         okw_sock *k = &socks[i];
-        if (!k->used || k->port != dport || !k->peer_ip) continue;
+        if (!k->used || k->kind != K_UDP || k->port != dport || !k->peer_ip) continue;
         if (k->peer_ip == from_ip && k->peer_port == sport) {
             tr("rx %u<-%u len %d type %d (connected, q %d)", dport, sport, len, len ? ((const uint8_t *)data)[0] : -1, k->qn);
             queue_pkt(k, from_ip, sport, data, len);
@@ -268,7 +346,7 @@ static void deliver(uint32_t from_ip, uint16_t sport, uint16_t dport, const void
      * browser socket on 6995 while the Online/LAN box was open, then listened on that one. */
     for (int i = 0; i < OKW_MAX_SOCKS; i++) {
         okw_sock *k = &socks[i];
-        if (!k->used || k->port != dport || k->peer_ip) continue;
+        if (!k->used || k->kind != K_UDP || k->port != dport || k->peer_ip) continue;
         tr("rx %u<-%u len %d type %d (unconnected, sock %u, q %d)", dport, sport, len, len ? ((const uint8_t *)data)[0] : -1,
            (unsigned)k->s, k->qn);
         queue_pkt(k, from_ip, sport, data, len);
@@ -588,9 +666,246 @@ static void release_due(void)   /* okw_lock held: packets whose test delay is ov
     }
 }
 
+/* ---------------------------------------------------------------- stream frames
+ *
+ * 'W','T' frames, always on okplay's reliable lane (OKP_SEND_RELIABLE, whatever the host's transport setting),
+ * so per peer they arrive whole and in send order: FIN after the last DATA, a RST after any data before it.
+ *   1 SYN     joiner -> host  u16 sport, u16 dport, u32 window, u8 caps   open a connection to the host's port
+ *   2 ACCEPT  host -> joiner  u16 lport, u32 window   in the host's backlog (TCP: the handshake is done before accept())
+ *   3 REFUSE  host -> joiner  u8 reason: 1 nothing listening, 2 backlog full, 3 not let in (password)
+ *   4 DATA    both            stream bytes at `off` (at most OKW_TDATA_MAX: never cut into pieces)
+ *   5 WND     both            the game has read up to `off`: the sender may go to off + window
+ *   6 FIN     both            no more bytes after `off`
+ *   7 RST     both            u8 reason: 1 closed with unread data, 2 unknown connection, 3 stream broken,
+ *                             4 listener closed, 5 connect abandoned
+ * A connection is (peer, id, initiator); a frame says whether the initiator sent it. */
+#pragma pack(push, 1)
+typedef struct {
+    uint8_t m0, m1;         /* 'W','T' */
+    uint8_t ver;            /* 1 */
+    uint8_t type;
+    uint32_t conn;
+    uint8_t flags;          /* 1 = sent by the initiator */
+    uint8_t rsv;
+    uint32_t off;
+} okw_thdr;
+#pragma pack(pop)
+enum { TF_SYN = 1, TF_ACCEPT, TF_REFUSE, TF_DATA, TF_WND, TF_FIN, TF_RST };
+static const char *const tf_name[] = { "?", "SYN", "ACCEPT", "REFUSE", "DATA", "WND", "FIN", "RST" };
+
+static void tframe(uint64_t peer, uint32_t id, int initiator, int type, uint32_t off, const void *body, int blen)   /* okw_lock held */
+{
+    uint8_t f[sizeof(okw_thdr) + OKW_TDATA_MAX];
+    okw_thdr *h = (okw_thdr *)f;
+    if (!ctx || blen > OKW_TDATA_MAX) return;
+    h->m0 = 'W'; h->m1 = 'T'; h->ver = 1; h->type = (uint8_t)type;
+    h->conn = id; h->flags = initiator ? 1 : 0; h->rsv = 0; h->off = off;
+    if (blen) memcpy(f + sizeof(*h), body, blen);
+    if (type != TF_DATA) tr("tcp tx %s conn %08x off %u", tf_name[type], (unsigned)id, (unsigned)off);
+    okp_send_data(ctx, peer, f, (int)sizeof(*h) + blen, OKP_SEND_RELIABLE);
+}
+#define TFRAME(c, type, off, body, blen) tframe((c)->peer, (c)->id, (c)->initiator, type, off, body, blen)
+
+static okw_tconn *tconn_new(void)   /* okw_lock held */
+{
+    for (int i = 0; i < OKW_MAX_CONNS; i++) {
+        okw_tconn *c = &conns[i];
+        if (c->used) continue;
+        memset(c, 0, sizeof(*c));
+        c->ring = (uint8_t *)malloc(tcp_window);
+        if (!c->ring) return NULL;
+        c->used = 1;
+        c->cap = tcp_window;
+        c->t_state = GetTickCount();
+        return c;
+    }
+    okp_log(1, "wsock: no room for another TCP connection (%d in use)", OKW_MAX_CONNS);
+    return NULL;
+}
+
+static void tconn_free(okw_tconn *c)   /* okw_lock held */
+{
+    if (!c) return;
+    free(c->ring);
+    memset(c, 0, sizeof(*c));
+}
+
+static okw_tconn *tconn_find(uint64_t peer, uint32_t id, int initiator)   /* okw_lock held */
+{
+    for (int i = 0; i < OKW_MAX_CONNS; i++)
+        if (conns[i].used && conns[i].peer == peer && conns[i].id == id && conns[i].initiator == initiator) return &conns[i];
+    return NULL;
+}
+
+/* abort: RST to the other side (once), the error for the game here */
+static void tconn_abort(okw_tconn *c, int reason, int err)   /* okw_lock held */
+{
+    uint8_t r = (uint8_t)reason;
+    if (!c->rst_sent && !c->rst_rx && (c->state == T_ESTAB || c->state == T_SYN_SENT)) TFRAME(c, TF_RST, c->snd_next, &r, 1);
+    c->rst_sent = 1;
+    if (!c->err) c->err = err;
+    c->rx_gen++;
+    okp_log(2, "wsock: TCP connection %08x with %016llx reset here (reason %d)", (unsigned)c->id, (unsigned long long)c->peer, reason);
+    wake();
+}
+
+static void ring_put(okw_tconn *c, const uint8_t *d, uint32_t n)
+{
+    uint32_t tail = (c->head + c->count) % c->cap, first = n < c->cap - tail ? n : c->cap - tail;
+    memcpy(c->ring + tail, d, first);
+    memcpy(c->ring, d + first, n - first);
+    c->count += n;
+}
+
+static void ring_peek(const okw_tconn *c, uint8_t *out, uint32_t n)
+{
+    uint32_t first = n < c->cap - c->head ? n : c->cap - c->head;
+    memcpy(out, c->ring + c->head, first);
+    memcpy(out + first, c->ring, n - first);
+}
+
+static int is_authed(uint64_t peer);
+
+/* a SYN: a listener on that port takes it into its backlog (the game's accept() comes later) */
+static void tcp_syn(uint64_t from, const okw_thdr *h, const uint8_t *b, int bl)   /* okw_lock held */
+{
+    uint16_t sport, dport;
+    uint32_t win;
+    uint8_t why = 0;
+    okw_sock *L = NULL;
+    okw_tconn *c = NULL;
+    if (bl < 9 || !(h->flags & 1)) return;
+    memcpy(&sport, b, 2);
+    memcpy(&dport, b + 2, 2);
+    memcpy(&win, b + 4, 4);
+    if (tconn_find(from, h->conn, 0)) return;   /* (the lane doesn't repeat; a restarted peer picks a new id) */
+    if (ctx->is_host && host_has_pw && !is_authed(from)) why = 3;
+    else {
+        for (int i = 0; i < OKW_MAX_SOCKS && !L; i++)
+            if (socks[i].used && socks[i].kind == K_TCP && socks[i].tstate == T_LISTEN && socks[i].port == dport) L = &socks[i];
+        if (!L) why = 1;
+        else if (L->nbacklog >= L->backlog_max) why = 2;
+    }
+    if (!why && !(c = tconn_new())) why = 2;
+    if (why) {
+        okp_log(1, "wsock: TCP connection from %016llx to port %u refused (%s)", (unsigned long long)from, dport,
+                why == 1 ? "nothing listens there" : why == 2 ? "backlog full" : "not let in: no password yet");
+        tframe(from, h->conn, 0, TF_REFUSE, 0, &why, 1);
+        return;
+    }
+    c->state = T_ESTAB;
+    c->peer = from;
+    c->id = h->conn;
+    c->initiator = 0;
+    c->lport = dport;
+    c->rport = sport;
+    c->rip = standin_of(from);
+    c->snd_wnd = c->snd_limit = win;
+    L->backlog[L->nbacklog++] = c;
+    uint8_t a[6];
+    memcpy(a, &dport, 2);
+    memcpy(a + 2, &tcp_window, 4);
+    tframe(from, c->id, 0, TF_ACCEPT, 0, a, 6);
+    okp_log(2, "wsock: TCP connection %08x from %016llx port %u to our port %u (waiting for accept, %d in backlog)",
+            (unsigned)c->id, (unsigned long long)from, sport, dport, L->nbacklog);
+    wake();
+}
+
+static void tcp_rx(uint64_t from, const uint8_t *d, int len)   /* okw_lock held, ctx is the live one */
+{
+    okw_thdr h;
+    if (len < (int)sizeof(h)) return;
+    memcpy(&h, d, sizeof(h));
+    if (h.ver != 1 || h.type < TF_SYN || h.type > TF_RST) return;
+    const uint8_t *b = d + sizeof(h);
+    int bl = len - (int)sizeof(h);
+    if (h.type != TF_DATA) tr("tcp rx %s conn %08x off %u", tf_name[h.type], (unsigned)h.conn, (unsigned)h.off);
+    if (h.type == TF_SYN) { tcp_syn(from, &h, b, bl); return; }
+    okw_tconn *c = tconn_find(from, h.conn, !(h.flags & 1));
+    if (!c) {   /* a connection that is gone here (closed, or never known) */
+        if (h.type == TF_DATA || h.type == TF_ACCEPT) {
+            uint8_t r = 2;
+            tframe(from, h.conn, !(h.flags & 1), TF_RST, 0, &r, 1);
+        }
+        return;
+    }
+    switch (h.type) {
+    case TF_ACCEPT:
+        if (c->state == T_SYN_SENT && bl >= 6) {
+            memcpy(&c->snd_wnd, b + 2, 4);
+            c->snd_limit = c->snd_wnd;
+            c->state = T_ESTAB;
+            c->t_state = GetTickCount();
+            okp_log(2, "wsock: TCP connection %08x to %016llx port %u is up", (unsigned)c->id, (unsigned long long)from, c->rport);
+            wake();
+        }
+        break;
+    case TF_REFUSE:
+        if (c->state == T_SYN_SENT) {
+            c->state = T_FAILED;
+            c->err = c->so_error = WSAECONNREFUSED;
+            c->rst_rx = 1;
+            okp_log(1, "wsock: TCP connect to %016llx port %u refused (reason %d)", (unsigned long long)from, c->rport, bl ? b[0] : 0);
+            wake();
+        }
+        break;
+    case TF_DATA:
+        if (c->state != T_ESTAB || c->err) break;
+        if (h.off != c->rx_next || c->fin_rx || c->count + (uint32_t)bl > c->cap) {   /* a hole or overrun: never hand the game a corrupt stream */
+            okp_log(0, "wsock: TCP connection %08x: stream broken (data at %u, expected %u, %u buffered) - reset",
+                    (unsigned)c->id, (unsigned)h.off, (unsigned)c->rx_next, (unsigned)c->count);
+            tconn_abort(c, 3, WSAECONNRESET);
+            break;
+        }
+        c->rx_next += bl;
+        if (c->rd_shut) { tconn_abort(c, 1, WSAECONNABORTED); break; }   /* as Windows: data after shutdown(SD_RECEIVE) resets */
+        ring_put(c, b, (uint32_t)bl);
+        c->rx_gen++;
+        last_race_tick = GetTickCount();   /* (notices wait while a game is going) */
+        wake();
+        break;
+    case TF_WND:
+        if ((int32_t)(h.off + c->snd_wnd - c->snd_limit) > 0) { c->snd_limit = h.off + c->snd_wnd; wake(); }
+        break;
+    case TF_FIN:
+        if (h.off != c->rx_next) { tconn_abort(c, 3, WSAECONNRESET); break; }
+        c->fin_rx = 1;
+        c->rx_gen++;
+        wake();
+        break;
+    case TF_RST:
+        c->rst_rx = 1;
+        if (c->state == T_SYN_SENT) { c->state = T_FAILED; c->err = c->so_error = WSAECONNREFUSED; }
+        else if (!c->err) c->err = WSAECONNRESET;
+        c->rx_gen++;
+        okp_log(2, "wsock: TCP connection %08x reset by %016llx (reason %d)", (unsigned)c->id, (unsigned long long)from, bl ? b[0] : 0);
+        wake();
+        break;
+    }
+}
+
+static void tcp_tick(void)   /* okw_lock held: connects nobody answered */
+{
+    DWORD now = GetTickCount();
+    for (int i = 0; i < OKW_MAX_CONNS; i++) {
+        okw_tconn *c = &conns[i];
+        if (!c->used || c->state != T_SYN_SENT || now - c->t_state < 20000) continue;
+        tconn_abort(c, 5, WSAETIMEDOUT);
+        c->state = T_FAILED;
+        c->so_error = WSAETIMEDOUT;
+        okp_log(1, "wsock: TCP connect to %016llx port %u: no answer in 20 s", (unsigned long long)c->peer, c->rport);
+    }
+}
+
 static void okw_rx(void *c, uint64_t from, const void *data, int len)   /* okplay's net thread */
 {
     (void)c;
+    if (len >= 4 && ((const uint8_t *)data)[0] == 'W' && ((const uint8_t *)data)[1] == 'T') {   /* a stream frame */
+        EnterCriticalSection(&okw_lock);
+        if (ctx && c == ctx) tcp_rx(from, (const uint8_t *)data, len);
+        LeaveCriticalSection(&okw_lock);
+        return;
+    }
     if (len < (int)sizeof(okw_hdr)) return;
     const okw_hdr *h = (const okw_hdr *)data;
     const uint8_t *d8 = (const uint8_t *)data;
@@ -702,13 +1017,16 @@ static void build_room_record(void)   /* okw_lock held */
     memcpy(sd + 8, &ctx->room, 4);                 /* guidInstance (enough to tell rooms apart) */
     memcpy(sd + 24, &OKW_APPGUID, 16);             /* guidApplication */
     /* Road Rash's broadcast: byte 17 = free slots, bytes 37.. = host name */
-    char name[64] = "Road Rash";
+    char name[64];
+    lstrcpynA(name, game->name, sizeof(name));
     if (advert_len >= 57 && advert_port == 6995) {
         curp = 8 - (advert[17] < 8 ? advert[17] : 7);
         memcpy(name, advert + 37, 20);
         name[20] = 0;
-        if (!name[0]) strcpy(name, "Road Rash");
+        if (!name[0]) lstrcpynA(name, game->name, sizeof(name));
     }
+    if (game->kinds & OKW_TCP)
+        for (int i = 0; i < OKW_MAX_CONNS; i++) if (conns[i].used && !conns[i].initiator && conns[i].state == T_ESTAB) curp++;
     memcpy(sd + 40, &maxp, 4);
     memcpy(sd + 44, &curp, 4);
     if (host_has_pw) { uint32_t fl = 0x400; memcpy(sd + 4, &fl, 4); }   /* DPSESSION_PASSWORDREQUIRED: the list shows a lock */
@@ -726,6 +1044,19 @@ static void build_room_record(void)   /* okw_lock held */
         memcpy(b + n + 6, &al, 2);
         memcpy(b + n + 8, advert, advert_len);
         n += 8 + advert_len;
+    }
+    {   /* TCP games: 'OKWT', version 1, count, the ports the host listens on */
+        uint16_t ports[8];
+        int np = 0;
+        for (int i = 0; i < OKW_MAX_SOCKS && np < 8; i++)
+            if (socks[i].used && socks[i].kind == K_TCP && socks[i].tstate == T_LISTEN && socks[i].explicit_port) ports[np++] = socks[i].port;
+        if (np && n + 6 + 2 * np <= (int)sizeof(b)) {
+            memcpy(b + n, "OKWT", 4);
+            b[n + 4] = 1;
+            b[n + 5] = (uint8_t)np;
+            memcpy(b + n + 6, ports, 2 * np);
+            n += 6 + 2 * np;
+        }
     }
     EnterCriticalSection(&ctx->lock);
     memcpy(ctx->enum_blob, b, n);
@@ -832,6 +1163,7 @@ static void end_session(void)   /* no lock held */
     advert_len = 0;
     advert_port = 0;
     browse_tick = inject_tick = 0;
+    picked_host = 0;
     socks_gone = 0;
     room_closed = 0;
     memset(links, 0, sizeof(links));
@@ -864,6 +1196,7 @@ static void check_new_game(void)
     if (socks_gone && GetTickCount() - socks_gone_tick >= 2000) over = 1;
     else if (room_closed && GetTickCount() - room_closed_tick >= 2000 && ctx) {
         int live = 0;
+        for (int i = 0; i < OKW_MAX_SOCKS; i++) if (socks[i].used && socks[i].kind == K_TCP) live = 1;   /* (a race goes on) */
         DWORD now = okp_now();
         EnterCriticalSection(&ctx->lock);
         for (int i = 0; i < OKP_MAX_PEERS; i++)
@@ -944,6 +1277,7 @@ static void leave_room(uint64_t host)   /* okw_lock held */
 static void okw_tick(void)   /* okw_lock held */
 {
     if (!started && mode_choice >= 2) start_okplay();   /* (re)started in the mode the player picked */
+    tcp_tick();
     link_reports();
     release_due();
     race_reports();
@@ -970,7 +1304,7 @@ static void okw_tick(void)   /* okw_lock held */
     {   /* the test knobs are read again every 2 s, so a lab script can change them between races */
         static DWORD knob_ms;
         DWORD t = now_ms();
-        if (t - knob_ms >= 2000) {
+        if (t - knob_ms >= 2000 && (game->kinds & OKW_UDP)) {   /* (never file I/O from a TCP game's comms thread) */
             char ini[MAX_PATH];
             int d, j, bl, be, lo;
             knob_ms = t;
@@ -1602,46 +1936,645 @@ static LRESULT CALLBACK cbt_proc(int code, WPARAM wp, LPARAM lp)
  * wsock_games=, or with OKP_WSOCK_MODE set, for tests) does any of okplay run; for every other program each
  * call goes straight to Windows' Winsock and nothing else happens - no box, no log, no thread, no hook. */
 static int okw_on;
-static const char *const okw_games[] = { "roadrash.exe", "roadrash95.exe" };   /* Road Rash: CD, Steam */
 
+static int name_in_list(const char *list, const char *base)
+{
+    char l[512];
+    lstrcpynA(l, list, sizeof(l));
+    for (char *t = strtok(l, ",; "); t; t = strtok(NULL, ",; ")) if (!_stricmp(base, t)) return 1;
+    return 0;
+}
+
+/* ...and which profile (okw_profiles): by exe name, else okplay.ini wsock_game= / OKP_WSOCK_GAME (tests), else Road
+ * Rash's (UDP) */
 static int is_winsock_game(void)
 {
-    char path[MAX_PATH], *base, v[16] = "";
-    if (GetEnvironmentVariableA("OKP_WSOCK_MODE", v, sizeof(v))) return 1;
+    char path[MAX_PATH], *base, v[16] = "", gid[32] = "";
+    char ini[MAX_PATH], list[512] = "", dir[MAX_PATH] = "";
+    const okw_game *byid = NULL;
+    if (GetModuleFileNameA(g_self, dir, sizeof(dir))) {
+        char *slash = strrchr(dir, '\\');
+        if (slash) slash[1] = 0;
+    }
+    snprintf(ini, sizeof(ini), "%sokplay.ini", dir);
+    GetPrivateProfileStringA("okplay", "wsock_game", "", gid, sizeof(gid), ini);
+    GetEnvironmentVariableA("OKP_WSOCK_GAME", gid, sizeof(gid));
+    for (unsigned i = 0; i < sizeof(okw_profiles) / sizeof(okw_profiles[0]) && gid[0]; i++)
+        if (!_stricmp(gid, okw_profiles[i].id)) byid = &okw_profiles[i];
+    if (GetEnvironmentVariableA("OKP_WSOCK_MODE", v, sizeof(v))) { game = byid ? byid : &okw_profiles[0]; return 1; }
     if (!GetModuleFileNameA(NULL, path, sizeof(path))) return 0;
     base = strrchr(path, '\\');
     base = base ? base + 1 : path;
-    for (unsigned i = 0; i < sizeof(okw_games) / sizeof(okw_games[0]); i++) if (!_stricmp(base, okw_games[i])) return 1;
-    char ini[MAX_PATH], list[512] = "", dir[MAX_PATH];
-    if (!GetModuleFileNameA(g_self, dir, sizeof(dir))) return 0;
-    char *slash = strrchr(dir, '\\');
-    if (slash) slash[1] = 0;
-    snprintf(ini, sizeof(ini), "%sokplay.ini", dir);
+    for (unsigned i = 0; i < sizeof(okw_profiles) / sizeof(okw_profiles[0]); i++)
+        if (okw_profiles[i].exes && name_in_list(okw_profiles[i].exes, base)) { game = &okw_profiles[i]; return 1; }
+    if (!dir[0]) return 0;
     GetPrivateProfileStringA("okplay", "wsock_games", "", list, sizeof(list), ini);
-    for (char *t = strtok(list, ",; "); t; t = strtok(NULL, ",; ")) if (!_stricmp(base, t)) return 1;
+    if (name_in_list(list, base)) { game = byid ? byid : &okw_profiles[0]; return 1; }
     return 0;
 }
 
 
 static int set_err(int e) { WSASetLastError(e); return SOCKET_ERROR; }
 
+/* ---------------------------------------------------------------- stream sockets: the game's calls
+ *
+ * A stream socket is entered in the table at socket() but stays a plain Windows socket until its first bind,
+ * listen or connect: only then comes the Online / LAN / original TCP/IP box (games make probe sockets they only
+ * create and close). Options and FIONBIO set before that go to Windows as well as being recorded, so with
+ * "original" nothing needs replaying: the table entries are dropped and the call goes to Windows. With Online or
+ * LAN Play every stream socket of the run is virtual: the real handle is only the game's SOCKET value. */
+
+#define OKW_SIOCATMARK 0x40047307L
+
+static int tcp_virtual(const okw_sock *k) { return k && k->kind == K_TCP && mode_choice >= 2; }
+
+static int tcp_entry(SOCKET s, int virt_only)   /* no lock held */
+{
+    EnterCriticalSection(&okw_lock);
+    okw_sock *k = tsock_of(s);
+    int r = k && (!virt_only || tcp_virtual(k));
+    LeaveCriticalSection(&okw_lock);
+    return r;
+}
+
+/* 1 = the call goes to Windows (the player chose the original TCP/IP). No lock held. */
+static int tcp_mode_pass(void)
+{
+    if (mode_choice >= 2) return 0;
+    if (mode_choice == 1) return 1;
+    int m = choose_mode();
+    EnterCriticalSection(&okw_lock);
+    if (m == 1) {
+        for (int i = 0; i < OKW_MAX_SOCKS; i++) if (socks[i].used && socks[i].kind == K_TCP) socks[i].used = 0;
+        socks_gone = 0;   /* (the original TCP/IP stays for this game run) */
+    } else if (m >= 2) {
+        start_okplay();
+    }
+    LeaveCriticalSection(&okw_lock);
+    return m < 2;
+}
+
+static int tcp_port_used(uint16_t port)   /* okw_lock held */
+{
+    for (int i = 0; i < OKW_MAX_SOCKS; i++)
+        if (socks[i].used && socks[i].kind == K_TCP && socks[i].port == port && !socks[i].c &&
+            (socks[i].tstate == T_BOUND || socks[i].tstate == T_LISTEN)) return 1;
+    return 0;
+}
+
+static uint16_t eph_port(void)   /* okw_lock held */
+{
+    uint16_t p;
+    do { p = next_eph++; if (next_eph < 30000) next_eph = 30000; } while (tcp_port_used(p));
+    return p;
+}
+
+static int tcp_state(const okw_sock *k) { return k->c ? k->c->state : k->tstate; }
+
+/* wait for okw_ev (no lock held); with other threads waiting too, at most 10 ms (one shared event) */
+static void ev_wait(DWORD ms)
+{
+    if (okw_waiters > 1 && ms > 10) ms = 10;
+    WaitForSingleObject(okw_ev, ms);
+}
+
+static int tcp_bind(okw_sock *k, const struct sockaddr *a, int l)   /* okw_lock held */
+{
+    if (!a || l < (int)sizeof(struct sockaddr_in)) return set_err(WSAEFAULT);
+    if (a->sa_family != AF_INET) return set_err(WSAEAFNOSUPPORT);
+    if (k->tstate != T_NEW || k->c) return set_err(WSAEINVAL);
+    const struct sockaddr_in *in = (const struct sockaddr_in *)a;
+    uint16_t port = ntohs(in->sin_port);
+    if (port && tcp_port_used(port)) return set_err(WSAEADDRINUSE);
+    k->explicit_port = port != 0;
+    k->port = port ? port : eph_port();
+    k->bound_ip = in->sin_addr.s_addr;
+    k->tstate = T_BOUND;
+    okp_log(2, "wsock: TCP socket %u bound to port %u%s", (unsigned)k->s, k->port, port ? "" : " (any)");
+    return 0;
+}
+
+/* the room record's 'OKWT' block: the ports this host listens on */
+static int room_tcp_ports(const okp_room *rm)
+{
+    for (int i = 92; i + 6 <= rm->enumlen; i++)
+        if (!memcmp(rm->enumblob + i, "OKWT", 4) && rm->enumblob[i + 4] == 1) return rm->enumblob[i + 5] ? 1 : 0;
+    return 0;
+}
+
+/* The joiner's destination -> the okplay peer that hosts it. For now (the room list box comes with rooms and joining
+ * for TCP games): the stand-in address of a peer or room host, the host picked earlier in this session, or the only
+ * TCP room of this game on the list (LAN Play: the host found on the LAN). No lock held; waits up to 3 s for the
+ * room list. */
+static int resolve_host(uint32_t ip, uint64_t *host)
+{
+    DWORD t0 = GetTickCount();
+    for (;;) {
+        int found = 0, nt = 0;
+        const char *how = "";
+        EnterCriticalSection(&okw_lock);
+        if (!ctx) { LeaveCriticalSection(&okw_lock); return 0; }
+        if (peer_of_standin(ip, host)) { found = 1; how = "its stand-in address"; }
+        else {
+            uint64_t only = 0;
+            EnterCriticalSection(&ctx->lock);
+            for (int i = 0; i < ctx->nrooms; i++) {
+                if (!room_tcp_ports(&ctx->rooms[i])) continue;
+                nt++;
+                only = ctx->rooms[i].host;
+                if (picked_host && ctx->rooms[i].host == picked_host) { *host = picked_host; found = 1; how = "the room picked before"; }
+            }
+            LeaveCriticalSection(&ctx->lock);
+            if (!found && nt == 1) { *host = only; found = 1; how = "the only room of this game"; }
+        }
+        if (!found) {
+            ctx->enum_pending = 1;
+            if (ctx->mode == OKP_MODE_LAN) okp_lan_discover(ctx);
+            okp_rdv_wake(ctx);
+        }
+        LeaveCriticalSection(&okw_lock);
+        if (found) {
+            char t[20];
+            okp_log(1, "wsock: TCP connect to %s goes to host %016llx (%s)", ip_s(ip, t), (unsigned long long)*host, how);
+            return 1;
+        }
+        if (GetTickCount() - t0 >= 3000) {
+            char t[20];
+            okp_log(1, "wsock: TCP connect to %s: no okplay room for it (%d rooms of this game listed) - refused", ip_s(ip, t), nt);
+            return 0;
+        }
+        Sleep(100);
+    }
+}
+
+static int tcp_connect(SOCKET s, const struct sockaddr *a, int l)   /* a virtual TCP socket; no lock held */
+{
+    if (!a || l < (int)sizeof(struct sockaddr_in)) return set_err(WSAEFAULT);
+    if (a->sa_family != AF_INET) return set_err(WSAEAFNOSUPPORT);
+    const struct sockaddr_in *in = (const struct sockaddr_in *)a;
+    int e = 0;
+    EnterCriticalSection(&okw_lock);
+    okw_sock *k = tsock_of(s);
+    if (!k) e = WSAENOTSOCK;
+    else if (tcp_state(k) == T_SYN_SENT) e = WSAEALREADY;
+    else if (tcp_state(k) == T_ESTAB) e = WSAEISCONN;
+    else if (k->tstate == T_LISTEN || k->c) e = WSAEINVAL;
+    LeaveCriticalSection(&okw_lock);
+    if (e) return set_err(e);
+    uint64_t host;
+    if (!resolve_host(in->sin_addr.s_addr, &host)) return set_err(WSAECONNREFUSED);
+    EnterCriticalSection(&okw_lock);
+    k = tsock_of(s);
+    okw_tconn *c = NULL;
+    if (!k || k->c || (k->tstate != T_NEW && k->tstate != T_BOUND)) e = WSAEINVAL;
+    else if (!(c = tconn_new())) e = WSAENOBUFS;
+    if (e) { LeaveCriticalSection(&okw_lock); return set_err(e); }
+    if (k->tstate == T_NEW) { k->port = eph_port(); k->tstate = T_BOUND; }
+    c->state = T_SYN_SENT;
+    c->peer = host;
+    do c->id = (uint32_t)okp_rand64(); while (!c->id);
+    c->initiator = 1;
+    c->lport = k->port;
+    c->rport = ntohs(in->sin_port);
+    c->rip = standin_of(host);
+    k->c = c;
+    join_room(host);
+    picked_host = host;
+    uint8_t syn[9];
+    memcpy(syn, &c->lport, 2);
+    memcpy(syn + 2, &c->rport, 2);
+    memcpy(syn + 4, &tcp_window, 4);
+    syn[8] = 0;
+    TFRAME(c, TF_SYN, 0, syn, 9);
+    okp_log(2, "wsock: TCP connection %08x: connecting from port %u to %016llx port %u", (unsigned)c->id, c->lport,
+            (unsigned long long)host, c->rport);
+    int nb = k->nonblock;
+    LeaveCriticalSection(&okw_lock);
+    if (nb) return set_err(WSAEWOULDBLOCK);   /* always, never 0: completion shows in select (games rely on it) */
+    InterlockedIncrement(&okw_waiters);
+    for (;;) {   /* blocking: until accepted, refused or 20 s without an answer (tcp_tick) */
+        ResetEvent(okw_ev);
+        EnterCriticalSection(&okw_lock);
+        okw_tick();
+        k = tsock_of(s);
+        int st = k && k->c ? k->c->state : -1;
+        if (st == T_FAILED) { e = k->c->so_error ? k->c->so_error : WSAECONNREFUSED; k->c->so_error = 0; }
+        else if (st != T_ESTAB && st != T_SYN_SENT) e = WSAEINTR;
+        LeaveCriticalSection(&okw_lock);
+        if (st == T_ESTAB || e) break;
+        ev_wait(50);
+    }
+    InterlockedDecrement(&okw_waiters);
+    return e ? set_err(e) : 0;
+}
+
+static SOCKET tcp_accept(SOCKET s, struct sockaddr *a, int *l)   /* a virtual TCP socket; no lock held */
+{
+    SOCKET r = INVALID_SOCKET;
+    int e = 0;
+    if (a && (!l || *l < (int)sizeof(struct sockaddr_in))) { WSASetLastError(WSAEFAULT); return INVALID_SOCKET; }
+    InterlockedIncrement(&okw_waiters);
+    for (;;) {
+        ResetEvent(okw_ev);
+        EnterCriticalSection(&okw_lock);
+        okw_sock *k = tsock_of(s);
+        if (!k) e = WSAEINTR;   /* closed by another thread while we waited */
+        else if (k->tstate != T_LISTEN) e = WSAEINVAL;
+        else if (k->nbacklog) {
+            okw_sock *n = NULL;
+            for (int i = 0; i < OKW_MAX_SOCKS && !n; i++) if (!socks[i].used) n = &socks[i];
+            SOCKET ns = n ? socket(AF_INET, SOCK_STREAM, 0) : INVALID_SOCKET;   /* a handle for the game, never used for I/O */
+            if (!n) e = WSAEMFILE;
+            else if (ns == INVALID_SOCKET) e = WSAGetLastError();
+            else {
+                okw_tconn *c = k->backlog[0];
+                memmove(k->backlog, k->backlog + 1, (k->nbacklog - 1) * sizeof(k->backlog[0]));
+                k->nbacklog--;
+                memset(n, 0, sizeof(*n));
+                n->used = 1;
+                n->s = ns;
+                n->kind = K_TCP;
+                n->tstate = T_BOUND;
+                n->port = k->port;
+                n->bound_ip = k->bound_ip;
+                n->nonblock = k->nonblock;   /* (Winsock: an accepted socket takes the listener's options) */
+                n->keepalive = k->keepalive;
+                n->nodelay = k->nodelay;
+                n->c = c;
+                socks_gone = 0;
+                if (a) {
+                    struct sockaddr_in *in = (struct sockaddr_in *)a;
+                    memset(in, 0, sizeof(*in));
+                    in->sin_family = AF_INET;
+                    in->sin_addr.s_addr = c->rip;
+                    in->sin_port = htons(c->rport);
+                    *l = sizeof(*in);
+                }
+                r = ns;
+                okp_log(2, "wsock: TCP connection %08x accepted as socket %u%s", (unsigned)c->id, (unsigned)ns,
+                        c->err ? " (already reset by the other side)" : "");
+            }
+        } else if (k->nonblock) e = WSAEWOULDBLOCK;
+        LeaveCriticalSection(&okw_lock);
+        if (r != INVALID_SOCKET || e) break;
+        ev_wait(50);
+    }
+    InterlockedDecrement(&okw_waiters);
+    if (e) WSASetLastError(e);
+    return r;
+}
+
+static int tcp_send(SOCKET s, const char *b, int len, int f)   /* a virtual TCP socket; no lock held */
+{
+    int r = SOCKET_ERROR, e = 0, waited = 0;
+    if (f & MSG_OOB) return set_err(WSAEOPNOTSUPP);
+    if (len < 0 || (len && !b)) return set_err(WSAEFAULT);
+    for (;;) {
+        ResetEvent(okw_ev);
+        EnterCriticalSection(&okw_lock);
+        okw_sock *k = tsock_of(s);
+        okw_tconn *c = k ? k->c : NULL;
+        if (!k) e = WSAENOTSOCK;
+        else if (!c || c->state != T_ESTAB) e = WSAENOTCONN;
+        else if (c->err) e = c->err;
+        else if (c->wr_shut) e = WSAESHUTDOWN;
+        else {
+            uint32_t room = c->snd_limit - c->snd_next;
+            if (room || !len) {
+                int n = (uint32_t)len < room ? len : (int)room;
+                for (int off = 0; off < n;) {
+                    int m = n - off < OKW_TDATA_MAX ? n - off : OKW_TDATA_MAX;
+                    tr("tcp tx DATA conn %08x off %u len %d", (unsigned)c->id, (unsigned)c->snd_next, m);
+                    TFRAME(c, TF_DATA, c->snd_next, b + off, m);
+                    c->snd_next += m;
+                    off += m;
+                }
+                if (n) last_race_tick = GetTickCount();
+                r = n;
+            } else if (k->nonblock) e = WSAEWOULDBLOCK;
+        }
+        LeaveCriticalSection(&okw_lock);
+        if (r != SOCKET_ERROR || e) break;
+        if (!waited++) InterlockedIncrement(&okw_waiters);
+        ev_wait(50);   /* blocking: until the other side's game reads (WND) */
+    }
+    if (waited) InterlockedDecrement(&okw_waiters);
+    return e ? set_err(e) : r;
+}
+
+static int tcp_recv(SOCKET s, char *b, int len, int f)   /* a virtual TCP socket; no lock held */
+{
+    int r = SOCKET_ERROR, e = 0, waited = 0;
+    if (f & MSG_OOB) return set_err(WSAEINVAL);
+    if (len < 0 || (len && !b)) return set_err(WSAEFAULT);
+    for (;;) {
+        ResetEvent(okw_ev);
+        EnterCriticalSection(&okw_lock);
+        okw_sock *k = tsock_of(s);
+        okw_tconn *c = k ? k->c : NULL;
+        if (!k) e = WSAENOTSOCK;
+        else if (!c || c->state != T_ESTAB) e = WSAENOTCONN;
+        else if (c->count && len) {
+            /* MSG_PEEK: the bytes stay (the game peeks the length, then the whole message); one copy across frames */
+            uint32_t n = (uint32_t)len < c->count ? (uint32_t)len : c->count;
+            ring_peek(c, (uint8_t *)b, n);
+            if (!(f & MSG_PEEK)) {
+                int was_full = c->count * 4 >= c->cap * 3;
+                c->head = (c->head + n) % c->cap;
+                c->count -= n;
+                c->consumed += n;
+                c->sel_consumed = 1;
+                if (!c->err && !c->rst_rx && !c->fin_rx && (c->consumed - c->adv >= c->cap / 4 || was_full)) {
+                    TFRAME(c, TF_WND, c->consumed, NULL, 0);   /* the sender may go on */
+                    c->adv = c->consumed;
+                }
+            }
+            r = (int)n;
+        }
+        else if (c->err) e = c->err;
+        else if (c->fin_rx || c->rd_shut || !len) r = 0;
+        else if (k->nonblock) e = WSAEWOULDBLOCK;
+        LeaveCriticalSection(&okw_lock);
+        if (r != SOCKET_ERROR || e) break;
+        if (!waited++) InterlockedIncrement(&okw_waiters);
+        ev_wait(50);
+    }
+    if (waited) InterlockedDecrement(&okw_waiters);
+    return e ? set_err(e) : r;
+}
+
+static int tcp_shutdown(SOCKET s, int how)   /* a virtual TCP socket; no lock held */
+{
+    int e = 0;
+    EnterCriticalSection(&okw_lock);
+    okw_sock *k = tsock_of(s);
+    okw_tconn *c = k ? k->c : NULL;
+    if (!k) e = WSAENOTSOCK;
+    else if (how < 0 || how > 2) e = WSAEINVAL;
+    else if (!c || c->state != T_ESTAB) e = WSAENOTCONN;
+    else {
+        if (how != 1) {   /* SD_RECEIVE / SD_BOTH: with bytes still unread Windows resets the connection */
+            c->rd_shut = 1;
+            if (c->count) { tconn_abort(c, 1, WSAECONNABORTED); c->wr_shut = 1; }
+        }
+        if (how != 0 && !c->wr_shut) {
+            c->wr_shut = 1;
+            if (!c->err) TFRAME(c, TF_FIN, c->snd_next, NULL, 0);
+        }
+        wake();
+    }
+    LeaveCriticalSection(&okw_lock);
+    return e ? set_err(e) : 0;
+}
+
+static void tcp_close(okw_sock *k)   /* okw_lock held; a virtual TCP socket the game closes */
+{
+    if (k->tstate == T_LISTEN) {
+        for (int i = 0; i < k->nbacklog; i++) { tconn_abort(k->backlog[i], 4, WSAECONNABORTED); tconn_free(k->backlog[i]); }
+        k->nbacklog = 0;
+        k->tstate = T_BOUND;
+        if (ctx && ctx->is_host && game->host_rule == HOST_LISTEN && k->explicit_port) {
+            int other = 0;
+            for (int i = 0; i < OKW_MAX_SOCKS; i++)
+                if (&socks[i] != k && socks[i].used && socks[i].kind == K_TCP && socks[i].tstate == T_LISTEN && socks[i].explicit_port) other = 1;
+            if (other) build_room_record();
+            else {   /* the game stopped listening: its room comes off the list (connections made stay) */
+                ctx->closing = 1;
+                ctx->session_open = 0;
+                ctx->is_host = 0;
+                okp_rdv_wake(ctx);
+                okp_log(1, "wsock: the game closed its room (it stopped listening on port %u)", k->port);
+                room_closed = 1;
+                room_closed_tick = GetTickCount();
+            }
+        }
+    }
+    okw_tconn *c = k->c;
+    if (c) {
+        if (c->state == T_SYN_SENT) tconn_abort(c, 5, WSAECONNABORTED);
+        else if (c->state == T_ESTAB) {
+            if (c->count && !c->rst_rx) tconn_abort(c, 1, WSAECONNABORTED);   /* unread bytes: Windows resets too */
+            else if (!c->wr_shut && !c->err) TFRAME(c, TF_FIN, c->snd_next, NULL, 0);   /* graceful: what was sent still goes */
+        }
+        okp_log(2, "wsock: TCP connection %08x closed by the game", (unsigned)c->id);
+        tconn_free(c);
+        k->c = NULL;
+    }
+    wake();   /* (a select or accept waiting on it in another thread) */
+}
+
+static int tcp_name(SOCKET s, struct sockaddr *a, int *l, int peer)   /* getsockname / getpeername */
+{
+    int e = 0;
+    if (!a || !l || *l < (int)sizeof(struct sockaddr_in)) return set_err(WSAEFAULT);
+    EnterCriticalSection(&okw_lock);
+    okw_sock *k = tsock_of(s);
+    struct sockaddr_in *in = (struct sockaddr_in *)a;
+    if (!k) e = WSAENOTSOCK;
+    else if (peer && (!k->c || k->c->state != T_ESTAB)) e = WSAENOTCONN;
+    else if (!peer && k->tstate == T_NEW && !k->c) e = WSAEINVAL;
+    else {
+        memset(in, 0, sizeof(*in));
+        in->sin_family = AF_INET;
+        if (peer) { in->sin_addr.s_addr = k->c->rip; in->sin_port = htons(k->c->rport); }
+        else {   /* a connected socket names the address it uses: here, our stand-in */
+            in->sin_addr.s_addr = k->c ? standin_of(okw_self) : k->bound_ip;
+            in->sin_port = htons(k->port);
+        }
+        *l = sizeof(*in);
+    }
+    LeaveCriticalSection(&okw_lock);
+    return e ? set_err(e) : 0;
+}
+
+static int opt_int(const char *v, int l) { int x = 0; if (!v || l < 1) return 0; if (l >= 4) memcpy(&x, v, 4); else x = (unsigned char)v[0]; return x; }
+
+static int tcp_setopt(SOCKET s, int lv, int o, const char *v, int l)   /* any TCP socket in the table; no lock held */
+{
+    EnterCriticalSection(&okw_lock);
+    okw_sock *k = tsock_of(s);
+    int virt = tcp_virtual(k);
+    if (k) {
+        if (lv == SOL_SOCKET && o == SO_KEEPALIVE) k->keepalive = opt_int(v, l) != 0;
+        else if (lv == IPPROTO_TCP && o == TCP_NODELAY) k->nodelay = opt_int(v, l) != 0;
+        else if (lv == SOL_SOCKET && o == SO_LINGER && v && l >= (int)sizeof(struct linger)) memcpy(&k->linger, v, sizeof(k->linger));
+        else if (lv == SOL_SOCKET && o == (int)SO_DONTLINGER) k->linger.l_onoff = !opt_int(v, l);
+    }
+    LeaveCriticalSection(&okw_lock);
+    if (virt) return 0;                 /* recorded; no meaning on a virtual socket */
+    return setsockopt(s, lv, o, v, l);  /* not decided yet: Windows' socket gets it too (the original TCP/IP keeps it) */
+}
+
+static int tcp_getopt(SOCKET s, int lv, int o, char *v, int *l)   /* a virtual TCP socket; no lock held */
+{
+    int val = 0, have = 1;
+    EnterCriticalSection(&okw_lock);
+    okw_sock *k = tsock_of(s);
+    if (!k) { LeaveCriticalSection(&okw_lock); return set_err(WSAENOTSOCK); }
+    if (lv == SOL_SOCKET && o == SO_LINGER) {
+        if (!v || !l || *l < (int)sizeof(struct linger)) { LeaveCriticalSection(&okw_lock); return set_err(WSAEFAULT); }
+        memcpy(v, &k->linger, sizeof(k->linger));
+        *l = sizeof(k->linger);
+        LeaveCriticalSection(&okw_lock);
+        return 0;
+    }
+    if (lv == SOL_SOCKET && o == SO_ERROR) { if (k->c) { val = k->c->so_error; k->c->so_error = 0; } }   /* cleared once read */
+    else if (lv == SOL_SOCKET && o == SO_TYPE) val = SOCK_STREAM;
+    else if (lv == SOL_SOCKET && o == SO_ACCEPTCONN) val = k->tstate == T_LISTEN;
+    else if (lv == SOL_SOCKET && o == SO_KEEPALIVE) val = k->keepalive;
+    else if (lv == SOL_SOCKET && o == (int)SO_DONTLINGER) val = !k->linger.l_onoff;
+    else if (lv == SOL_SOCKET && (o == SO_RCVBUF || o == SO_SNDBUF)) val = (int)tcp_window;
+    else if (lv == IPPROTO_TCP && o == TCP_NODELAY) val = k->nodelay;
+    else have = 0;
+    LeaveCriticalSection(&okw_lock);
+    if (!have) return getsockopt(s, lv, o, v, l);
+    if (!v || !l || *l < (int)sizeof(int)) return set_err(WSAEFAULT);
+    memcpy(v, &val, sizeof(val));
+    *l = sizeof(int);
+    return 0;
+}
+
+static int tcp_ioctl(SOCKET s, long cmd, u_long *arg)   /* any TCP socket in the table; no lock held */
+{
+    int r = 0;
+    EnterCriticalSection(&okw_lock);
+    okw_sock *k = tsock_of(s);
+    int virt = tcp_virtual(k);
+    if (k && cmd == (long)WS_FIONBIO) k->nonblock = arg && *arg;
+    if (k && virt) {
+        if (cmd == (long)WS_FIONBIO) ;
+        else if (cmd == (long)WS_FIONREAD) { if (arg) *arg = k->c && k->c->state == T_ESTAB ? k->c->count : 0; }
+        else if (cmd == OKW_SIOCATMARK) { if (arg) *arg = 1; }   /* no urgent data, ever */
+        else r = set_err(WSAEINVAL);
+    }
+    LeaveCriticalSection(&okw_lock);
+    if (!virt) return ioctlsocket(s, cmd, arg);
+    return r;
+}
+
+/* ---------------------------------------------------------------- select over virtual sockets
+ *
+ * Virtual sockets (UDP, and TCP once Online/LAN Play is on) are ready when:
+ *   read:   a listener with a connection waiting; a connection with bytes, FIN or an error; UDP with a packet
+ *   write:  a connection with room in the other side's window, not shut; UDP always
+ *   except: only a connect that failed (never an established connection: games close what shows there)
+ * The wait is on okw_ev (set by arrivals and state changes), not polling; okw_tick runs every round, so a game
+ * that only selects still drives the okplay side. No-progress rule: a connection reported readable whose bytes have
+ * not changed since, and which the game only peeked, is not reported again until something new arrives (Windows
+ * would return at once, and a game waiting for the rest of a message would spin its comms thread - on one pinned
+ * core, against our own network thread that has to deliver that rest). Handles Windows owns are polled alongside. */
+static okw_sock *vsock_of(SOCKET s)   /* okw_lock held */
+{
+    for (int i = 0; i < OKW_MAX_SOCKS; i++)
+        if (socks[i].used && socks[i].s == s && (socks[i].kind == K_UDP || mode_choice >= 2)) return &socks[i];
+    return NULL;
+}
+
+static int sel_ready(okw_sock *k, int set)   /* okw_lock held */
+{
+    if (k->kind == K_UDP) return set == 0 ? k->q != NULL : set == 1;
+    okw_tconn *c = k->c;
+    if (set == 1) return c && c->state == T_ESTAB && !c->err && !c->wr_shut && c->snd_limit != c->snd_next;
+    if (set == 2) return c && c->state == T_FAILED;
+    if (k->tstate == T_LISTEN) return k->nbacklog > 0;
+    if (!c || c->state != T_ESTAB || !(c->count || c->fin_rx || c->err)) return 0;
+    if (c->sel_shown && c->sel_gen == c->rx_gen && !c->sel_consumed) return 0;   /* the no-progress rule */
+    c->sel_shown = 1;
+    c->sel_gen = c->rx_gen;
+    c->sel_consumed = 0;
+    return 1;
+}
+
+int WINAPI x_select(int nfds, fd_set *r, fd_set *w, fd_set *e, const struct timeval *t)
+{
+    if (!okw_on) return select(nfds, r, w, e, t);
+    fd_set *set[3] = { r, w, e };
+    static const int max = FD_SETSIZE;
+    char virt[3][FD_SETSIZE];
+    int nv = 0, nr = 0;
+    for (int i = 0; i < 3; i++) if (set[i] && (int)set[i]->fd_count > max) return select(nfds, r, w, e, t);
+    EnterCriticalSection(&okw_lock);
+    for (int i = 0; i < 3; i++)
+        for (int j = 0; set[i] && j < (int)set[i]->fd_count; j++) {
+            virt[i][j] = vsock_of(set[i]->fd_array[j]) != NULL;
+            if (virt[i][j]) nv++; else nr++;
+        }
+    LeaveCriticalSection(&okw_lock);
+    if (!nv) return select(nfds, r, w, e, t);   /* (all sets empty: Windows' WSAEINVAL, as the game expects) */
+    fd_set in[3];
+    for (int i = 0; i < 3; i++) if (set[i]) memcpy(&in[i], set[i], sizeof(in[i]));
+    DWORD limit = t ? (DWORD)t->tv_sec * 1000 + (DWORD)(t->tv_usec + 999) / 1000 : INFINITE;
+    DWORD t0 = now_ms();
+    int result;
+    InterlockedIncrement(&okw_waiters);
+    for (;;) {
+        fd_set out[3];
+        int ready = 0, gone = 0;
+        for (int i = 0; i < 3; i++) out[i].fd_count = 0;
+        ResetEvent(okw_ev);
+        EnterCriticalSection(&okw_lock);
+        okw_tick();
+        for (int i = 0; i < 3; i++)
+            for (int j = 0; set[i] && j < (int)in[i].fd_count; j++) {
+                if (!virt[i][j]) continue;
+                okw_sock *k = vsock_of(in[i].fd_array[j]);
+                if (!k) gone = 1;
+                else if (sel_ready(k, i)) { out[i].fd_array[out[i].fd_count++] = in[i].fd_array[j]; ready++; }
+            }
+        LeaveCriticalSection(&okw_lock);
+        if (gone) { result = set_err(WSAENOTSOCK); break; }   /* closed by another thread meanwhile */
+        if (nr) {   /* Windows' own handles: a poll */
+            fd_set rs[3];
+            struct timeval zero = { 0, 0 };
+            for (int i = 0; i < 3; i++) {
+                rs[i].fd_count = 0;
+                for (int j = 0; set[i] && j < (int)in[i].fd_count; j++) if (!virt[i][j]) rs[i].fd_array[rs[i].fd_count++] = in[i].fd_array[j];
+            }
+            int k = select(0, rs[0].fd_count ? &rs[0] : NULL, rs[1].fd_count ? &rs[1] : NULL, rs[2].fd_count ? &rs[2] : NULL, &zero);
+            if (k == SOCKET_ERROR) { result = SOCKET_ERROR; break; }
+            for (int i = 0; i < 3 && k > 0; i++)
+                for (unsigned j = 0; j < rs[i].fd_count; j++) { out[i].fd_array[out[i].fd_count++] = rs[i].fd_array[j]; ready++; }
+        }
+        DWORD el = now_ms() - t0;
+        if (ready || (limit != INFINITE && el >= limit)) {
+            for (int i = 0; i < 3; i++) if (set[i]) { set[i]->fd_count = out[i].fd_count; memcpy(set[i]->fd_array, out[i].fd_array, out[i].fd_count * sizeof(SOCKET)); }
+            result = ready;
+            break;
+        }
+        DWORD wt = limit == INFINITE ? 50 : limit - el;
+        if (wt > 50) wt = 50;          /* okw_tick runs at least every 50 ms */
+        if (nr && wt > 5) wt = 5;      /* Windows' handles: polled every 5 ms */
+        ev_wait(wt);
+    }
+    InterlockedDecrement(&okw_waiters);
+    return result;
+}
+
 SOCKET WINAPI x_socket(int af, int type, int proto)
 {
     if (!okw_on) return socket(af, type, proto);
     SOCKET s = socket(af, type, proto);
-    if (s == INVALID_SOCKET || af != AF_INET || type != SOCK_DGRAM) return s;
+    if (s == INVALID_SOCKET || af != AF_INET) return s;
+    int kind = type == SOCK_DGRAM && (game->kinds & OKW_UDP) ? K_UDP :
+               type == SOCK_STREAM && (game->kinds & OKW_TCP) && (!proto || proto == IPPROTO_TCP) ? K_TCP : 0;
+    if (!kind) return s;   /* a type this game's profile leaves to Windows (Road Rash's TCP, NFS3's IPX) */
     check_new_game();
     socks_gone = 0;
-    if (choose_mode() == 1) return s;   /* the original TCP/IP: Windows' own socket, untouched */
-    tr("game socket %u: mode chosen, thread %lu", (unsigned)s, (unsigned long)GetCurrentThreadId());
+    if (kind == K_UDP) {
+        if (choose_mode() == 1) return s;   /* the original TCP/IP: Windows' own socket, untouched */
+        tr("game socket %u: mode chosen, thread %lu", (unsigned)s, (unsigned long)GetCurrentThreadId());
+    } else if (mode_choice == 1) {
+        return s;   /* a stream socket: the box comes at its first bind/listen/connect (tcp_mode_pass) */
+    }
     EnterCriticalSection(&okw_lock);
-    if (mode_choice >= 2) start_okplay();   /* (not while the Online/LAN box is still open) */
+    if (kind == K_UDP && mode_choice >= 2) start_okplay();   /* (not while the Online/LAN box is still open) */
     for (int i = 0; i < OKW_MAX_SOCKS; i++) {
         if (socks[i].used) continue;
         memset(&socks[i], 0, sizeof(socks[i]));
         socks[i].used = 1;
         socks[i].s = s;
-        tr("game socket %u (virtual, slot %d)", (unsigned)s, i);
+        socks[i].kind = kind;
+        tr("game socket %u (%s, slot %d)", (unsigned)s, kind == K_UDP ? "virtual UDP" : "TCP", i);
         break;
     }
     LeaveCriticalSection(&okw_lock);
@@ -1653,6 +2586,15 @@ int WINAPI x_closesocket(SOCKET s)
     if (!okw_on) return closesocket(s);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
+    okw_sock *tk = k ? NULL : tsock_of(s);
+    if (tk) {
+        if (tcp_virtual(tk)) tcp_close(tk);
+        tk->used = 0;
+        tr("game closesocket %u (TCP) port %u", (unsigned)s, tk->port);
+        int open = 0;
+        for (int i = 0; i < OKW_MAX_SOCKS; i++) open += socks[i].used;
+        if (!open) { socks_gone_tick = GetTickCount(); socks_gone = 1; }
+    }
     if (k) {
         if (k->port && k->port == advert_port && ctx && ctx->is_host) {   /* the host's game closed its broadcast socket */
             ctx->closing = 1;
@@ -1678,6 +2620,15 @@ int WINAPI x_closesocket(SOCKET s)
 int WINAPI x_bind(SOCKET s, const struct sockaddr *a, int l)
 {
     if (!okw_on) return bind(s, a, l);
+    if (tcp_entry(s, 0)) {
+        if (tcp_mode_pass()) return bind(s, a, l);
+        EnterCriticalSection(&okw_lock);
+        okw_sock *tk = tsock_of(s);
+        int r = tk ? tcp_bind(tk, a, l) : bind(s, a, l);
+        LeaveCriticalSection(&okw_lock);
+        ui_show_pending();
+        return r;
+    }
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k) { LeaveCriticalSection(&okw_lock); return bind(s, a, l); }
@@ -1695,6 +2646,11 @@ int WINAPI x_bind(SOCKET s, const struct sockaddr *a, int l)
 int WINAPI x_connect(SOCKET s, const struct sockaddr *a, int l)
 {
     if (!okw_on) return connect(s, a, l);
+    if (tcp_entry(s, 0)) {
+        if (tcp_mode_pass()) return connect(s, a, l);
+        ui_show_pending();
+        return tcp_connect(s, a, l);
+    }
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k) { LeaveCriticalSection(&okw_lock); return connect(s, a, l); }
@@ -1712,6 +2668,7 @@ int WINAPI x_connect(SOCKET s, const struct sockaddr *a, int l)
 int WINAPI x_getsockname(SOCKET s, struct sockaddr *a, int *l)
 {
     if (!okw_on) return getsockname(s, a, l);
+    if (tcp_entry(s, 1)) return tcp_name(s, a, l, 0);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k || !ctx) { LeaveCriticalSection(&okw_lock); return getsockname(s, a, l); }
@@ -1772,6 +2729,7 @@ static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int l
 int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockaddr *a, int al)
 {
     if (!okw_on) return sendto(s, b, len, f, a, al);
+    if (tcp_entry(s, 1)) return tcp_send(s, b, len, f);   /* (a connected stream socket: the address is ignored) */
     wait_for_box();
     ui_show_pending();
     if (a && al >= (int)sizeof(struct sockaddr_in)) {
@@ -1803,6 +2761,7 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
 int WINAPI x_send(SOCKET s, const char *b, int len, int f)
 {
     if (!okw_on) return send(s, b, len, f);
+    if (tcp_entry(s, 1)) return tcp_send(s, b, len, f);   /* (no box waits here: the game's comms thread) */
     wait_for_box();
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
@@ -1859,6 +2818,7 @@ static int do_recv(SOCKET s, char *b, int len, struct sockaddr *a, int *al, int 
 int WINAPI x_recv(SOCKET s, char *b, int len, int f)
 {
     if (!okw_on) return recv(s, b, len, f);
+    if (tcp_entry(s, 1)) return tcp_recv(s, b, len, f);
     wait_for_box();
     int handled;
     int r = do_recv(s, b, len, NULL, NULL, &handled);
@@ -1868,6 +2828,7 @@ int WINAPI x_recv(SOCKET s, char *b, int len, int f)
 int WINAPI x_recvfrom(SOCKET s, char *b, int len, int f, struct sockaddr *a, int *al)
 {
     if (!okw_on) return recvfrom(s, b, len, f, a, al);
+    if (tcp_entry(s, 1)) return tcp_recv(s, b, len, f);
     wait_for_box();
     ui_show_pending();
     int handled;
@@ -1878,6 +2839,7 @@ int WINAPI x_recvfrom(SOCKET s, char *b, int len, int f, struct sockaddr *a, int
 int WINAPI x_ioctlsocket(SOCKET s, long cmd, u_long *arg)
 {
     if (!okw_on) return ioctlsocket(s, cmd, arg);
+    if (tcp_entry(s, 0)) return tcp_ioctl(s, cmd, arg);
     wait_for_box();
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
@@ -1899,6 +2861,7 @@ int WINAPI x_ioctlsocket(SOCKET s, long cmd, u_long *arg)
 int WINAPI x_setsockopt(SOCKET s, int lv, int o, const char *v, int l)
 {
     if (!okw_on) return setsockopt(s, lv, o, v, l);
+    if (tcp_entry(s, 0)) return tcp_setopt(s, lv, o, v, l);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (k) {
@@ -1912,6 +2875,7 @@ int WINAPI x_setsockopt(SOCKET s, int lv, int o, const char *v, int l)
 
 int WINAPI x_getsockopt(SOCKET s, int lv, int o, char *v, int *l)
 {
+    if (okw_on && tcp_entry(s, 1)) return tcp_getopt(s, lv, o, v, l);
     return getsockopt(s, lv, o, v, l);
 }
 
@@ -1925,6 +2889,7 @@ struct hostent *WINAPI x_gethostbyname(const char *n)
     static char *list[2];
     char me[256] = "";
     gethostname(me, sizeof(me));
+    if (!(game->kinds & OKW_UDP) && mode_choice < 2) return gethostbyname(n);   /* (TCP games: the box comes at bind) */
     if (choose_mode() == 1) return gethostbyname(n);
     EnterCriticalSection(&okw_lock);
     if (mode_choice >= 2) start_okplay();
@@ -1945,10 +2910,15 @@ struct hostent *WINAPI x_gethostbyname(const char *n)
 }
 
 /* plain pass-throughs (the .def forwards the rest to ws2_32 directly) */
-SOCKET WINAPI x_accept(SOCKET s, struct sockaddr *a, int *l) { return accept(s, a, l); }
+SOCKET WINAPI x_accept(SOCKET s, struct sockaddr *a, int *l)
+{
+    if (okw_on && tcp_entry(s, 1)) return tcp_accept(s, a, l);
+    return accept(s, a, l);
+}
 int WINAPI x_getpeername(SOCKET s, struct sockaddr *a, int *l)
 {
     if (!okw_on) return getpeername(s, a, l);
+    if (tcp_entry(s, 1)) return tcp_name(s, a, l, 1);
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (k && k->peer_ip && a && l && *l >= (int)sizeof(struct sockaddr_in)) {
@@ -1970,13 +2940,41 @@ u_long WINAPI x_ntohl(u_long v) { return ntohl(v); }
 u_short WINAPI x_ntohs(u_short v) { return ntohs(v); }
 unsigned long WINAPI x_inet_addr(const char *c) { return inet_addr(c); }
 char *WINAPI x_inet_ntoa(struct in_addr a) { return inet_ntoa(a); }
-int WINAPI x_listen(SOCKET s, int b) { return listen(s, b); }
-int WINAPI x_select(int n, fd_set *r, fd_set *w, fd_set *e, const struct timeval *t)
+int WINAPI x_listen(SOCKET s, int b)
 {
-    if (okw_on) tr("game select (read set %d)", r ? (int)r->fd_count : -1);
-    return select(n, r, w, e, t);
+    if (!okw_on || !tcp_entry(s, 0)) return listen(s, b);
+    if (tcp_mode_pass()) return listen(s, b);
+    int r = 0, host = 0;
+    uint16_t port = 0;
+    EnterCriticalSection(&okw_lock);
+    okw_sock *k = tsock_of(s);
+    if (!k) r = set_err(WSAENOTSOCK);
+    else if (k->c) r = set_err(k->c->state == T_ESTAB ? WSAEISCONN : WSAEINVAL);
+    else {
+        if (k->tstate == T_NEW) { k->port = eph_port(); k->tstate = T_BOUND; }   /* (Windows: WSAEINVAL; the games bind first) */
+        k->tstate = T_LISTEN;
+        k->backlog_max = b < 1 ? 1 : b > OKW_BACKLOG ? OKW_BACKLOG : b;
+        port = k->port;
+        /* the host rule: listening on a port the game chose = hosting (a joiner's own listener is on port 0) */
+        host = game->host_rule == HOST_LISTEN && k->explicit_port && ctx && !ctx->host_peer;
+        okp_log(2, "wsock: TCP socket %u listens on port %u%s", (unsigned)s, port, host ? " - this PC hosts" : "");
+        if (host && ctx->is_host) { build_room_record(); host = 0; }
+    }
+    LeaveCriticalSection(&okw_lock);
+    if (host) {
+        ask_host_password();
+        EnterCriticalSection(&okw_lock);
+        host_room();
+        LeaveCriticalSection(&okw_lock);
+    }
+    ui_show_pending();
+    return r;
 }
-int WINAPI x_shutdown(SOCKET s, int h) { return shutdown(s, h); }
+int WINAPI x_shutdown(SOCKET s, int h)
+{
+    if (okw_on && tcp_entry(s, 1)) return tcp_shutdown(s, h);
+    return shutdown(s, h);
+}
 struct hostent *WINAPI x_gethostbyaddr(const char *a, int l, int t) { return gethostbyaddr(a, l, t); }
 int WINAPI x_gethostname(char *n, int l) { return gethostname(n, l); }
 int WINAPI x_WSAAsyncSelect(SOCKET s, HWND w, u_int m, long ev)
@@ -1990,13 +2988,44 @@ void WINAPI x_WSASetLastError(int e) { WSASetLastError(e); }
 int WINAPI x_WSAStartup(WORD v, LPWSADATA d)
 {
     if (!okw_on) return WSAStartup(v, d);
-    if (!cbt_hook) cbt_hook = SetWindowsHookExA(WH_CBT, cbt_proc, NULL, GetCurrentThreadId());
+    if (!cbt_hook && (game->kinds & OKW_UDP)) cbt_hook = SetWindowsHookExA(WH_CBT, cbt_proc, NULL, GetCurrentThreadId());
     return WSAStartup(v, d);
 }
+/* A TCP game done with the network may end its process next. Windows would go on sending what the game closed
+ * gracefully (its last message, the FIN) after that; here it is okplay's reliable lane in this process, so it gets
+ * up to 3 s to have everything acked (seen: a joiner's last frames lost on a lossy line, then the process gone). */
+static void tcp_linger(void)   /* no lock held */
+{
+    DWORD t0 = GetTickCount();
+    int busy;
+    if (!(game->kinds & OKW_TCP)) return;
+    do {
+        uint64_t ids[OKP_MAX_PEERS];
+        int n = 0;
+        busy = 0;
+        EnterCriticalSection(&okw_lock);
+        if (ctx) {
+            EnterCriticalSection(&ctx->lock);
+            for (int i = 0; i < OKP_MAX_PEERS; i++) if (ctx->peers[i].used) ids[n++] = ctx->peers[i].id;
+            LeaveCriticalSection(&ctx->lock);
+            for (int i = 0; i < n; i++) {
+                okp_peer_info_t pi;
+                if (okp_peer_info(ctx, ids[i], &pi) && pi.have_path && (pi.unacked_bytes || pi.waiting_bytes)) busy = 1;
+            }
+        }
+        LeaveCriticalSection(&okw_lock);
+        if (busy) Sleep(20);
+    } while (busy && GetTickCount() - t0 < 3000);
+    if (GetTickCount() - t0 >= 20)
+        okp_log(2, "wsock: WSACleanup waited %lu ms for the last stream frames to be acked%s",
+                (unsigned long)(GetTickCount() - t0), busy ? " (some still are not)" : "");
+}
+
 /* the game is done with the network: a room it hosted comes off the list now (the process may end next) */
 int WINAPI x_WSACleanup(void)
 {
     if (!okw_on) return WSACleanup();
+    tcp_linger();
     okp_log(2, "wsock: the game calls WSACleanup (it is done with the network)");
     int withdraw = 0;
     EnterCriticalSection(&okw_lock);
@@ -2139,13 +3168,18 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
         InitializeCriticalSection(&okw_ask_lock);
         InitializeCriticalSection(&ui_lock);
         box_done = CreateEventA(NULL, TRUE, TRUE, NULL);
+        okw_ev = CreateEventA(NULL, TRUE, FALSE, NULL);
         {
             static char ini[MAX_PATH];
             snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
             okbox_init(inst, NULL, ini);
             okbox_set_topmost(TRUE);
             exit_watch_start(ini);
-            rrf_init(ini);   /* rr_fix.c: Road Rash's netcode fixes, for the builds it knows */
+            if (!strcmp(game->id, "roadrash")) rrf_init(ini);   /* rr_fix.c: Road Rash's netcode fixes, for the builds it knows */
+            int win = GetPrivateProfileIntA("okplay", "wsock_tcp_window", 65536, ini);
+            tcp_window = win < 4096 ? 4096 : win > (1 << 20) ? (1 << 20) : (uint32_t)win;
+            okp_log(2, "wsock: game profile %s (%s%s%s)", game->id, game->kinds & OKW_UDP ? "UDP" : "",
+                    game->kinds == (OKW_UDP | OKW_TCP) ? " + " : "", game->kinds & OKW_TCP ? "TCP" : "");
             InitializeCriticalSection(&tr_lock);
             tr_on = GetPrivateProfileIntA("okplay", "wsock_trace", 0, ini);
             if (tr_on) { DWORD id; CloseHandle(CreateThread(NULL, 0, tr_writer, NULL, 0, &id)); }
