@@ -105,7 +105,7 @@ static void data_opts(SOCKET s)   /* every data socket, as the game's option hel
     setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (char *)&one, sizeof(one));
 }
 
-static SOCKET tcp_bound(unsigned short port)   /* socket + bind (the game's 0x4f6490 pattern) */
+static SOCKET tcp_bound(unsigned short port)   /* socket + bind, as the game makes every TCP socket */
 {
     SOCKET s = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in a;
