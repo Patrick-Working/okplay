@@ -493,6 +493,7 @@ static void heard_host_mode(okp_ctx *c, uint64_t from, uint8_t mode)
  * looked like a duplicate of the refused attempt's, was acked, and never reached DirectPlay. */
 static void lane_restart(okp_peer *p)
 {
+    p->r_restarts++;
     for (int k = 0; k < p->nrtx; k++) free(p->rtx[k].pkt);
     for (int k = 0; k < p->nrbuf; k++) free(p->rbuf[k].data);
     pend_free(p);
@@ -693,6 +694,7 @@ int okp_send_data(okp_ctx *c, uint64_t to, const void *buf, int len, int flags)
     int tr = okp_effective_transport(c);   /* the host's choice, unless forced (okp.h) */
     if (tr == OKP_TRANSPORT_TCP || (tr == OKP_TRANSPORT_UDP_TCP && (flags & OKP_SEND_GUARANTEED)))
         reliable = 1;
+    if (flags & OKP_SEND_RELIABLE) reliable = 1;   /* the caller needs a whole, ordered stream (wsock TCP) */
 
     int ok = 1;
     uint8_t *pkt = NULL;
@@ -783,6 +785,26 @@ int okp_send_data(okp_ctx *c, uint64_t to, const void *buf, int len, int flags)
     LeaveCriticalSection(&c->lock);
     free(pkt);
     return ok;
+}
+
+int okp_peer_info(okp_ctx *c, uint64_t peer, okp_peer_info_t *out)
+{
+    int found = 0;
+    memset(out, 0, sizeof(*out));
+    EnterCriticalSection(&c->lock);
+    okp_peer *p = okp_peer_get(c, peer, 0);
+    if (p) {
+        found = 1;
+        out->have_path = p->have_path;
+        out->rx_age_ms = p->last_rx ? okp_now() - p->last_rx : 0xFFFFFFFFu;
+        out->rtt = p->rtt;
+        out->r_giveup = p->r_giveup;
+        out->r_restarts = p->r_restarts;
+        for (int k = 0; k < p->nrtx; k++) out->unacked_bytes += p->rtx[k].len;
+        out->waiting_bytes = p->pend_bytes;
+    }
+    LeaveCriticalSection(&c->lock);
+    return found;
 }
 
 int okp_wait_path(okp_ctx *c, uint64_t peer, DWORD timeout_ms)

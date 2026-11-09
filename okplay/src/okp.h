@@ -194,6 +194,7 @@ typedef struct {
     /* each side's attempt id for this peer (sent in probes): a new one from the other side means it
      * threw its state away (e.g. retrying a join after a refusal) - our reliable lane restarts too */
     uint32_t my_epoch, their_epoch;
+    uint32_t r_restarts;           /* times the lane was thrown away by a restart (okp_peer_info) */
     /* 4+: a packet from this peer must carry my_token (ours for it, told in our probes and acks); ours
      * to it carry their_token (learned from its probes and acks). A probe without our token is believed -
      * and told the token - only from an address we already know for the peer, or as the id's very first
@@ -348,6 +349,7 @@ const char *okp_transport_name(int t);
 int okp_transport_force(void);                 /* -1 = follow the host */
 int okp_effective_transport(const okp_ctx *c); /* what this PC's sends use now */
 #define OKP_SEND_GUARANTEED 1   /* okp_send_data flags */
+#define OKP_SEND_RELIABLE   2   /* always the reliable lane, whatever the transport setting (wsock's TCP streams) */
 const char *okp_log_dir(void);
 const char *okp_log_path(void);
 const char *okp_dll_dir(void);   /* this DLL's folder (okplay.ini), with a trailing backslash */
@@ -443,6 +445,17 @@ int  okp_enum_blob_ok(const uint8_t *b, int n);
 void okp_peer_free_bufs(okp_peer *p);                                   /* lock held */
 int  okp_send_data(okp_ctx *c, uint64_t to, const void *buf, int len, int flags);
 int  okp_wait_path(okp_ctx *c, uint64_t peer, DWORD timeout_ms);
+/* a peer's reliable-lane health, for a user of the lane that must notice when it broke (wsock's TCP streams):
+ * okp_peer_info returns 0 when okplay has no such peer. Takes c->lock. */
+typedef struct {
+    int have_path;
+    DWORD rx_age_ms;               /* since the last packet of any kind from it */
+    DWORD rtt;                     /* ms, 0 = not measured yet */
+    uint32_t r_giveup;             /* reliable messages given up (unacked too long, or the queue was full) */
+    uint32_t r_restarts;           /* lane restarts (the peer started over): both directions were thrown away */
+    int unacked_bytes, waiting_bytes;   /* in flight / queued behind the window */
+} okp_peer_info_t;
+int  okp_peer_info(okp_ctx *c, uint64_t peer, okp_peer_info_t *out);
 void okp_local_cands(okp_ctx *c, SOCKADDR_IN6 *out, int *n, int max); /* incl. srflx */
 
 /* rdv.c */
