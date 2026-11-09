@@ -13,6 +13,8 @@
  *                   Bench: 45-76 % fewer jumps at LAN, 200 ms, 300 ms ping and with dropouts.
  *   rr_air=6        an AI biker's upward speed is followed for at most this many steps past its last report
  *                   (the "flying" AI bikers); 0 = off.
+ *   rr_gravity=163  gravity in the height guess (the game's has none: bikes kept rising past the top of a jump
+ *                   until the next report); units per step^2, 0 = off.
  *   rr_air_players=20  the same for the players, past any normal ping: in a dropout the game lifts them hundreds
  *                   of metres; 0 = off.
  *   rr_history=1    each rider keeps its own count in the game's report history (the game shares one counter
@@ -51,7 +53,7 @@ static const rrf_build *B;
 static uintptr_t base;        /* where the exe really loaded (the Steam exe may move) */
 static uintptr_t A(uint32_t a) { return base + (a - 0x400000u); }
 
-static int clock_on = 1, slide_k = 8, air_steps = 6, air_players = 20, hist_on = 1, echo_on = 1, owners_on = 1;
+static int clock_on = 1, slide_k = 8, air_steps = 6, air_players = 20, gravity = 163, hist_on = 1, echo_on = 1, owners_on = 1;
 
 typedef struct {
     int have_tick;
@@ -206,6 +208,13 @@ void __cdecl rrf_post(int rider, int32_t *out)   /* out: [0] across, [1] height,
     /* the game follows the last upward speed for as long as no report comes (in a dropout: bikes hundreds of metres
      * up). The rise stops growing after `lim` steps - for AI bikers after rr_air steps; for the players only after
      * rr_air_players (20: past any normal ping - limiting them at 6 flattened their jumps at high ping, bench 11-08) */
+    /* the game guesses height as the last height + upward speed x time, a straight line: a bike near the top of a
+     * jump keeps rising until the next report. Gravity brings it down (163 units/step^2: measured from the reports'
+     * own heights and upward speeds in recorded races) */
+    if (gravity > 0 && r->have_tick && r->pred_dt > 0 && out[1] > 0) {
+        int64_t h = (int64_t)out[1] - (int64_t)gravity * r->pred_dt * r->pred_dt / 2;
+        out[1] = h < 0 ? 0 : (int32_t)h;
+    }
     int lim = rider >= 2 ? air_steps : air_players;
     if (lim > 0 && r->have_tick && r->pred_dt > lim && out[1] > r->height) {   /* (going up only: a fall is left alone) */
         int32_t h = r->height + (int32_t)((int64_t)(out[1] - r->height) * lim / r->pred_dt);
@@ -304,6 +313,7 @@ static void read_ini(const char *ini)
     if (slide_k > 32) slide_k = 32;
     air_steps = GetPrivateProfileIntA("okplay", "rr_air", 6, ini);
     air_players = GetPrivateProfileIntA("okplay", "rr_air_players", 20, ini);
+    gravity = GetPrivateProfileIntA("okplay", "rr_gravity", 163, ini);
     hist_on = GetPrivateProfileIntA("okplay", "rr_history", 1, ini);
     echo_on = GetPrivateProfileIntA("okplay", "rr_ai_echo", 1, ini);
     int ow = GetPrivateProfileIntA("okplay", "rr_ai_owners", 1, ini);
