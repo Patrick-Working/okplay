@@ -11,7 +11,10 @@
  *   rr_slide=8      when a new report shows the guess was wrong, the bike glides to the right place (the error
  *                   shrinks by 1/K per game step) instead of jumping there. 0 = off, 2..32 = K.
  *                   Bench: 45-76 % fewer jumps at LAN, 200 ms, 300 ms ping and with dropouts.
- *   rr_air=6        a stale report's upward speed is followed for at most this many steps (flying bikes); 0 = off.
+ *   rr_air=6        an AI biker's upward speed is followed for at most this many steps past its last report
+ *                   (the "flying" AI bikers); 0 = off.
+ *   rr_air_players=20  the same for the players, past any normal ping: in a dropout the game lifts them hundreds
+ *                   of metres; 0 = off.
  *   rr_history=1    each rider keeps its own count in the game's report history (the game shares one counter
  *                   between all riders, which mixes their reports up when several update at once).
  *   rr_ai_echo=1    reports for AI bikers this PC runs itself, sent back to it by the host, are ignored.
@@ -48,7 +51,7 @@ static const rrf_build *B;
 static uintptr_t base;        /* where the exe really loaded (the Steam exe may move) */
 static uintptr_t A(uint32_t a) { return base + (a - 0x400000u); }
 
-static int clock_on = 1, slide_k = 8, air_steps = 6, hist_on = 1, echo_on = 1, owners_on = 1;
+static int clock_on = 1, slide_k = 8, air_steps = 6, air_players = 20, hist_on = 1, echo_on = 1, owners_on = 1;
 
 typedef struct {
     int have_tick;
@@ -60,6 +63,7 @@ typedef struct {
     /* the slide */
     int s_have;
     uint32_t s_now, s_reports;
+    int32_t clk_used, s_clk;      /* the clock steps taken off this guess, and off the last one the slide saw */
     int32_t s_steps;
     int32_t T[3], Tp[3];          /* the game's guess (across, along, height) for the last two steps */
     int32_t off[3];               /* what is left of the corrections */
@@ -74,6 +78,10 @@ static DWORD clk_due_ms, clk_log_ms;
 
 static int32_t fill_level[16], fill_left = -1;
 
+#ifdef RRF_SIM   /* tests/rrf_sim.c: this file run by the replay simulator, on its clock and a stand-in for the game's memory */
+uint32_t rrf_sim_ms;
+static DWORD ms_now(void) { return rrf_sim_ms; }
+#else
 static DWORD ms_now(void)
 {
     static LARGE_INTEGER f;
@@ -82,13 +90,18 @@ static DWORD ms_now(void)
     QueryPerformanceCounter(&c);
     return (DWORD)(c.QuadPart * 1000 / f.QuadPart);
 }
+#endif
 
 static int32_t iabs(int32_t v) { return v < 0 ? -v : v; }
 
+/* the whole steps applied: changed only when the estimate is more than 3/4 step away from them - rounding a
+ * wobbling estimate (4.4, 4.6, ...) flipped between 4 and 5 steps, and each flip moved the bike a step's distance */
+static int32_t clk_applied[16];
 static int32_t off_steps(int rider)
 {
-    int32_t o = clk_off16[rider];
-    return o >= 0 ? (o + 8) / 16 : -((-o + 8) / 16);
+    int32_t o = clk_off16[rider], a = clk_applied[rider];
+    if (o - a * 16 > 12 || a * 16 - o > 12) clk_applied[rider] = a = o >= 0 ? (o + 8) / 16 : -((-o + 8) / 16);
+    return a;
 }
 
 /* ---- the lab build's measurements (okplay/wsock/build.sh OKW_LAB_SRC=...): called around ours */
@@ -120,7 +133,7 @@ void __cdecl rrf_hist_post(int rider)
     }
     rrf_rider *r = &riders[rider];
     if (best && (!r->have_tick || best[13] != r->last_tick)) {
-        if (r->have_tick && best[13] < r->last_tick - 100) { r->reports = 0; clk_state[rider] = 0; }   /* a new race */
+        if (r->have_tick && best[13] < r->last_tick - 100) { r->reports = 0; clk_state[rider] = 0; clk_applied[rider] = 0; }   /* a new race */
         r->have_tick = 1;
         r->last_tick = best[13];
         r->height = best[3];
@@ -140,7 +153,8 @@ uint32_t __cdecl rrf_pre(int rider, uint32_t now)
 {
     if (rider < 0 || rider > 15) return now;
     rrf_rider *r = &riders[rider];
-    if (clock_on && clk_state[rider] == 2) now -= (uint32_t)off_steps(rider);
+    r->clk_used = clock_on && clk_state[rider] == 2 ? off_steps(rider) : 0;
+    now -= (uint32_t)r->clk_used;
     r->pred_dt = r->have_tick ? (int32_t)now - r->last_tick : 0;
     if (obs.pre) now = obs.pre(rider, now);
     return now;
@@ -152,12 +166,14 @@ static void slide(rrf_rider *r, int32_t *out, uint32_t now)
     int32_t steps = (int32_t)(now - r->s_now);
     if (!r->s_have || steps < 0 || steps > 30) {   /* a start or a long pause: as the game has it */
         memset(r->off, 0, sizeof(r->off));
-        r->s_have = 1; r->s_now = now; r->s_reports = r->reports; r->s_steps = 1;
+        r->s_have = 1; r->s_now = now; r->s_reports = r->reports; r->s_clk = r->clk_used; r->s_steps = 1;
         memcpy(r->T, T, sizeof(T)); memcpy(r->Tp, T, sizeof(T));
         return;
     }
     if (steps > 0) {
-        if (r->reports != r->s_reports) {   /* a new report moved the guess: where the old one was heading, minus it */
+        /* a new report moved the guess, or the clock offset changed by a step (bench 11-08: its estimate wanders a
+         * step or two over a race, and each change moved the bike a step's distance at once): glide it */
+        if (r->reports != r->s_reports || r->clk_used != r->s_clk) {
             int big = 0;
             int32_t d[3];
             for (int i = 0; i < 3; i++) {
@@ -168,6 +184,7 @@ static void slide(rrf_rider *r, int32_t *out, uint32_t now)
             }
             for (int i = 0; i < 3; i++) r->off[i] = big ? 0 : r->off[i] + d[i];
             r->s_reports = r->reports;
+            r->s_clk = r->clk_used;
         }
         for (int k = 0; k < steps; k++)
             for (int i = 0; i < 3; i++) r->off[i] -= r->off[i] / slide_k + (r->off[i] > 0) - (r->off[i] < 0);
@@ -186,14 +203,19 @@ void __cdecl rrf_post(int rider, int32_t *out)   /* out: [0] across, [1] height,
 {
     if (rider < 0 || rider > 15 || !out) return;
     rrf_rider *r = &riders[rider];
-    if (air_steps > 0 && r->have_tick && r->pred_dt > air_steps) {
-        int32_t h = r->height + (int32_t)((int64_t)(out[1] - r->height) * air_steps / r->pred_dt);
+    /* the game follows the last upward speed for as long as no report comes (in a dropout: bikes hundreds of metres
+     * up). The rise stops growing after `lim` steps - for AI bikers after rr_air steps; for the players only after
+     * rr_air_players (20: past any normal ping - limiting them at 6 flattened their jumps at high ping, bench 11-08) */
+    int lim = rider >= 2 ? air_steps : air_players;
+    if (lim > 0 && r->have_tick && r->pred_dt > lim && out[1] > r->height) {   /* (going up only: a fall is left alone) */
+        int32_t h = r->height + (int32_t)((int64_t)(out[1] - r->height) * lim / r->pred_dt);
         out[1] = h < 0 ? 0 : h;
     }
     if (slide_k >= 2) slide(r, out, *(volatile uint32_t *)A(B->now));
     if (obs.post) obs.post(rider, out);
 }
 
+#ifndef RRF_SIM
 __attribute__((used)) static uintptr_t rrf_orig_pred, rrf_orig_hist;
 
 __attribute__((naked)) static void pred_wrap(void)
@@ -271,6 +293,9 @@ static void set_byte(uintptr_t at, uint8_t from, uint8_t to)
     VirtualProtect((void *)at, 1, old, &old);
     FlushInstructionCache(GetCurrentProcess(), (void *)at, 1);
 }
+#else
+static void set_byte(uintptr_t at, uint8_t from, uint8_t to) { (void)at; (void)from; (void)to; }
+#endif
 
 static void read_ini(const char *ini)
 {
@@ -278,6 +303,7 @@ static void read_ini(const char *ini)
     slide_k = GetPrivateProfileIntA("okplay", "rr_slide", 8, ini);
     if (slide_k > 32) slide_k = 32;
     air_steps = GetPrivateProfileIntA("okplay", "rr_air", 6, ini);
+    air_players = GetPrivateProfileIntA("okplay", "rr_air_players", 20, ini);
     hist_on = GetPrivateProfileIntA("okplay", "rr_history", 1, ini);
     echo_on = GetPrivateProfileIntA("okplay", "rr_ai_echo", 1, ini);
     int ow = GetPrivateProfileIntA("okplay", "rr_ai_owners", 1, ini);
@@ -287,6 +313,7 @@ static void read_ini(const char *ini)
     owners_on = ow;
 }
 
+#ifndef RRF_SIM
 int rrf_init(const char *ini)   /* DllMain (Road Rash only): 1 = this build is known and the fixes are in */
 {
     char build[17] = "", exe[64] = "";
@@ -312,6 +339,15 @@ int rrf_init(const char *ini)   /* DllMain (Road Rash only): 1 = this build is k
             echo_on ? "ignored" : "kept", owners_on ? "on" : "off");
     return 1;
 }
+#else
+int rrf_sim_setup(void *mem, const char *ini)   /* mem: the CD build's addresses 0x400000.. */
+{
+    B = &builds[0];
+    base = (uintptr_t)mem;
+    read_ini(ini);
+    return 1;
+}
+#endif
 
 void rrf_knobs(const char *ini) { if (B) read_ini(ini); }   /* okplay.ini read again (every 2 s) */
 
