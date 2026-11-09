@@ -43,7 +43,7 @@ typedef struct {
 static const rrf_build builds[] = {
     { "73d7f9744b5b1a94", "1996 CD",                       0x40a1c6, 0x43eafe, 0x4b7ecc, 0x498198, 0x46dddc, 0x43cf4b },
     { "9c32eadc287cc8eb", "1996 CD (okplay lab no-CD)",    0x40a1c6, 0x43eafe, 0x4b7ecc, 0x498198, 0x46dddc, 0x43cf4b },
-    { "9e40e25737149ab0", "Steam",                         0x41a780, 0x4502b6, 0x6036e8, 0x5c8f68, 0x5c561c, 0x4544fe },
+    { "9e40e25737149ab0", "Steam / GOG",                   0x41a780, 0x4502b6, 0x6036e8, 0x5c8f68, 0x5c561c, 0x4544fe },
 };
 
 #define SNAP_STRIDE 0xa8

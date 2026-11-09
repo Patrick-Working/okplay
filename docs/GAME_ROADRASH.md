@@ -208,3 +208,13 @@ air: about half to a seventh as often in-game at 150 ms. Both PCs now agree on w
 
 Not changed: hits are decided on the victim's machine against its guess of the attacker, so two screens can
 disagree about a hit. Checked: CD to CD (Windows 98) and Steam (Windows 10) to CD, with AI bikers.
+
+GOG's `RoadRash95.exe` (installer v1.0 (95005)) is byte-identical to Steam's (SHA-256 9e40e257...c968), so
+the Steam entry covers both ("Steam / GOG" in the log).
+
+With [RoadRash30-MultiFix](https://github.com/magoowa/RoadRash30-MultiFix) 2.15.0 (2026-11-09): no conflict.
+It loads as `ddraw.dll` and patches the exe's jump stubs (0x401118-0x4058da), the object scheduler (0x449e81)
+and some user32/XInput imports; the shim uses `wsock32.dll`, two call sites (0x41a780, 0x4502b6), one byte
+(0x4544fe) and the timer imports. Tested: Steam + MultiFix (Direct3D 11, 60 fps) hosting the CD version
+with AI bikers - both logs clean, clock correction agreed, no report gap over 20 steps, and the exit watch
+ended the game 10 s after closing it mid-race.

@@ -1394,7 +1394,7 @@ static void boxes_before_send(uint32_t ip)
  * players run a no-CD exe), so here the question comes only when a build is not in this list. */
 static const struct { const char *build, *what; } rr_builds[] = {
     { "73d7f9744b5b1a94", "Road Rash CD (1996), ROADRASH.EXE" },
-    { "9e40e25737149ab0", "Road Rash (Steam), RoadRash95.exe" },
+    { "9e40e25737149ab0", "Road Rash (Steam or GOG - the same exe), RoadRash95.exe" },
     { "9c32eadc287cc8eb", "Road Rash CD with okplay's lab no-CD patch (testing)" },
 };
 

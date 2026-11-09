@@ -30,8 +30,11 @@ Working here: start with `docs/WORKING_NOTES.md` (rules, recipes, where things s
 
 ## Road Rash Online (Steam/GoG/CD-Rom): what v0.8.5 improves
 
-`wsock32.dll` 0.2.0 fixes Road Rash's own netcode. It works for the Steam edition and the 1996 CD release,
-in any mix; other builds (such as GOG's, until its exe is added) still play online with the original netcode.
+`wsock32.dll` 0.2.0 fixes Road Rash's own netcode. It works for the Steam and GOG editions (the same exe,
+byte for byte) and the 1996 CD release, in any mix; any other build still plays online with the original
+netcode. It also works alongside [RoadRash30-MultiFix](https://github.com/magoowa/RoadRash30-MultiFix)
+(a `ddraw.dll` mod with a Direct3D 11 renderer and widescreen): tested together, Steam with MultiFix 2.15.0
+hosting a CD player.
 
 - **Matched race clocks.** Each PC counts race time from its own start, a few steps apart, so the game
   guessed where the other bikes are for the wrong moment. The two shims now compare clocks once a second
