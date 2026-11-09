@@ -63,6 +63,18 @@ Gotchas learned the hard way:
 - SDL's Emscripten port yields in every `SDL_RenderPresent` in an Asyncify build unless
   `SDL_HINT_EMSCRIPTEN_ASYNCIFY` is "0".
 
+## Next release (noted 2026-11-09)
+
+- Room server over plain HTTP when HTTPS fails. A player whose PC couldn't make the secure connection (a
+  broken certificate setup) got in by changing `https://` to `http://` in okplay.ini's `server=`. Plan, in
+  `okplay/src/rdv.c` (shared by the drop-in and okplay wsock): after a secure-connection failure (WinHTTP
+  12175 / 12157 / 12045 and the certificate errors 12037 / 12038 / 12044 / 12169), send the same request
+  again to the `http://` address, keep using it for the rest of the game run, log it once, and say so in
+  the "can't reach the server" box if that fails too. An okplay.ini switch, e.g. `server_http_fallback=1`
+  (default on? 0 = HTTPS only). Windows 9x already uses `http://` (no modern HTTPS there); okplay.php
+  answers on both. Only the room list and addresses travel in the clear; game passwords leave the PC only
+  in scrambled form.
+
 ## Where things stand (2026-11-05)
 
 - Drop-in: 0.8.3 released (tag v0.8.3). Unreleased on main: the pause detector (`okplay/src/net.c`,
