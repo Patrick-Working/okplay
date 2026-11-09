@@ -807,6 +807,21 @@ int okp_peer_info(okp_ctx *c, uint64_t peer, okp_peer_info_t *out)
     return found;
 }
 
+int okp_send_unlocked(okp_ctx *c, uint64_t peer, const void *buf, int len)
+{
+    uint8_t pkt[sizeof(okp_wire) + OKP_FRAG_MAX];
+    if (!c || len < 0 || len > OKP_FRAG_MAX || c->sock == INVALID_SOCKET) return 0;
+    for (int i = 0; i < OKP_MAX_PEERS; i++) {
+        okp_peer *p = &c->peers[i];
+        if (!p->used || p->id != peer || !p->have_path) continue;
+        fill_wire(c, (okp_wire *)pkt, OKP_T_DATA, peer);
+        memcpy(pkt + sizeof(okp_wire), buf, len);
+        peer_send(c, p, &p->path, pkt, (int)sizeof(okp_wire) + len);
+        return 1;
+    }
+    return 0;
+}
+
 int okp_wait_path(okp_ctx *c, uint64_t peer, DWORD timeout_ms)
 {
     DWORD t0 = okp_now();

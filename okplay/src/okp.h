@@ -456,6 +456,9 @@ typedef struct {
     int unacked_bytes, waiting_bytes;   /* in flight / queued behind the window */
 } okp_peer_info_t;
 int  okp_peer_info(okp_ctx *c, uint64_t peer, okp_peer_info_t *out);
+/* one unreliable data packet without taking c->lock, for a process that is ending (DLL detach: a thread ExitProcess
+ * ended may hold the lock). Best effort, racy by design; never use it otherwise. 1 = sent to the peer's path. */
+int  okp_send_unlocked(okp_ctx *c, uint64_t peer, const void *buf, int len);
 void okp_local_cands(okp_ctx *c, SOCKADDR_IN6 *out, int *n, int max); /* incl. srflx */
 
 /* rdv.c */
