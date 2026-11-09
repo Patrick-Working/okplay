@@ -19,6 +19,10 @@ How to work in this repository: the rules, the recipes, and where things stand. 
 - **Version the browser SDK** with every change to `okweb/sdk/v1/*.js`: `VERSION` in `okweb.js` and
   every `?v=` that imports it (`okweb-sp.js`, `okweb/demo/index.html`, each game page) move together -
   web hosts cache scripts for days.
+- **Everything we ship carries its version.** Every DLL/EXE has a version header (VERSIONINFO) with the okplay
+  version, and every text file in a release (okplay.ini, README.txt, SOURCE.txt, the web page, server PHP)
+  has a version line in its text (e.g. `; okplay 0.8.5` at the top of okplay.ini). Players and other projects
+  track updates by file version; packaging stamps them from `okplay/src/version.h`.
 - **Releases are packed from this repository** (`winedplay/package.sh`): the source zip published next
   to each release is made from these folders, so what is here is what is public.
 
