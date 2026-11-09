@@ -3,8 +3,8 @@
 A modern rebuild of Road Rash 95 (Media Foundation video, XInput, MSVC). No DirectPlay. Multiplayer
 ("Mano-à-Mano", up to 8 players) goes through Winsock 1.1 (`WSOCK32.dll`), which Windows loads from
 the game folder first (it is not a KnownDLL), so a `wsock32.dll` beside the exe is the hook point.
-The exe must be started through Steam (`steam://rungameid/2448570`); started directly it shows a bare
-"Warning" box and exits.
+Start it through Steam once (`steam://rungameid/2448570`): before that, started directly it shows a bare
+"Warning" box and exits (a registry key Steam writes on first launch). After that the exe also runs on its own.
 
 ## What it does on the network (wsocklog, 2026-11-05, black box)
 
@@ -171,5 +171,40 @@ Earlier "joiner stalls" in the VMs were the game's own 33 ms multimedia timer no
 game process after many forced kills and hard resets of the VM; a clean restart fixed it. Exit the game
 normally between runs.
 
-Clean room: Winsock is a public standard; Microsoft's wsock32/ws2_32 are never disassembled. The game
-is observed only through its socket calls.
+Clean room: Winsock is a public standard; Microsoft's wsock32/ws2_32 are never disassembled. Up to 0.1.3
+the game was observed only through its socket calls; the netcode fixes below (0.2.0) also use what studying
+the game's exes taught us (addresses and what the values there mean). No game code or bytes are copied.
+
+## Netcode fixes (0.2.0, `okplay/wsock/rr_fix.c`)
+
+Road Rash draws another player's bike by guessing forward from that player's last report (sent every 2
+game steps, 60 steps a second) and snaps it to each new report. Over the internet the guesses go wrong more
+often, and the two machines' race clocks start a few steps apart, so every guess is off by that much. AI
+bikers are shared between the machines and could be drawn far from the road ("flying"). What the shim
+changes, for the builds it knows (identified by exe fingerprint: the 1996 CD `ROADRASH.EXE` and Steam's
+`RoadRash95.exe`; any other build is left exactly as it is and the log says so):
+
+| okplay.ini | default | what it does |
+|---|---|---|
+| `rr_clock` | 1 | Clock correction: the players' okplay builds tell each other how late each other's reports arrive (control message 'R', once a second); half the difference is the clock offset, used once both sides agree within a step. The offset moves during a race (a game's step counter falls behind and catches up), so it is tracked all race long. |
+| `rr_slide` | 8 | When a new report shows the guess was wrong, the bike glides to the right place (the error shrinks by 1/8 per step) instead of jumping there. 0 = off, 2-32 = strength. |
+| `rr_gravity` | 163 | Gravity in the height guess (the game's is a straight line: a bike near the top of a jump kept rising until the next report). Units per step²; 0 = off. |
+| `rr_air` | 6 | An AI biker's upward speed is followed for at most this many steps past its last report; 0 = off. |
+| `rr_air_players` | 20 | The same for the players, past any normal ping (in a dropout the game lifted them hundreds of metres); 0 = off. |
+| `rr_history` | 1 | Each rider keeps its own count in the game's report history (the game shares one counter between all riders; matters with 3+ players). |
+| `rr_ai_echo` | 1 | Reports for AI bikers this PC runs, sent back to it by the host, are ignored. |
+| `rr_ai_owners` | 1 | The host resends who runs which AI biker during a race (the game's own resend never happens), so both PCs agree on the AI bikers. |
+
+`exit_watch` (default 10): a game whose window closed but which is still running after that many seconds
+is ended (the game kept racing without a window when closed mid-race).
+
+Measured (2026-11-08/09): a replay simulator (lab traces of real two-player races, real arrival timing,
+the shipping `rr_fix.c` built by `okplay/wsock/tests/build_rrf_sim.sh`) and the VM race bench
+(`okplay/wsock/tests/rr_bench.py`, two Windows 98 PCs, simulated lag, jitter and dropouts). Sudden jumps of
+the other player's bike, against the original netcode: -41 % on a LAN, -32 % at 100 ms one way, -26 % at
+150 ms, -20 % at 250 ms, -37 % with 1 s dropouts. At high ping the bike sits slightly further from where it
+really is (the price of gliding instead of snapping; `rr_slide` trades one for the other). Bikes drawn in the
+air: about half to a seventh as often in-game at 150 ms. Both PCs now agree on who runs each AI biker.
+
+Not changed: hits are decided on the victim's machine against its guess of the attacker, so two screens can
+disagree about a hit. Checked: CD to CD (Windows 98) and Steam (Windows 10) to CD, with AI bikers.

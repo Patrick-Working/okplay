@@ -109,8 +109,8 @@ const LATEST_VERSION = '0.8.2';
 const LATEST_NOTE    = 'Room list: matches on slower PCs no longer show as between games; a lobby settings fix.';
 
 // The newest okplay wsock (the Winsock edition, okplay/wsock/): the same notice there.
-const LATEST_WSOCK_VERSION = '0.1.3';
-const LATEST_WSOCK_NOTE    = '';
+const LATEST_WSOCK_VERSION = '0.2.0';
+const LATEST_WSOCK_NOTE    = 'Road Rash: smoother bikes online (clock correction, glide instead of snap), no more flying AI bikers, a game closed mid-race now exits.';
 
 function latest_line() {
     return 'latest ' . LATEST_VERSION . ' ' . (LATEST_NOTE === '' ? '-' : rawurlencode(LATEST_NOTE)) . "\n"
