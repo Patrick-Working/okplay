@@ -15,7 +15,7 @@ Progress is checked through the shim's own log lines, not screenshots: "hosting 
 are positions on the game's 640x480 screen. The game is always left through its own windows (never
 killed): repeated force-kills on Windows 98 stopped its 33 ms timer until a reboot.
 """
-import argparse, os, re, subprocess, sys, tempfile, time
+import argparse, os, random, re, subprocess, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 VMCTL = os.path.normpath(os.path.join(HERE, "..", "..", "..", "okagent", "vmctl.py"))
@@ -40,6 +40,9 @@ SETTINGS = [
     ("d40", {"test_delay_ms": 40}),
     ("d40j20", {"test_delay_ms": 40, "test_jitter_ms": 20}),
     ("d80j40l1", {"test_delay_ms": 80, "test_jitter_ms": 40, "test_loss_pct": 1}),
+    ("d75j15", {"test_delay_ms": 75, "test_jitter_ms": 15}),               # about 150 ms ping
+    ("d100j25", {"test_delay_ms": 100, "test_jitter_ms": 25}),             # about 200 ms ping
+    ("d150j40", {"test_delay_ms": 150, "test_jitter_ms": 40}),             # about 300 ms ping
     ("d100l3", {"test_delay_ms": 100, "test_loss_pct": 3}),
     ("d150l5", {"test_delay_ms": 150, "test_loss_pct": 5}),
     ("bo300", {"test_blackout_ms": 300, "test_blackout_every_ms": 5000}),
@@ -275,8 +278,21 @@ def ride(vms, secs, how=None):
     on, off = (int(x) for x in arg.replace("/", ",").split(",")) if arg else (PACK_ON, PACK_OFF)
     n = min(120, secs * 1000 // (on + off) * 2)
     pulses = "".join(f"HOLD UP {on}\nWAIT {off}\n" for _ in range(n // 2))
-    texts = {"full": [f"HOLD UP {secs * 1000}\n"] * 2, "pack": [pulses] * 2,
-             "split": [f"WAIT {secs * 1000}\n", pulses]}[mode]
+    def mixed(seed):   # varied riding for traces: throttle, coast, brake, swerve - different for each machine
+        rng = random.Random(seed)
+        out, t = [], 0
+        while t < secs * 1000 and len(out) < 120:
+            r = rng.random()
+            step = (("UP", rng.randint(800, 2500)) if r < 0.55 else ("NONE", rng.randint(200, 700)) if r < 0.7 else
+                    ("DOWN", rng.randint(200, 600)) if r < 0.8 else (rng.choice(("LEFT", "RIGHT")), rng.randint(150, 500)))
+            out.append(f"WAIT {step[1]}\n" if step[0] == "NONE" else f"HOLD {step[0]} {step[1]}\n")
+            t += step[1]
+        return "".join(out)
+    if mode == "mixed":
+        texts = [mixed(int(time.time()) * 7 + i) for i in range(2)]
+    else:
+        texts = {"full": [f"HOLD UP {secs * 1000}\n"] * 2, "pack": [pulses] * 2,
+                 "split": [f"WAIT {secs * 1000}\n", pulses]}[mode]
     for vm, text in zip(vms, texts):
         vm.guard()
         vm.script(text)
@@ -394,6 +410,8 @@ LAB_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab draw rider (\d+), last 10 s: 
 RIDER_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab rider (\d+), last 10 s: (\d+) records \((\d+) while this machine ran "
                       r"it too\), (\d+) draws, (\d+) in the air \(max \+(-?\d+) over its last real height\), (\d+) record "
                       r"height jumps", re.M)
+JUMPS_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab jumps rider (\d+), last 10 s: (\d+) over 256 in (\d+) steps", re.M)
+AUTO_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab auto rider (\d+), last 10 s: (\d+) mode changes, smoothing (\d+)%", re.M)
 OFF_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab quality rider .*clock offset (-?\d+\.\d) steps", re.M)
 QUAL_RE = re.compile(r"^(\d\d:\d\d:\d\d)\.\d+ .*lab quality rider (\d+), last 10 s: smooth (\d+) steps median 2\^(\d+) "
                      r"p99 2\^(\d+) max (\d+); accuracy (\d+) checks median 2\^(\d+) p99 2\^(\d+) max (\d+)", re.M)
@@ -429,6 +447,14 @@ def summarize(name, texts):
         offs.append(f"{o[len(o) // 2]:+.1f}" if o else "?")
     if any(o != "?" for o in offs):
         out += f" | clock offset {' / '.join(offs)} steps"
+    jm = [r for t in texts for r in steady(t, JUMPS_RE) if int(r.group(2)) < 2]   # the players (not AI bikers)
+    if jm and sum(int(r.group(4)) for r in jm):
+        out += (f" | jumps {sum(int(r.group(3)) for r in jm) / (sum(int(r.group(4)) for r in jm) / 3600):.0f}/min"
+                f" (moves changing by 1 m+ in a step)")
+    au = [r for t in texts for r in steady(t, AUTO_RE)]   # the lab's automatic display mode
+    if au:
+        out += (f" | auto: {sum(int(r.group(3)) for r in au)} mode changes, smoothing "
+                f"{sorted(int(r.group(4)) for r in au)[len(au) // 2]}% (median of 10 s windows)")
     ai_q = [r for r in qual if int(r.group(2)) >= 2]
     if ai_q:
         sm = sorted(int(r.group(5)) for r in ai_q)
