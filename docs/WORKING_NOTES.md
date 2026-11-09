@@ -74,6 +74,16 @@ Gotchas learned the hard way:
   default (user, 2026-11-09); 0 = HTTPS only. Windows 9x already uses `http://` (no modern HTTPS there); okplay.php
   answers on both. Only the room list and addresses travel in the clear; game passwords leave the PC only
   in scrambled form.
+- Crisp dialogs on high-DPI screens (request from the RoadRash30-MultiFix author, 2026-11-09). The games have
+  no DPI manifest, so Windows bitmap-scales every window: Road Rash's own "Pick from among the available TCP/IP
+  games" list and okplay's boxes are blurry and small. Plan: (1) okbox.c - run each box with
+  `SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)` (from user32 by GetProcAddress,
+  Windows 10 1607+; restore the old context after), and size its pixel fonts by the window's DPI. (2) wsock: hook
+  the exe's `DialogBoxParamA` import (Road Rash takes the template from `TEXT\ENU.DLL`); for the game's own
+  dialogs set the same per-thread DPI context around the call; for the TCP/IP game list also run a copy of
+  the template with `DS_SHELLFONT` + 9 pt "MS Shell Dlg 2" and about 600x300 dialog units, and in WM_INITDIALOG
+  give the list view `SetWindowTheme(L"Explorer")`, `LVS_EX_DOUBLEBUFFER | LVS_EX_FULLROWSELECT` and columns
+  scaled by DPI. Never `SetProcessDpiAwareness` (the game itself must stay DPI-unaware). Windows 9x: unchanged.
 
 ## Where things stand (2026-11-05)
 
