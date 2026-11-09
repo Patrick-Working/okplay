@@ -24,6 +24,7 @@
  * Status (2026-11-05): first version. Not yet: the Online/LAN + password window, IPX. */
 #define WIN32_LEAN_AND_MEAN
 #include "okp.h"
+#include "rr_fix.h"
 #include <mmsystem.h>
 #include "okbox.h"
 #include <commctrl.h>
@@ -300,6 +301,7 @@ void rr_lab_ctrl(uint64_t from, const uint8_t *b, int n);
 static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held */
 {
     if (n < 1) return;
+    if (b[0] == 'R') { rrf_ctrl(from, b + 1, n - 1); return; }   /* rr_fix.c: the clock-offset exchange */
 #ifdef OKW_LAB
     if (b[0] == 'L') { rr_lab_ctrl(from, b + 1, n - 1); return; }
 #endif
@@ -550,6 +552,8 @@ static uint32_t t_rand(void)
 static void game_in(uint64_t from, uint16_t sport, uint16_t dport, const uint8_t *d, int len)   /* okw_lock held */
 {
     if (t_loss && (int)(t_rand() % 100) < t_loss) { t_dropped++; return; }
+    uint8_t rr_copy[512];
+    if (len <= (int)sizeof(rr_copy) && rrf_game_filter(d, len, rr_copy)) d = rr_copy;
 #ifdef OKW_LAB
     uint8_t lab_copy[512];
     if (len <= (int)sizeof(lab_copy) && rr_lab_game_filter(from, d, len, lab_copy)) d = lab_copy;
@@ -943,6 +947,15 @@ static void okw_tick(void)   /* okw_lock held */
     link_reports();
     release_due();
     race_reports();
+    {   /* rr_fix.c: the clock-offset exchange with the other players' okplay */
+        uint8_t rb[256];
+        int rn = rrf_ctrl_due(rb + 1, (int)sizeof(rb) - 1);
+        if (rn > 0) {
+            rb[0] = 'R';
+            for (int i = 0; i < OKP_MAX_PEERS; i++)
+                if (links[i].used) send_to_peer(links[i].peer, 0, 0, OKW_CTRL, rb, rn + 1);
+        }
+    }
 #ifdef OKW_LAB
     {   /* the lab build's own messages between players (lab measurement only) */
         uint8_t lb[256];
@@ -968,6 +981,7 @@ static void okw_tick(void)   /* okw_lock held */
             bl = GetPrivateProfileIntA("okplay", "test_blackout_ms", 0, ini);
             be = GetPrivateProfileIntA("okplay", "test_blackout_every_ms", 0, ini);
             lo = GetPrivateProfileIntA("okplay", "test_loss_pct", 0, ini);
+            rrf_knobs(ini);
 #ifdef OKW_LAB
             rr_lab_knobs(ini);
 #endif
@@ -1717,6 +1731,7 @@ void rr_lab_game_out(const uint8_t *d, int len);
 #endif
 static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int len)   /* lock held */
 {
+    rrf_game_out((const uint8_t *)b, len);
 #ifdef OKW_LAB
     rr_lab_game_out((const uint8_t *)b, len);
 #endif
@@ -2130,6 +2145,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
             okbox_init(inst, NULL, ini);
             okbox_set_topmost(TRUE);
             exit_watch_start(ini);
+            rrf_init(ini);   /* rr_fix.c: Road Rash's netcode fixes, for the builds it knows */
             InitializeCriticalSection(&tr_lock);
             tr_on = GetPrivateProfileIntA("okplay", "wsock_trace", 0, ini);
             if (tr_on) { DWORD id; CloseHandle(CreateThread(NULL, 0, tr_writer, NULL, 0, &id)); }
