@@ -275,10 +275,11 @@ static void fit_text( HWND dlg, struct pw_dialog *d, HFONT font, HWND text_ctl )
 static void box_shown( HWND dlg, struct pw_dialog *d )
 {
     const char *ms = getenv( "OKP_TEST_BOX_CLOSE_MS" );
-    SendMessageA( dlg, DM_SETDEFID, IDOK, 0 );
+    int def = d->cancel && d->cancel_default ? IDCANCEL : IDOK;
+    SendMessageA( dlg, DM_SETDEFID, def, 0 );
     SetWindowPos( dlg, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE );
     SetForegroundWindow( dlg );
-    SetFocus( GetDlgItem( dlg, d->edit ? 101 : IDOK ) );
+    SetFocus( GetDlgItem( dlg, d->edit ? 101 : def ) );
     if ( ms && atoi( ms ) > 0 ) SetTimer( dlg, 1, atoi( ms ), NULL );
 }
 
@@ -602,15 +603,19 @@ static INT_PTR show_simple_dialog( struct pw_dialog *d )
     if ( d->cancel && d->third )
     {
         short b3 = (d->cx - 2 * m - 8) / 3;
-        p = dlg_item( p, BS_DEFPUSHBUTTON | WS_TABSTOP, m, d->y_buttons, b3, bh, IDOK, 0x80, L"" );
+        p = dlg_item( p, (d->cancel_default ? BS_PUSHBUTTON : BS_DEFPUSHBUTTON) | WS_TABSTOP, m, d->y_buttons, b3, bh,
+                      IDOK, 0x80, L"" );
         p = dlg_item( p, BS_PUSHBUTTON | WS_TABSTOP, m + b3 + 4, d->y_buttons, b3, bh, PW_THIRD, 0x80, L"" );
-        p = dlg_item( p, BS_PUSHBUTTON | WS_TABSTOP, m + 2 * (b3 + 4), d->y_buttons, b3, bh, IDCANCEL, 0x80, L"" );
+        p = dlg_item( p, (d->cancel_default ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON) | WS_TABSTOP, m + 2 * (b3 + 4),
+                      d->y_buttons, b3, bh, IDCANCEL, 0x80, L"" );
         n += 2;
     }
     else if ( d->cancel )
     {
-        p = dlg_item( p, BS_DEFPUSHBUTTON | WS_TABSTOP, d->cx - m - 2 * bw - 4, d->y_buttons, bw, bh, IDOK, 0x80, L"" );
-        p = dlg_item( p, BS_PUSHBUTTON | WS_TABSTOP, d->cx - m - bw, d->y_buttons, bw, bh, IDCANCEL, 0x80, L"" );
+        p = dlg_item( p, (d->cancel_default ? BS_PUSHBUTTON : BS_DEFPUSHBUTTON) | WS_TABSTOP, d->cx - m - 2 * bw - 4,
+                      d->y_buttons, bw, bh, IDOK, 0x80, L"" );
+        p = dlg_item( p, (d->cancel_default ? BS_DEFPUSHBUTTON : BS_PUSHBUTTON) | WS_TABSTOP, d->cx - m - bw,
+                      d->y_buttons, bw, bh, IDCANCEL, 0x80, L"" );
         n++;
     }
     else
@@ -952,27 +957,32 @@ static void utf8_to_wide( const char *in, WCHAR *out, int outsz )
 void okbox_offer_update( const char *latest, const char *note_utf8, const char *current )
 {
     struct pw_dialog d;
-    WCHAR title[ 96 ], text[ 600 ], note[ 200 ], wlatest[ 24 ], wcurrent[ 24 ];
+    WCHAR title[ 96 ], text[ 700 ], note[ 200 ], wlatest[ 24 ], wcurrent[ 24 ], wurl[ 300 ];
     const char *test = getenv( "OKP_TEST_UPDATE" );
     char url[ 300 ], *slash;
-    int download;
+    /* Windows 9x: no Download button. A browser opened over a full-screen game sends the game to the desktop,
+     * and Road Rash can't come back from that (black screen); the address is shown instead */
+    int download, no_browser = okp_win9x_paths();
 
     memset( &d, 0, sizeof(d) );
+    /* the download page = the room server's own folder (https://oldkid.net/aoe2net/ for okplay.php);
+     * Windows 9x browsers can't do today's HTTPS, so they get http:// */
+    okbox_ini_str( "server", "https://oldkid.net/aoe2net/okplay.php", url, sizeof(url) - 8 );
+    if ( (slash = strrchr( url, '/' )) && slash > strstr( url, "://" ) + 2 ) slash[ 1 ] = 0;
+    if ( no_browser && !_strnicmp( url, "https://", 8 ) ) memmove( url + 4, url + 5, strlen( url + 5 ) + 1 );
+    MultiByteToWideChar( CP_ACP, 0, url, -1, wurl, ARRAY_SIZE( wurl ) );
     utf8_to_wide( note_utf8 ? note_utf8 : "", note, ARRAY_SIZE( note ) );
     MultiByteToWideChar( CP_ACP, 0, latest, -1, wlatest, ARRAY_SIZE( wlatest ) );
     MultiByteToWideChar( CP_ACP, 0, current, -1, wcurrent, ARRAY_SIZE( wcurrent ) );
-    if ( note[ 0 ] )
-        _snwprintf( text, ARRAY_SIZE( text ), L"A newer version is available: v%ls\n(you have v%ls)\n\n%ls\n\n"
-                    L"You can keep playing. If you run into connection problems, please update.",
-                    wlatest, wcurrent, note );
-    else
-        _snwprintf( text, ARRAY_SIZE( text ), L"A newer version is available: v%ls\n(you have v%ls)\n\n"
-                    L"You can keep playing. If you run into connection problems, please update.", wlatest, wcurrent );
+    _snwprintf( text, ARRAY_SIZE( text ), L"A newer version is available: v%ls\n(you have v%ls)\n\n%ls%ls"
+                L"You can keep playing. If you run into connection problems, please update%ls%ls",
+                wlatest, wcurrent, note, note[ 0 ] ? L"\n\n" : L"",
+                no_browser ? L" - download it from\n" : L".", no_browser ? wurl : L"" );
     text[ ARRAY_SIZE( text ) - 1 ] = 0;
 
     if ( test && *test )
     {
-        download = !strcmp( test, "download" );
+        download = !strcmp( test, "download" ) && !no_browser;
         d.checked = !strcmp( test, "never" );
     }
     else
@@ -980,22 +990,23 @@ void okbox_offer_update( const char *latest, const char *note_utf8, const char *
         okbox_brand( title, ARRAY_SIZE( title ) );
         d.title = title;
         d.text = text;
-        d.text_cy = note[ 0 ] ? 78 : 56;
+        d.text_cy = (note[ 0 ] ? 78 : 56) + (no_browser ? 18 : 0);
         d.check = L"Don't remind me about this version";
-        d.ok = L"Download";
-        d.cancel = L"Not Now";
-        download = okbox_show( &d ) == IDOK;
+        if ( no_browser )
+            d.ok = L"OK";
+        else
+        {
+            d.ok = L"Download";
+            d.cancel = L"Not Now";
+            d.cancel_default = TRUE;   /* a key meant for the game must not open a browser over it */
+        }
+        download = okbox_show( &d ) == IDOK && !no_browser;
     }
     if ( d.checked )
     {
         WritePrivateProfileStringA( "okplay", "update_seen", latest, okbox_ini );
         okp_log( 1, "update: v%s - the player chose not to be reminded (okplay.ini update_seen)", latest );
     }
-    /* the download page = the room server's own folder (https://oldkid.net/aoe2net/ for okplay.php);
-     * Windows 9x browsers can't do today's HTTPS, so they get http:// */
-    okbox_ini_str( "server", "https://oldkid.net/aoe2net/okplay.php", url, sizeof(url) - 8 );
-    if ( (slash = strrchr( url, '/' )) && slash > strstr( url, "://" ) + 2 ) slash[ 1 ] = 0;
-    if ( okp_win9x_paths() && !_strnicmp( url, "https://", 8 ) ) memmove( url + 4, url + 5, strlen( url + 5 ) + 1 );
     if ( download )
     {
         okp_log( 1, "update: v%s - the player chose Download (%s)", latest, url );
@@ -1008,6 +1019,8 @@ void okbox_offer_update( const char *latest, const char *note_utf8, const char *
                 okp_log( 0, "update: could not open %s in the browser", url );
         }
     }
+    else if ( no_browser && !d.checked )
+        okp_log( 1, "update: v%s - shown with its address (%s; Windows 9x: no browser over the game)", latest, url );
     else if ( !d.checked )
         okp_log( 1, "update: v%s - the player chose Not Now", latest );
 }
@@ -1035,6 +1048,7 @@ int okbox_ask_crash_report( const char *path )
         d.ok = L"Send";
         d.third = L"View Report";
         d.cancel = L"Don't Send";
+        d.cancel_default = TRUE;   /* sending needs a real click, not a key meant for the game */
         r = okbox_show( &d );
         if ( r != PW_THIRD ) break;
         {
@@ -1075,6 +1089,7 @@ int okbox_ask_conn_reports( void )
     d.text_cy = 86;
     d.ok = L"Yes, Send";
     d.cancel = L"No Thanks";
+    d.cancel_default = TRUE;
     r = okbox_show( &d );
     okp_log( 1, "report: connection reports box - the player chose %s", r == IDOK ? "Yes" : "No" );
     return r == IDOK;

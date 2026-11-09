@@ -13,6 +13,7 @@ struct pw_dialog
 {
     const WCHAR *title, *text;
     const WCHAR *ok, *cancel;       /* cancel NULL: one button */
+    BOOL cancel_default;            /* Enter = cancel: over a game, a key meant for the game must not say yes */
     const WCHAR *third;             /* a third choice between them (PW_THIRD), NULL: none */
     const WCHAR *check;             /* NULL: no checkbox */
     BOOL edit;                      /* a password field */
