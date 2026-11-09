@@ -2,7 +2,12 @@
  * stream sockets without the game. Plain Winsock 1.1 (wsock32), Windows 95 and later.
  *
  *   tcpsim host [--port 9803] [--players N] [--frames F] [--hz 30] [--secs S] [--edge NAME]
- *   tcpsim join ADDR[:PORT] [--orig] [--frames F] [--hz 30] [--secs S] [--edge NAME]
+ *               [--claim-delay MS] [--die-at FRAME --die soft|hard]
+ *   tcpsim join ADDR[:PORT] [--orig] [--frames F] [--hz 30] [--secs S] [--edge NAME] [--expect-loss MS]
+ * --claim-delay: the host leaves each accepted socket unclaimed that long (the game parks it, up to 4 s, and doesn't
+ *   poll its listen socket meanwhile). --die-at: the host process ends at that frame without closing anything (soft:
+ *   ExitProcess, hard: TerminateProcess). --expect-loss: the joiner expects its connection to break mid-race, within MS
+ *   of the last frame it got (RESULT ok then).
  *   tcpsim selftest
  *   tcpsim probe      (socket + closesocket only, and the own-address lookup: through okplay no box may come)
  *
@@ -72,6 +77,9 @@ static int is_host, nplayers = 2, frames = 300, hz = 30, secs = 60, max_frames;
 static char fail_reason[200];
 static volatile LONG failed;
 static unsigned n_wouldblock, n_partial, n_partial_peek, n_dead, n_busy_retries;
+static int claim_delay, die_at = -1, die_hard, expect_loss, lost_err;
+static unsigned n_accepted;
+static DWORD parked_at, t_lost;
 
 /* game state (under comms) */
 static int my_player, race_on, burst_sent;
@@ -314,7 +322,8 @@ static int receive(conn *c)   /* 1 = error (the connection goes) */
 
 static void conn_error(conn *c)   /* comms thread: closesocket, out of the list */
 {
-    if (!c->got_leave && !failed) {
+    if (!is_host && expect_loss && !t_lost) { t_lost = now_ms(); lost_err = WSAGetLastError(); }
+    else if (!c->got_leave && !failed) {
         if (is_host) fail("player %d's connection broke before it left (error %d)", c->player, WSAGetLastError());
         else if ((int)bundles < frames) fail("the host's connection broke (error %d)", WSAGetLastError());
     }
@@ -373,7 +382,9 @@ static DWORD WINAPI comms_thread(LPVOID arg)
             printf("EVENT accepted a connection from %s:%u\n", inet_ntoa(a.sin_addr), ntohs(a.sin_port));
             data_opts(s);
             parked = s;
-            parked_deadline = now_ms() + 4000;
+            parked_at = now_ms();
+            parked_deadline = parked_at + 4000;
+            n_accepted++;
         }
         EnterCriticalSection(&comms);
         if (cc && connecting == cc) {
@@ -456,13 +467,20 @@ static int run_host(unsigned short port)
     if (lsock == INVALID_SOCKET) { printf("RESULT fail bind\n"); return 1; }
     if (listen(lsock, 5)) { printf("RESULT fail listen %d\n", WSAGetLastError()); return 1; }
     printf("EVENT listening on port %u\n", port);
+    {   /* the game shows its own address (through okplay: its stand-in) */
+        char me[256];
+        struct hostent *h;
+        gethostname(me, sizeof(me));
+        h = gethostbyname(me);
+        if (h && h->h_addr_list[0]) printf("EVENT my address %s\n", inet_ntoa(*(struct in_addr *)h->h_addr_list[0]));
+    }
     start_comms();
     int next_player = 1, leaving = 0;
     DWORD race_t0 = 0;
     while (!failed) {
         if (now_ms() - t0 > (DWORD)secs * 1000) { fail("timeout (%d/%d frames, %d players)", bundles, frames, next_player - 1); break; }
         EnterCriticalSection(&comms);
-        if (parked != INVALID_SOCKET && next_player < nplayers) {   /* claim it */
+        if (parked != INVALID_SOCKET && next_player < nplayers && now_ms() - parked_at >= (DWORD)claim_delay) {   /* claim it */
             conn *c = &conns[next_player];
             memset(c, 0, sizeof(*c));
             c->used = 1;
@@ -511,6 +529,11 @@ static int run_host(unsigned short port)
             have[0][f % (LEAD * 4)] = 1;
             send_bundles();
         }
+        if (die_at >= 0 && (int)bundles >= die_at) {   /* the process ends with its connections open */
+            printf("EVENT the host process ends now (%s) at frame %u\n", die_hard ? "TerminateProcess" : "ExitProcess", bundles);
+            if (die_hard) TerminateProcess(GetCurrentProcess(), 3);
+            ExitProcess(3);
+        }
         if (race_on && (int)bundles >= frames && !leaving) { leaving = 1; printf("EVENT all %d frames done in %lu ms\n", frames, (unsigned long)(now_ms() - race_t0)); }
         LeaveCriticalSection(&comms);
         if (leaving && all_left && next_player == nplayers) break;
@@ -519,6 +542,7 @@ static int run_host(unsigned short port)
     }
     stop_comms();
     closesocket(lsock);
+    printf("EVENT accepted %u connection(s) in all\n", n_accepted);
     int ok = !failed;
     for (int i = 1; i < MAXP; i++) if (conns[i].used && !conns[i].got_leave) ok = 0;
     if (ok) for (int i = 1; i < MAXP; i++) if (conns[i].used && conns[i].next_in != (unsigned)frames) { ok = 0; fail("player %d sent %u inputs", i, conns[i].next_in); }
@@ -620,6 +644,16 @@ static int run_join(const char *addr, int orig)
     while (!failed) {
         if (now_ms() - t0 > (DWORD)secs * 1000) { fail("timeout (%u/%d frames)", bundles, frames); break; }
         EnterCriticalSection(&comms);
+        if (c->closed && expect_loss && t_lost) {
+            DWORD dt = t_lost - last_bundle_ms;
+            LeaveCriticalSection(&comms);
+            printf("EVENT connection lost %lu ms after the last frame (frame %u, error %d)\n", (unsigned long)dt, bundles, lost_err);
+            stop_comms();
+            stats();
+            if (race_on && dt <= (DWORD)expect_loss) { printf("RESULT ok\n"); return 0; }
+            printf("RESULT fail the loss came %lu ms after the last frame (expected within %d)\n", (unsigned long)dt, expect_loss);
+            return 1;
+        }
         if (c->closed) { LeaveCriticalSection(&comms); if (!failed) fail("connection closed"); break; }
         if (race_on && (int)sent_frames < frames && now_ms() - tick >= 1000u / hz && sent_frames < bundles + LEAD) {
             unsigned char m[6];
@@ -637,6 +671,7 @@ static int run_join(const char *addr, int orig)
         if (done) break;
         Sleep(1);
     }
+    if (!failed && expect_loss) fail("the connection never broke");
     if (!failed) {
         unsigned char lv[4] = { 4, (unsigned char)my_player, 0, 0x0c };
         send_retry(c, lv, 4);
@@ -732,7 +767,11 @@ static int edge_host(const char *edge, unsigned short port)
     char why[160] = "";
     if (l == INVALID_SOCKET || listen(l, 5)) { printf("RESULT fail listen\n"); return 1; }
     printf("EVENT listening on port %u (edge %s)\n", port, edge);
-    if (!strcmp(edge, "refuse")) {   /* only here so a joiner through okplay finds a room; nobody connects */
+    if (!strcmp(edge, "refuse")) {   /* only here so a joiner through okplay finds a room; nobody connects. Two listen
+                                        * sockets (port, port+2): okplay sends a connect to a port nobody listens on to the
+                                        * game's one listening port; with two, the joiner's port+1 is refused */
+        SOCKET l2 = tcp_bound((unsigned short)(port + 2));
+        if (l2 != INVALID_SOCKET) listen(l2, 5);
         Sleep((DWORD)secs * 1000 < 15000 ? (DWORD)secs * 1000 : 15000);
         closesocket(l);
         printf("RESULT ok\n");
@@ -1043,6 +1082,10 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--secs") && i + 1 < argc) secs = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--edge") && i + 1 < argc) edge = argv[++i];
         else if (!strcmp(argv[i], "--orig")) orig = 1;
+        else if (!strcmp(argv[i], "--claim-delay") && i + 1 < argc) claim_delay = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--die-at") && i + 1 < argc) die_at = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--die") && i + 1 < argc) die_hard = !strcmp(argv[++i], "hard");
+        else if (!strcmp(argv[i], "--expect-loss") && i + 1 < argc) expect_loss = atoi(argv[++i]);
     }
     if (nplayers < 2 || nplayers > MAXP || frames < 1 || hz < 1) return 2;
     max_frames = frames > 100000 ? frames : 100000;   /* a joiner takes the host's frame count */
