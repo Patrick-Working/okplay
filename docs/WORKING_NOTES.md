@@ -85,12 +85,13 @@ Gotchas learned the hard way:
   give the list view `SetWindowTheme(L"Explorer")`, `LVS_EX_DOUBLEBUFFER | LVS_EX_FULLROWSELECT` and columns
   scaled by DPI. Never `SetProcessDpiAwareness` (the game itself must stay DPI-unaware). Windows 9x: unchanged.
 
-- Version info in every shipped file (2026-11-09): today only dplayx.dll (file 5.3.1.904 for AoE2's check,
-  description with the okplay version) and the movie helper have one; wsock32.dll, dplay.dll, netcheck.exe and
-  okindeo.dll have none, so a player can't tell versions apart in Explorer. Add a VERSIONINFO to each, built from
-  okplay/src/version.h: ProductVersion = that edition's okplay version, FileDescription naming the part and the
-  oldkid.net brand (not "Classic Netplay"); keep DirectX-style FileVersions where a game checks them (dplayx,
-  and check what DPLAY.DLL games expect before changing dplay.dll).
+- The okplay version in every shipped file's version header (user, 2026-11-09: other projects' users track
+  updates by file version). Every DLL/EXE gets a VERSIONINFO built from okplay/src/version.h: FileVersion and
+  ProductVersion = that file's okplay version (e.g. wsock32.dll 0.2.0.0, netcheck.exe/okindeo.dll/version.dll
+  the release's), FileDescription naming the part and the oldkid.net brand (not "Classic Netplay"). Exception:
+  where a game checks the file version (AoE2 refuses a dplayx.dll below 5.x; check what DPLAY.DLL games expect),
+  keep a DirectX-style FileVersion but carry the okplay version in it (e.g. 5.3.803.0 for 0.8.3) and set
+  ProductVersion to the okplay version. Today only dplayx.dll and the movie helper have version info.
 
 ## Where things stand (2026-11-05)
 
