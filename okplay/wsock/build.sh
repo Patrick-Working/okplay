@@ -21,3 +21,6 @@ echo "built $OUT/wsock32.dll"
 # the test game (a Road Rash-like peer: adverts, join request, hellos), for tests on this PC
 gcc -O2 -Wall -o "$here/bin/rrsim.exe" "$here/tests/rrsim.c" -lwsock32
 echo "built $here/bin/rrsim.exe"
+# the TCP test game (Need for Speed III's socket patterns: comms thread, select, peek framing, connect loop)
+gcc -O2 -Wall -o "$here/bin/tcpsim.exe" "$here/tests/tcpsim.c" -lwsock32 -lwinmm
+echo "built $here/bin/tcpsim.exe"
