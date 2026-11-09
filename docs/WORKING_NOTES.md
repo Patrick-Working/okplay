@@ -85,6 +85,13 @@ Gotchas learned the hard way:
   give the list view `SetWindowTheme(L"Explorer")`, `LVS_EX_DOUBLEBUFFER | LVS_EX_FULLROWSELECT` and columns
   scaled by DPI. Never `SetProcessDpiAwareness` (the game itself must stay DPI-unaware). Windows 9x: unchanged.
 
+- Version info in every shipped file (2026-11-09): today only dplayx.dll (file 5.3.1.904 for AoE2's check,
+  description with the okplay version) and the movie helper have one; wsock32.dll, dplay.dll, netcheck.exe and
+  okindeo.dll have none, so a player can't tell versions apart in Explorer. Add a VERSIONINFO to each, built from
+  okplay/src/version.h: ProductVersion = that edition's okplay version, FileDescription naming the part and the
+  oldkid.net brand (not "Classic Netplay"); keep DirectX-style FileVersions where a game checks them (dplayx,
+  and check what DPLAY.DLL games expect before changing dplay.dll).
+
 ## Where things stand (2026-11-05)
 
 - Drop-in: 0.8.3 released (tag v0.8.3). Unreleased on main: the pause detector (`okplay/src/net.c`,
