@@ -1,13 +1,13 @@
 # okplay - Oldkid.net Online Play
 
-**Latest release: v0.8.4** (2026-11-05) - one download for every game: [oldkid.net](https://oldkid.net/aoe2net/)
+**Latest release: v0.8.5** (2026-11-09) - one download for every game: [oldkid.net](https://oldkid.net/aoe2net/)
 
 | inside | version | for |
 |---|---|---|
 | **DirectPlay drop-in** (`dplayx.dll`, `dplay.dll`) | 0.8.3 | DirectPlay games (AoE2, Midtown Madness 2, Necrodome, ...) |
-| **Winsock shim** (`wsock32.dll`, new) | 0.1.3 | games that use Winsock directly: Road Rash. Inert in every other game |
+| **Winsock shim** (`wsock32.dll`) | 0.2.0 | games that use Winsock directly: Road Rash. Inert in every other game |
 
-**Latest supported games:** Road Rash (1996; Steam and CD, new - Winsock shim) · Age of Empires II: The
+**Latest supported games:** Road Rash Online (Steam/GoG/CD-Rom; new in v0.8.5: [netcode fixes](#road-rash-online-steamgogcd-rom-what-v085-improves)) · Age of Empires II: The
 Conquerors (original and UserPatch 1.5) · Midtown Madness 2 · Necrodome. Online Play with game passwords, LAN Play, Windows 98 to
 11. Details under [Games and projects](#games-and-projects).
 
@@ -28,6 +28,40 @@ Released builds: <https://oldkid.net>.
 
 Working here: start with `docs/WORKING_NOTES.md` (rules, recipes, where things stand).
 
+## Road Rash Online (Steam/GoG/CD-Rom): what v0.8.5 improves
+
+`wsock32.dll` 0.2.0 fixes Road Rash's own netcode. It works for the Steam edition and the 1996 CD release,
+in any mix; other builds (such as GOG's, until its exe is added) still play online with the original netcode.
+
+- **Matched race clocks.** Each PC counts race time from its own start, a few steps apart, so the game
+  guessed where the other bikes are for the wrong moment. The two shims now compare clocks once a second
+  and take the difference out, all race long (the difference drifts during a race).
+- **Glide instead of snap.** When a new position report shows the game's guess was wrong, the bike glides
+  to the right place instead of jumping there.
+- **No more flying bikes.** Gravity in the height guess (the game kept a bike rising past the top of a
+  jump until the next report), and AI bikers, or players during a dropout, stop rising when no news comes.
+- **AI bikers in sync.** Both PCs now agree on who runs each AI biker (the game's own resend never
+  happened), and a PC ignores its own AI bikers sent back to it by the host.
+- **Clean exits.** A game closed in the middle of a race now ends instead of staying in the background.
+- **The same boxes as DirectPlay games:** update notices, crash and connection reports, "server
+  unreachable" and "no network", and a warning when the host's game is a build that doesn't race with yours.
+
+Measured against the original netcode, with a replay simulator over recorded two-player races and a
+two-PC Windows 98 test bench with simulated lag and dropouts:
+
+| connection (one way) | sudden jumps of the other bikes |
+|---|---|
+| LAN | -41 % |
+| 100 ms | -32 % |
+| 150 ms | -26 % |
+| 250 ms | -20 % |
+| 1 s dropouts every 6 s | -37 % |
+
+Players drawn in the air at 150 ms: a half to a seventh as often on the test bench. At high ping a bike sits
+slightly further from where it really is - the price of gliding instead of snapping. Every fix can be
+turned off in `okplay.ini` (the `rr_` settings); details in `docs/GAME_ROADRASH.md`. Not changed yet: hits
+are decided on the victim's machine, so two screens can still disagree about a hit.
+
 ## Clean room
 
 DirectPlay is reimplemented from Wine's LGPL source, Microsoft's published protocol specification
@@ -35,6 +69,10 @@ DirectPlay is reimplemented from Wine's LGPL source, Microsoft's published proto
 what comes back, on the API and on the wire. Microsoft's DirectPlay binaries are never disassembled,
 decompiled or debugged, and no Microsoft code or SDK file is in this repository. The rules and the
 measurements are in `docs/DPLAY_CONFORMANCE.md`.
+
+Game-specific fixes (Road Rash's netcode, Necrodome's network list) use what studying the game taught us -
+addresses and what the values there mean - and are our own code: no game code or bytes are copied, the
+game's files are never changed, and they switch on only for the exact exes they were made for.
 
 ## Layout
 
@@ -103,10 +141,11 @@ Fixes for one game's own bugs are kept apart, in memory only and for an exact ga
 a `wsock32.dll` beside the game carries their traffic over okplay (room list, hole punching, the same
 passwords and boxes as the drop-in), and the game's own LAN game list becomes the room list. Tested:
 
-- **Road Rash** (1996): the Steam edition and the original CD release play each other, Windows 98 to 11,
-  Online Play through the room server with game passwords, lobby and races (`docs/GAME_ROADRASH.md`).
+- **Road Rash Online (Steam/GoG/CD-Rom)**: the Steam edition and the original CD release play each other,
+  Windows 98 to 11, Online Play and LAN Play with game passwords, lobby and races, and since v0.8.5 smoother
+  racing ([netcode fixes](#road-rash-online-steamgogcd-rom-what-v085-improves), `docs/GAME_ROADRASH.md`).
 
-Next: IPX games (Road Rash's IPX mode and others) over okplay, and LAN Play for Winsock games.
+Next: races with 3+ players, IPX games (Road Rash's IPX mode and others) over okplay.
 
 ## Licence
 
