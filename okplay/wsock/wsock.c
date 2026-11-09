@@ -216,7 +216,7 @@ typedef struct {
 static const okw_game okw_profiles[] = {
     { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST },   /* Road Rash: CD, Steam/GOG */
     /* Need for Speed III (the 1998 CD's NFS3.EXE, Modern Patch, portable): TCP only (its IPX sockets pass through) */
-    { "nfs3", NULL, "Need for Speed III", OKW_TCP, HOST_LISTEN },   /* (tests: OKP_WSOCK_GAME=nfs3) */
+    { "nfs3", "nfs3.exe", "Need for Speed III", OKW_TCP, HOST_LISTEN },
 };
 static const okw_game *game = &okw_profiles[0];
 
