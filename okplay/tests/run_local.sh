@@ -3,7 +3,7 @@
 #
 #   tests/run_local.sh [quick|pair|mesh3|loss|v6|lan|lanmesh|lanneg|online|all|full|
 #                       burst|mesh8|lanmesh8|loss30|migrate|dropout|hostcrash|features|rejoin|aoe2names|
-#                       twohosts|lantwohosts|password|lanpassword|pwretry|lanpwretry|pwnames|classic|mixed98|serverbox|core|
+#                       twohosts|lantwohosts|password|lanpassword|pwretry|lanpwretry|pwnames|fullroom|lanfullroom|classic|mixed98|serverbox|core|
 #                       rogue [deletehost|iamhost|sessiondesc]]
 #
 # Every dptest loads the FRESH build through the IPX provider slot (bin\dpwsockx.dll,
@@ -299,6 +299,45 @@ pwretry() { # wrong password, then the right one - same player, same game sessio
     if [[ $ok == 1 ]]; then echo "PASS $p"; else echo "FAIL $p"; fails=$((fails+1)); fi
 }
 
+fullroom() { # a full game (dwMaxPlayers reached) refuses a joiner whose list went stale: room for
+    # 2, H and A in; B found the game while it had room and joins after A got in (--joindelay) -> its
+    # Open fails with DPERR_CANTCREATEPLAYER (0x8877003c, host.c DP_HOST_HandleForwardAddPlayer), H and A
+    # play on undisturbed; A leaves and a later try of B's gets in (--retry 4: the online room list
+    # can still show room while the game is full, so B may be refused more than once). Then the
+    # player-count checks on CreatePlayer: a joiner's second player in a full game (the host refuses
+    # its id) and the host's own second player in a game for one.
+    local p=$1 ok=1 r
+    run_bg ${p}_host host --name FR --secs 40 --expect 2 --maxplayers 2
+    sleep 3
+    run_bg ${p}_a join --name A --secs 9 --session "dptest FR" --joindelay 2
+    run_bg ${p}_b join --name B --secs 14 --session "dptest FR" --joindelay 8 --retry 4
+    wait
+    grep -q "EVENT join_failed 0x8877003c" "$OUT/${p}_b.txt" && echo "  ${p}_b         first try refused: DPERR_CANTCREATEPLAYER (game full)" ||
+        { echo "  ${p}_b         first try NOT refused with DPERR_CANTCREATEPLAYER"; ok=0; }
+    for f in ${p}_host ${p}_a ${p}_b; do
+        r=$(result_of $f); printf "  %-14s %-12s %s\n" $f "${r:-RESULT missing}" "$(grep -o "max_players=[0-9]*" "$OUT/$f.txt" | tail -1)"
+        [[ "$r" == "RESULT ok" ]] || ok=0
+    done
+    # never three in a game for two (B got in only after A left)
+    grep -q "max_players=2 " "$OUT/${p}_host.txt" || { echo "  ${p}_host saw more (or fewer) than 2 players at once"; ok=0; }
+    grep -q "EVENT player_left" "$OUT/${p}_a.txt" && { echo "  ${p}_a lost a player while B was refused"; ok=0; }
+    grep -q "EVENT session_lost" "$OUT/${p}_a.txt" "$OUT/${p}_host.txt" && { echo "  session lost on H or A"; ok=0; }
+
+    run_bg ${p}x_host host --name FX --secs 12 --maxplayers 2
+    sleep 3
+    run_bg ${p}_xjoin join --name X --secs 6 --session "dptest FX" --extra
+    wait
+    grep -q "ERROR CreatePlayer (--extra): 0x8877003c" "$OUT/${p}_xjoin.txt" && echo "  ${p}_xjoin     2nd player refused: DPERR_CANTCREATEPLAYER" ||
+        { echo "  ${p}_xjoin     2nd player NOT refused with DPERR_CANTCREATEPLAYER"; ok=0; }
+    grep -q "RESULT" "$OUT/${p}x_host.txt" || { echo "  ${p}x_host    did not finish"; ok=0; }
+
+    run_bg ${p}s_host host --name FS --secs 3 --maxplayers 1 --extra
+    wait
+    grep -q "ERROR CreatePlayer (--extra): 0x8877003c" "$OUT/${p}s_host.txt" && echo "  ${p}s_host      host's 2nd player refused: DPERR_CANTCREATEPLAYER" ||
+        { echo "  ${p}s_host      host's 2nd player NOT refused with DPERR_CANTCREATEPLAYER"; ok=0; }
+    if [[ $ok == 1 ]]; then echo "PASS $p"; else echo "FAIL $p"; fails=$((fails+1)); fi
+}
+
 pwnames() { # AoE2-style names + a password: the list must show "Name [PW]" (the mark goes inside AoE2's
     local p=$1 ok=1   # own Name/0/[Host]/0 bytes) and the join must still work
     OKP_TEST_HOST_PASSWORD=swordfish run_bg ${p}_host host --name H --secs 16 --expect 2 --aoe2names
@@ -558,6 +597,8 @@ case $sc in
     password) OKP_TEST_AS=online password password ;;
     pwretry) OKP_TEST_AS=online pwretry pwretry ;;
     pwnames) OKP_TEST_AS=online pwnames pwnames ;;
+    fullroom) OKP_TEST_AS=online fullroom fullroom ;;
+    lanfullroom) (export OKP_TEST_AS=lan OKP_SERVER=http://127.0.0.1:9/nothing OKP_STUN=; fullroom lanfullroom; exit $fails) || fails=$? ;;
     lanpwretry) (export OKP_TEST_AS=lan OKP_SERVER=http://127.0.0.1:9/nothing OKP_STUN=; pwretry lanpwretry; exit $fails) || fails=$? ;;
     lanpassword) (export OKP_TEST_AS=lan OKP_SERVER=http://127.0.0.1:9/nothing OKP_STUN=; password lanpassword; exit $fails) || fails=$? ;;
     lantwohosts) (export OKP_TEST_AS=lan OKP_SERVER=http://127.0.0.1:9/nothing OKP_STUN=; twohosts lantwohosts; exit $fails) || fails=$? ;;
@@ -580,8 +621,8 @@ case $sc in
              OKP_TEST_AS=online mesh8 mesh8
              (export OKP_TEST_AS=lan OKP_SERVER=http://127.0.0.1:9/nothing OKP_STUN=; mesh8 lanmesh8; exit $fails) || fails=$?
              OKP_TEST_AS=online OKP_DROP_PCT=30 pair loss30
-             for s in migrate dropout hostcrash features3 rejoin aoe2names twohosts password pwretry pwnames; do OKP_TEST_AS=online $s $s; done
-             (export OKP_TEST_AS=lan OKP_SERVER=http://127.0.0.1:9/nothing OKP_STUN=; twohosts lantwohosts; password lanpassword; pwretry lanpwretry; exit $fails) || fails=$?
+             for s in migrate dropout hostcrash features3 rejoin aoe2names twohosts password pwretry pwnames fullroom; do OKP_TEST_AS=online $s $s; done
+             (export OKP_TEST_AS=lan OKP_SERVER=http://127.0.0.1:9/nothing OKP_STUN=; twohosts lantwohosts; password lanpassword; pwretry lanpwretry; fullroom lanfullroom; exit $fails) || fails=$?
              classic; mixed98; serverbox
              for a in deletehost iamhost sessiondesc; do OKP_TEST_AS=online rogue $a; done ;;
     *)       echo "unknown scenario $sc"; exit 2 ;;

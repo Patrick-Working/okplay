@@ -389,6 +389,7 @@ BOOL DP_ReplyFromNameServer( IDirectPlayImpl *This, const void *header, WORD cmd
 HRESULT DP_HOST_HandleForwardAddPlayer( IDirectPlayImpl *This, void *body, DWORD bodySize,
                                         void *header, void **reply, DWORD *replySize );
 BOOL DP_PlayerExists( IDirectPlayImpl *This, DPID id );
+BOOL DP_SessionFull( IDirectPlayImpl *This );
 void DP_SetPlayerSystemId( IDirectPlayImpl *This, DPID id, DPID systemPlayerId );
 BOOL DP_AddAddressTerminator( void **address, DWORD *size );
 void DP_QuerySPCaps( IDirectPlayImpl *This );

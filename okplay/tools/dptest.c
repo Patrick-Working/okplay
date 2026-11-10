@@ -28,6 +28,9 @@
  *                   set its remote data and send a chat line; the host also changes the
  *                   session description. Checks the notifications arrive and the Get* calls
  *                   return the new values (STAT features ...).
+ *   --maxplayers N  dwMaxPlayers when hosting (default 8; 0 = no limit)
+ *   --joindelay S   join S seconds after the session was found (a list gone stale: the room can
+ *                   fill in between - the host must refuse a full session)
  *   --groups        also exercise groups (S3: what goes on the wire): once everyone is in, the host
  *                   creates a group, adds players, renames it, sets its data, creates a group in it,
  *                   adds a shortcut and removes it, removes a player and destroys the groups, one
@@ -525,6 +528,7 @@ int main(int argc, char **argv)
     if (!getenv("OKP_TEST_CRASH_REPORT")) _putenv("OKP_TEST_CRASH_REPORT=dont");
     DWORD eflags = DPENUMSESSIONS_AVAILABLE;   /* --eflags: EnumSessions flags (0x2 = DPENUMSESSIONS_ALL) */
     int secs = 10, expect = 0, cycles = 1, nosend = 0, nolongname = 0, retries = 0, extra = 0;
+    int maxplayers = 8, joindelay = 0;
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--sp") && i + 1 < argc) sp = argv[++i];
         else if (!strcmp(argv[i], "--ip") && i + 1 < argc) ip = argv[++i];
@@ -548,6 +552,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--aoe2names")) aoe2names = 1;
         else if (!strcmp(argv[i], "--nolongname")) nolongname = 1;
         else if (!strcmp(argv[i], "--retry") && i + 1 < argc) retries = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--maxplayers") && i + 1 < argc) maxplayers = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--joindelay") && i + 1 < argc) joindelay = atoi(argv[++i]);
         else mode = argv[i];
     }
     if (!mode) {
@@ -646,7 +652,7 @@ int main(int argc, char **argv)
         sd.dwSize = sizeof(sd);
         sd.dwFlags = sflags;
         sd.guidApplication = g_app;
-        sd.dwMaxPlayers = 8;
+        sd.dwMaxPlayers = (DWORD)maxplayers;
         sd.lpszSessionNameA = sessname;
         char aoe2sess[160];
         if (aoe2names) {
@@ -678,6 +684,10 @@ int main(int argc, char **argv)
             return e.count ? 0 : 1;
         }
         if (!e.found) { out("ERROR no session found"); out("RESULT fail"); return 1; }
+        if (joindelay > 0) {
+            out("EVENT join_delay %d s", joindelay);
+            Sleep((DWORD)joindelay * 1000);
+        }
         DWORD tj = GetTickCount();
         hr = IDirectPlayX_Open(dp, &e.sd, DPOPEN_JOIN);
         /* --retry N: after a failed join, list again and join again with the same DirectPlay object,

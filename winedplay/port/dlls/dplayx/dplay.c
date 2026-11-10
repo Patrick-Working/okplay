@@ -560,6 +560,14 @@ static DWORD DP_CopySetPlayerOrGroupData( DPMSG_GENERIC *genericDst, DPMSG_GENER
     return offset;
 }
 
+/* the session holds dwMaxPlayers game players already (0 = no limit; system players are not
+ * counted, as in dwCurrentPlayers) - the rule the session search uses (name_server.c) */
+BOOL DP_SessionFull( IDirectPlayImpl *This )
+{
+    const DPSESSIONDESC2 *sd = This->dp2->lpSessionDesc;
+    return sd && sd->dwMaxPlayers && sd->dwCurrentPlayers >= sd->dwMaxPlayers;
+}
+
 /* *lplpReply will be non NULL iff there is something to reply */
 HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
         DWORD dwMessageBodySize, void *messageHeader, WORD wCommandId, WORD wVersion,
@@ -597,6 +605,7 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
       LPCDPMSG_REQUESTNEWPLAYERID lpcMsg = messageBody;
 
       LPDPMSG_NEWPLAYERIDREPLY lpReply;
+      BOOL full;
 
       if ( dwMessageBodySize < sizeof( *lpcMsg ) )
         return DPERR_GENERIC;
@@ -612,6 +621,29 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
       *lplpReply = calloc( 1, *lpdwMsgSize );
       if ( !*lplpReply )
         return DPERR_OUTOFMEMORY;
+
+      /* a joiner's game player in a full session (two joiners let in before it filled): no id. The
+       * reply carries the code and the joiner's CreatePlayer returns it (every build of ours since
+       * 0.8.3; Windows' joiner returns it for its system player's id at Open - Wine's check_Open).
+       * The machine's own system player (asked for at Open) is judged by DP_HOST_HandleForwardAddPlayer,
+       * groups never. DPERR_CANTCREATEPLAYER: what a Windows joiner's second CreatePlayer returned in a
+       * full game hosted by Windows (2026-11-10; whether Windows' joiner asks or decides alone is not
+       * seen). */
+      EnterCriticalSection( &This->lock );
+      full = wCommandId == DPMSGCMD_REQUESTNEWPLAYERID && !(lpcMsg->dwFlags & DPLAYI_PLAYER_SYSPLAYER) &&
+             DP_SessionFull( This );
+      LeaveCriticalSection( &This->lock );
+      if ( full )
+      {
+        lpReply = (LPDPMSG_NEWPLAYERIDREPLY)( (BYTE*)(*lplpReply) + This->dp2->spData.dwSPHeaderSize );
+        lpReply->envelope.dwMagic    = DPMSGMAGIC_DPLAYMSG;
+        lpReply->envelope.wCommandId = DPMSGCMD_NEWPLAYERIDREPLY;
+        lpReply->envelope.wVersion   = DPMSGVER_DP6;
+        lpReply->result = DPERR_CANTCREATEPLAYER;
+        WARN( "player id refused: the session is full (%lu players)\n",
+              This->dp2->lpSessionDesc->dwMaxPlayers );
+        break;
+      }
 
       FIXME( "Ignoring dwFlags 0x%08lx in request msg\n",
              lpcMsg->dwFlags );
@@ -2957,6 +2989,22 @@ static HRESULT DP_IF_CreatePlayer( IDirectPlayImpl *This, DPID *lpidPlayer,
   {
     return DPERR_INVALIDPARAMS;
   }
+
+  /* the host's own players: none while the session takes no new players and none past dwMaxPlayers,
+   * both DPERR_CANTCREATEPLAYER as Windows' dplayx answers (Wine's test_CreatePlayer, also for a
+   * server player or a spectator; dptest on Windows 10, 2026-11-10: host --sflags 0x45, and
+   * --maxplayers 1 --extra). A joiner's players are judged by the host when it asks for their id
+   * (DPMSGCMD_REQUESTNEWPLAYERID in DP_HandleMessage); a joiner does not check its own copy. */
+  EnterCriticalSection( &This->lock );
+  if( This->dp2->bHostInterface && This->dp2->lpSessionDesc &&
+      ( ( This->dp2->lpSessionDesc->dwFlags & DPSESSION_NEWPLAYERSDISABLED ) || DP_SessionFull( This ) ) )
+  {
+    TRACE( "no new player: session flags 0x%08lx, %lu of %lu players\n", This->dp2->lpSessionDesc->dwFlags,
+           This->dp2->lpSessionDesc->dwCurrentPlayers, This->dp2->lpSessionDesc->dwMaxPlayers );
+    LeaveCriticalSection( &This->lock );
+    return DPERR_CANTCREATEPLAYER;
+  }
+  LeaveCriticalSection( &This->lock );
 
 
   /* Determine the creation flags for the player. These will be passed

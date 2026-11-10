@@ -245,6 +245,20 @@ HRESULT DP_HOST_HandleForwardAddPlayer( IDirectPlayImpl *This, void *body, DWORD
     else
     {
         DPID id = request->playerId;
+        /* a full session (dwMaxPlayers game players, 0 = no limit): the session search already hides it
+         * (name_server.c, okplay's sp.c); this is the backstop for a joiner that listed it before it
+         * filled. Refused like JOINDISABLED above: a NACK whose code the joiner's Open returns as is
+         * (every build of ours since 0.8.3, and Windows' joiner - Wine's dplayx test, check_Open).
+         * DPERR_CANTCREATEPLAYER is Windows': its dplayx hosting a game for 2 with 2 in refused a third
+         * joiner's Open with it (Windows 10, its TCP/IP provider, dptest --maxplayers/--joindelay,
+         * 2026-11-10). A resent request from a machine already in takes the branch above and is
+         * never refused here. */
+        if ( DP_SessionFull( This ) )
+        {
+            LeaveCriticalSection( &This->lock );
+            WARN( "join refused: the session is full (%lu of %lu players)\n", sd->dwCurrentPlayers, sd->dwMaxPlayers );
+            return nack( This, DPERR_CANTCREATEPLAYER, reply, replySize );
+        }
         hr = DP_CreatePlayer( This, header, &id, &info.name, info.playerData, info.playerDataLength,
                               info.spData, info.spDataLength, info.flags & ~DPLAYI_PLAYER_PLAYERLOCAL,
                               NULL, NULL, FALSE );
