@@ -42,7 +42,7 @@ done
 windres -DOKP_BUILTIN -I$OK/src -O coff -o obj/dropin/dplayx_res.o shim/dplayx.rc
 # the public DirectPlay entry points go through the mode switch (shim/mode.c: okplay.ini mode=)
 { sed -E 's/^(DirectPlay[A-Za-z]*|DllGetClassObject)=([A-Za-z]+@)/\1=MODE_\2/' shim/dplayx.def
-  echo "SPInit=SPInit@4"; } > obj/dropin/dplayx.def
+  echo "SPInit=SPInit@4"; echo "OkplayPaths=OkplayPaths@8"; } > obj/dropin/dplayx.def
 grep -q "DirectPlayCreate=MODE_DirectPlayCreate@12" obj/dropin/dplayx.def || { echo "mode switch not wired into the exports"; exit 1; }
 gcc -shared -o bin/dropin/dplayx.dll $D $O obj/dropin/dplayx_res.o obj/dropin/dplayx.def \
     -Wl,--enable-stdcall-fixup -static-libgcc $LIBS -lwsock32 -lversion -lvfw32 -lgdi32

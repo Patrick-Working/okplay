@@ -745,6 +745,38 @@ static int loss_pct(const peer *p)
     return (int)(lost * 100 / expected);
 }
 
+/* how this PC reaches the other players (the drop-in's OkplayPaths; older drop-ins have none): one line,
+ * said again only when it changes. Every connection is direct today - a new method shows up here by name. */
+static char g_paths_last[256];
+static void paths_line(void)
+{
+    typedef int (WINAPI *paths_t)(char *, int);
+
+    paths_t f = g_dll ? (paths_t)GetProcAddress(g_dll, "OkplayPaths") : NULL;
+    char raw[1024], out[256] = "";
+    int cnt[8] = {0}, nk = 0, n;
+    char kinds[8][64];
+    if (!f || (n = f(raw, sizeof(raw))) <= 0) return;
+    for (char *l = strtok(raw, "\n"); l; l = strtok(NULL, "\n")) {
+        char m[16] = "", w[16] = "", fam[8] = "", k[64];
+        if (sscanf(l, "%15s %15s %7s", m, w, fam) != 3) continue;
+        _snprintf(k, sizeof(k), "%s%s, %s", m,
+                  !strcmp(w, "internet") ? " over the internet" : !strcmp(w, "local") ? " on the local network" : "", fam);
+        k[sizeof(k) - 1] = 0;
+        int i = 0;
+        while (i < nk && strcmp(kinds[i], k)) i++;
+        if (i == nk) { if (nk == 8) continue; strcpy(kinds[nk++], k); }
+        cnt[i]++;
+    }
+    for (int i = 0; i < nk; i++) {
+        int l = (int)strlen(out);
+        _snprintf(out + l, sizeof(out) - l - 1, "%s%s (%d player%s)", i ? "; " : "", kinds[i], cnt[i], cnt[i] == 1 ? "" : "s");
+    }
+    if (!out[0] || !strcmp(out, g_paths_last)) return;
+    strcpy(g_paths_last, out);
+    emit(K_INFO, "connection method: %s", out);
+}
+
 static void peer_line(const peer *p, char *out, int n)
 {
     int l = loss_pct(p);
@@ -1039,6 +1071,7 @@ static void session_loop(DWORD secs, int auto_xfer_at, int is_host)
                 EnterCriticalSection(&g_cs);
             }
             LeaveCriticalSection(&g_cs);
+            paths_line();
             last_summary = now;
         }
         if (auto_xfer_at && now - start >= (DWORD)auto_xfer_at * 1000 && npeers) {
@@ -1143,6 +1176,7 @@ static void reset_session_state(void)
     npeers = 0;
     memset(peers, 0, sizeof(peers));
     g_pings_sent = 0;
+    g_paths_last[0] = 0;
     ntallies = 0;
     LeaveCriticalSection(&g_cs);
 }

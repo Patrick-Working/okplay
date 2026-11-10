@@ -55,11 +55,47 @@ static void hexdump(const char *what, const uint8_t *b, int n)
     }
 }
 
+/* the provider whose network runs now, for OkplayPaths below (one game per process) */
+static okp_ctx *volatile g_paths_ctx;
+
 static int ensure_started(okp_ctx *c)
 {
     okp_transport_refresh();   /* transport= can change between games (okp.h) */
     if (!okp_net_start(c)) return 0;
+    g_paths_ctx = c;
     return okp_rdv_start(c);
+}
+
+/* Exported for Connection Check: how this PC reaches each player right now, one line per player with a
+ * working path: "<method> <where> <family> <rtt ms>\n". Method is always "direct" today (okplay has no
+ * relay and opens no router ports; a new method gets a new word here). Where: "internet" (a public
+ * address) or "local" (a private one: same network, or a VPN). No addresses: the text goes into reports.
+ * Returns the number of lines, -1 when no game is open. Call it from the thread that owns the session. */
+int WINAPI OkplayPaths(char *out, int outsz)
+{
+    okp_ctx *c = g_paths_ctx;
+    int n = 0, len = 0;
+    if (!out || outsz < 1) return -1;
+    out[0] = 0;
+    if (!c) return -1;
+    EnterCriticalSection(&c->lock);
+    for (int i = 0; i < OKP_MAX_PEERS; i++) {
+        const okp_peer *p = &c->peers[i];
+        if (!p->used || !p->have_path) continue;
+        int v4 = okp_addr_is_v4(&p->path);
+        const uint8_t *a6 = (const uint8_t *)&p->path.sin6_addr;
+        int pub = v4 ? okp_addr_is_public_v4(&p->path)
+                     : !((a6[0] & 0xFE) == 0xFC || (a6[0] == 0xFE && (a6[1] & 0xC0) == 0x80));
+        char line[64];
+        int l = _snprintf(line, sizeof(line), "direct %s %s %lu\n", pub ? "internet" : "local",
+                          v4 ? "IPv4" : "IPv6", (unsigned long)p->rtt);
+        if (l < 0 || len + l >= outsz) break;
+        memcpy(out + len, line, l + 1);
+        len += l;
+        n++;
+    }
+    LeaveCriticalSection(&c->lock);
+    return n;
 }
 
 static void wait_srflx(okp_ctx *c, DWORD ms)
@@ -429,6 +465,7 @@ static HRESULT OKP_ShutdownEx_impl(LPDPSP_SHUTDOWNDATA d)
     c->session_open = 0;
     okp_report_session_end(c);   /* (no-op after CloseEx) */
     c->running = 0;
+    if (g_paths_ctx == c) g_paths_ctx = NULL;
     okp_rdv_stop(c);
     okp_net_stop(c);
     DeleteCriticalSection(&c->lock);
