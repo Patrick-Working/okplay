@@ -35,6 +35,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "okp.h"
 #include "rr_fix.h"
+#include "nfs3_fix.h"
 #include "ddshow.h"
 #include <mmsystem.h>
 #include "okbox.h"
@@ -203,6 +204,17 @@ static uint64_t picked_host;          /* joiner: the room host a stream connect 
 static int join_auto;                 /* okplay.ini wsock_join=auto (OKP_WSOCK_JOIN): the only room of the game, no list */
 static uint16_t relisten_port;        /* the explicit port of the last listener the game closed, and when: listening */
 static DWORD relisten_tick;           /* there again within 2 s is NFS3's Host Game (see x_listen) */
+/* The game's own word on hosting (game->says_hosts, nfs3_fix.c), on the builds it knows:
+ * gs_net, gs_srv: the two values as last read, for the log only (-1 = not read yet).
+ *   Set: x_listen at every listen on an explicit port; game_state_watch (x_select) while a listener is open.
+ *   Cleared: never - they describe the game, not an okplay session.
+ * close_owed: a room this PC hosted that the game closed (tcp_close), whose close may not have reached the room
+ *   server yet; it goes from here with that room's id and token before ctx->room changes (send_owed_close).
+ *   Set: host_game_over from tcp_close (known builds, Online Play, nobody left in the room).
+ *   Cleared: send_owed_close (x_listen before a new room, tcp_unhost_for_connect before a join); x_WSACleanup (it
+ *   withdrew that room itself); host_room (a room is hosted: whatever was owed is past); end_session. */
+static int gs_net = -1, gs_srv = -1;
+static uint32_t close_owed;
 static struct { uint64_t peer; DWORD tick; } closed_peers[8];   /* players we had stream connections with (tcp_linger) */
 static int nclosed_peers;
 static char player_name[32];          /* okplay.ini name=, else the computer's name: in a TCP game's room name */
@@ -217,11 +229,14 @@ typedef struct {
     const char *exes;     /* exe names that pick it, "a.exe,b.exe"; NULL = only by id */
     const char *name;     /* room name */
     int kinds, host_rule;
+    int (*fix_init)(const char *ini);         /* DllMain: the game's own file (rr_fix.c, nfs3_fix.c), NULL = none */
+    int (*says_hosts)(int *net, int *server); /* does the game say it hosts? 1 yes, 0 no, -1 not known (x_listen) */
+    void (*at_listen)(int okplay_on);         /* the game listens (x_listen): 1 = through okplay, 0 = its own TCP/IP */
 } okw_game;
 static const okw_game okw_profiles[] = {
-    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST },   /* Road Rash: CD, Steam/GOG */
+    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL },   /* Road Rash: CD, Steam/GOG */
     /* Need for Speed III (the 1998 CD's NFS3.EXE, Modern Patch, portable): TCP only (its IPX sockets pass through) */
-    { "nfs3", "nfs3.exe", "Need for Speed III", OKW_TCP, HOST_LISTEN },
+    { "nfs3", "nfs3.exe", "Need for Speed III", OKW_TCP, HOST_LISTEN, nfs3_init, nfs3_hosting, nfs3_join_prefill },
 };
 static const okw_game *game = &okw_profiles[0];
 
@@ -1328,6 +1343,7 @@ static void end_session(void)   /* no lock held */
     host_pw_asked = host_has_pw = 0;
     SecureZeroMemory(host_hash, sizeof(host_hash));
     pending_room = 0;
+    close_owed = 0;
     nauthed = 0;
     auth_host = 0;
     auth_state = 0;
@@ -1405,8 +1421,10 @@ static void check_new_game(void)
 }
 
 /* become the host of a room (the game broadcast, or a TCP game's host rule).
- * The room id: pending_room is chosen once per okplay session (with the host's password box, which salts the hash
- * with it) and only end_session clears it, so every room this PC hosts in one session has the same id. That is why
+ * The room id: pending_room is chosen with the host's password box (which salts the hash with it). end_session
+ * clears it, and so does host_game_over on a build whose game state is known (a new Host Game: new box, new id;
+ * send_owed_close has taken the old room off the list first). Otherwise every room this PC hosts in one okplay
+ * session has the same id. That is why
  * a close followed by a host within the room-server thread's 100 ms (tcp_close, then the game listens again) never
  * left the old id listed: there is no old id. But a fresh token for the same id was refused by the room server
  * ("owned by another host") until the old entry expired, so a TCP game keeps the token while the id stays. */
@@ -1420,6 +1438,7 @@ static void host_room(void)   /* okw_lock held */
     ctx->is_host = 1;
     ctx->closing = 0;
     room_closed = 0;
+    close_owed = 0;
     build_room_record();
     ctx->session_open = 1;
     if (ctx->mode == OKP_MODE_LAN && !okp_lan_open_listen(ctx))
@@ -1579,6 +1598,41 @@ static void tcp_conn_gone(uint64_t peer)   /* okw_lock held */
         tcp_join_undo(peer, "the game closed its last connection to that host", 0);
 }
 
+/* The game closed the room this PC hosted (tcp_close: it stopped listening; tcp_unhost_for_connect) and nobody is
+ * connected to it: that game is over. On a build whose game state is known (game->says_hosts), the next Host Game
+ * is a new game, so its password is asked again and its room gets a new id (as the drop-in asks at every new game):
+ * host_pw_asked, host_has_pw, host_hash, pending_room and the players let in (authed) are forgotten here.
+ * On other builds a menu re-entry looks like Host Game (x_listen's listen-again rule), so the answer is kept for the
+ * okplay session there (only end_session forgets it) - else the box would come at every re-entry.
+ * Players still connected: the same game goes on (the game might close its listener at a race start - not seen
+ * yet), nothing is forgotten. UDP games (Road Rash) close their room at every race start with the players still
+ * there; their new game is found by check_new_game, and end_session forgets it all. okw_lock held. */
+static void host_game_over(int owe_close)
+{
+    if (!game->says_hosts || game->says_hosts(NULL, NULL) < 0 || tcp_room_players()) return;
+    if (owe_close && ctx && ctx->room && ctx->mode == OKP_MODE_ONLINE) close_owed = ctx->room;
+    if (!host_pw_asked && !pending_room) return;
+    host_pw_asked = host_has_pw = 0;
+    SecureZeroMemory(host_hash, sizeof(host_hash));
+    pending_room = 0;
+    nauthed = 0;
+    okp_log(2, "wsock: the hosted game is over - the next Host Game asks for a password again and lists a new room");
+}
+
+/* The room the game closed (close_owed) comes off the room server's list now, with its own id and token, before
+ * ctx->room changes (a new room id, or a join): the room server's thread reads ctx->room when it gets to it, and
+ * a new id would leave the old room listed. If that thread has sent the close already, this one is a repeat the
+ * room server answers harmlessly. No lock held (plain HTTP takes over a second on Windows 9x). */
+static void send_owed_close(void)
+{
+    EnterCriticalSection(&okw_lock);
+    okp_ctx *c = ctx;
+    int owed = c && close_owed && c->room == close_owed && !c->is_host && c->mode == OKP_MODE_ONLINE;
+    close_owed = 0;
+    LeaveCriticalSection(&okw_lock);
+    if (owed) okp_rdv_close(c);
+}
+
 /* The game connects out while this PC counts as a host: its last listen was not Host Game but the player entering
  * the TCP menu again (the game makes the same calls). With nobody in the room the host role goes and the room comes
  * off the list now - sent from here with this room's id and token, before a join changes ctx->room (the room
@@ -1588,7 +1642,11 @@ static int tcp_unhost_for_connect(void)
 {
     EnterCriticalSection(&okw_lock);
     okp_ctx *c = ctx;
-    if (!c || !c->is_host || game->host_rule != HOST_LISTEN) { LeaveCriticalSection(&okw_lock); return 0; }
+    if (!c || !c->is_host || game->host_rule != HOST_LISTEN) {
+        LeaveCriticalSection(&okw_lock);
+        send_owed_close();   /* (a room the game closed a moment ago: off the list before the join changes ctx->room) */
+        return 0;
+    }
     int n = tcp_room_players();
     if (n) {
         okp_log(1, "wsock: the game connects out while %d player(s) are in its room %08x - the connect is refused", n, c->room);
@@ -1602,6 +1660,8 @@ static int tcp_unhost_for_connect(void)
     c->closing = 1;          /* (nothing announces it meanwhile) */
     room_closed = 0;         /* (not "the game left its room": no new session comes of this) */
     relisten_port = 0;
+    close_owed = 0;          /* (this room's close goes from here) */
+    host_game_over(0);       /* (known builds: the next Host Game asks again; the fallback rule's ghost rooms keep it) */
     LeaveCriticalSection(&okw_lock);
     DWORD t0 = GetTickCount();
     if (withdraw) okp_rdv_close(c);   /* (no lock held: plain HTTP takes over a second on Windows 9x) */
@@ -1723,7 +1783,9 @@ static void okw_tick(void)   /* okw_lock held */
 }
 
 /* Windows 9x fails CreateThread when lpThreadId is NULL (documented); okplay's core passes NULL. As the
- * drop-in's shim/win9x.c does, every CreateThread in this DLL comes here and gets somewhere to write. */
+ * drop-in's shim/win9x.c does, every CreateThread in this DLL comes here and gets somewhere to write.
+ * A thread made with stack size 0 gets the exe's stack reserve, and a game exe may reserve tiny stacks (the 1998
+ * NFS3 exes: 32,000 bytes, too small for okplay's threads), so ours ask for 256 KB. */
 static HANDLE WINAPI okw_CreateThread(LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LPTHREAD_START_ROUTINE start, LPVOID param,
                                       DWORD flags, LPDWORD id)
 {
@@ -1731,6 +1793,7 @@ static HANDLE WINAPI okw_CreateThread(LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LP
     DWORD dummy;
     if (!fn) fn = (HANDLE (WINAPI *)(LPSECURITY_ATTRIBUTES, SIZE_T, LPTHREAD_START_ROUTINE, LPVOID, DWORD, LPDWORD))
                   GetProcAddress(GetModuleHandleA("kernel32.dll"), "CreateThread");
+    if (!stack) stack = 256 * 1024;   /* a game exe may reserve tiny stacks (NFS3 1998: 32,000 bytes); ours need room */
     return fn(sa, stack, start, param, flags, id ? id : &dummy);
 }
 void *const okw_imp_CreateThread __asm__("__imp__CreateThread@24") = (void *)okw_CreateThread;
@@ -2100,7 +2163,8 @@ static const struct { const char *game, *build, *what; char group; } known_build
     /* Need for Speed III: the 1.6.x builds race each other; the 1998 CD exe may compute the race differently */
     { "nfs3", "240a083a78ac3b83", "Need for Speed III Modern Patch 1.6.1, nfs3.exe", 'A' },
     { "nfs3", "397dee58eb88822c", "Need for Speed III portable 1.6.2 Beta, nfs3.exe", 'A' },
-    { "nfs3", "53aa0dfcf4387888", "Need for Speed III CD (1998), NFS3.EXE", 'B' },
+    { "nfs3", "53aa0dfcf438788d", "Need for Speed III CD (1998), NFS3.EXE", 'B' },
+    { "nfs3", "b390be67925b2ad0", "Need for Speed III (1998, OEM release), NFS3.EXE", 'B' },
 };
 
 static int known_build(const char *b)   /* index in known_builds for this game, -1 = not known */
@@ -2554,6 +2618,7 @@ typedef struct {
     int hidden;
     char pick[64];
     uint64_t hosts[32];
+    uint32_t shown[32];            /* what each line says (lb_sig): a changed player count redraws the list too */
     int nhosts;
 } okw_listbox;
 
@@ -2565,9 +2630,18 @@ static int test_ui(char *pick, int n)   /* 1 = tests answer okplay's TCP join bo
     return 1;
 }
 
+static uint32_t lb_sig(const okw_roominfo *r)   /* a room's line in the list, as a number */
+{
+    uint32_t h = 2166136261u;
+    for (const char *p = r->name; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
+    return h ^ ((uint32_t)r->curp << 1) ^ ((uint32_t)r->maxp << 9) ^ (r->locked ? 1u : 0u) ^ 0x10000u;
+}
+
 static void lb_refresh(HWND dlg, okw_listbox *L)
 {
-    okw_roominfo ri[32];
+    /* static: 5.6 KB, and the game's own threads may have little stack (NFS3 1998: 32,000 bytes). Only the room list
+     * box uses it, on the game's thread, and the list is filled and read within this call */
+    static okw_roominfo ri[32];
     int n = 0, sel = -1;
     EnterCriticalSection(&okw_lock);
     if (ctx) {
@@ -2578,7 +2652,7 @@ static void lb_refresh(HWND dlg, okw_listbox *L)
     }
     LeaveCriticalSection(&okw_lock);
     int same = n == L->nhosts;
-    for (int i = 0; i < n && same; i++) same = ri[i].host == L->hosts[i];
+    for (int i = 0; i < n && same; i++) same = ri[i].host == L->hosts[i] && lb_sig(&ri[i]) == L->shown[i];
     if (same && n) return;
     HWND lb = GetDlgItem(dlg, 101);
     int cur = (int)SendMessageA(lb, LB_GETCURSEL, 0, 0);
@@ -2589,6 +2663,7 @@ static void lb_refresh(HWND dlg, okw_listbox *L)
         snprintf(line, sizeof(line), "%s   (%d/%d players)%s", ri[i].name, ri[i].curp, ri[i].maxp, ri[i].locked ? "   [password]" : "");
         SendMessageA(lb, LB_ADDSTRING, 0, (LPARAM)line);
         L->hosts[i] = ri[i].host;
+        L->shown[i] = lb_sig(&ri[i]);
         if (ri[i].host == keep) sel = i;
     }
     L->nhosts = n;
@@ -2684,7 +2759,7 @@ static WORD *dlg_item(WORD *p, DWORD style, short x, short y, short cx, short cy
 
 static INT_PTR lb_run(okw_listbox *L)   /* the game's thread, inside run_box */
 {
-    DWORD buf[512];
+    static DWORD buf[512];   /* (2 KB off the game's stack: the template is read once, when the dialog is made) */
     WCHAR title[96];
     memset(buf, 0, sizeof(buf));
     okbox_brand(title, 96);
@@ -2906,6 +2981,10 @@ static int tcp_connect(SOCKET s, const struct sockaddr *a, int l)   /* a virtual
     const struct sockaddr_in *in = (const struct sockaddr_in *)a;
     uint16_t port = ntohs(in->sin_port);
     int e = 0, adopted = 0;
+    {
+        char t[20];
+        tr("game connect %u to %s:%u", (unsigned)s, ip_s(in->sin_addr.s_addr, t), port);
+    }
     EnterCriticalSection(&okw_lock);
     okw_sock *k = tsock_of(s);
     if (!k) e = WSAENOTSOCK;
@@ -3030,6 +3109,10 @@ static SOCKET tcp_accept(SOCKET s, struct sockaddr *a, int *l)   /* a virtual TC
                 r = ns;
                 okp_log(2, "wsock: TCP connection %08x accepted as socket %u%s", (unsigned)c->id, (unsigned)ns,
                         c->err ? " (already reset by the other side)" : "");
+                {
+                    char t[20];
+                    tr("game accept on %u -> socket %u, peer %s:%u", (unsigned)s, (unsigned)ns, ip_s(c->rip, t), c->rport);
+                }
             }
         } else if (k->nonblock) e = WSAEWOULDBLOCK;
         LeaveCriticalSection(&okw_lock);
@@ -3037,6 +3120,7 @@ static SOCKET tcp_accept(SOCKET s, struct sockaddr *a, int *l)   /* a virtual TC
         ev_wait(50);
     }
     InterlockedDecrement(&okw_waiters);
+    if (e && e != WSAEWOULDBLOCK) tr("game accept on %u -> error %d", (unsigned)s, e);
     if (e) WSASetLastError(e);
     return r;
 }
@@ -3173,6 +3257,7 @@ static void tcp_close(okw_sock *k)   /* okw_lock held; a virtual TCP socket the 
                 okp_log(1, "wsock: the game closed its room (it stopped listening on port %u)", k->port);
                 room_closed = 1;
                 room_closed_tick = GetTickCount();
+                host_game_over(1);
             }
         }
     }
@@ -3322,6 +3407,41 @@ static int sel_ready(okw_sock *k, int set)   /* okw_lock held */
     return 1;
 }
 
+/* The game's two values while it listens on its port (known builds), read at every select (the game's comms thread,
+ * often): a scan of the socket table and two reads. okw_lock held.
+ *  - logged when they change, to see what the game does when a host leaves its lobby or a race starts;
+ *  - a host that left its lobby: the game says "not hosting" again but keeps its listener open until the player
+ *    enters the network menu the next time (seen: 40-50 s) - the room would stay on the list that long. So when
+ *    this PC hosts, the game has said "not hosting" for GS_LEFT_MS and no player is connected, the room comes off
+ *    the list here, the same way as when the listener closes (tcp_close). */
+#define GS_LEFT_MS 1500
+static void game_state_watch(void)
+{
+    static DWORD left_tick;
+    int net, srv, open = 0, said;
+    if (!game->says_hosts) return;
+    for (int i = 0; i < OKW_MAX_SOCKS && !open; i++)
+        if (socks[i].used && socks[i].kind == K_TCP && socks[i].tstate == T_LISTEN && socks[i].explicit_port) open = 1;
+    if (!open || (said = game->says_hosts(&net, &srv)) < 0) { left_tick = 0; return; }
+    if (net != gs_net || srv != gs_srv) {
+        gs_net = net;
+        gs_srv = srv;
+        okp_log(2, "wsock: game state now: net %d, server %d", net, srv);
+    }
+    if (said || !ctx || !ctx->is_host || game->host_rule != HOST_LISTEN || tcp_room_players()) { left_tick = 0; return; }
+    if (!left_tick) { left_tick = GetTickCount() | 1; return; }
+    if (GetTickCount() - left_tick < GS_LEFT_MS) return;
+    left_tick = 0;
+    ctx->closing = 1;
+    ctx->session_open = 0;
+    ctx->is_host = 0;
+    okp_rdv_wake(ctx);
+    okp_log(1, "wsock: the game left its lobby (its listener stays open) - its room comes off the list");
+    room_closed = 1;
+    room_closed_tick = GetTickCount();
+    host_game_over(1);
+}
+
 int WINAPI x_select(int nfds, fd_set *r, fd_set *w, fd_set *e, const struct timeval *t)
 {
     if (!okw_on) return select(nfds, r, w, e, t);
@@ -3336,6 +3456,7 @@ int WINAPI x_select(int nfds, fd_set *r, fd_set *w, fd_set *e, const struct time
             virt[i][j] = vsock_of(set[i]->fd_array[j]) != NULL;
             if (virt[i][j]) nv++; else nr++;
         }
+    game_state_watch();
     LeaveCriticalSection(&okw_lock);
     if (!nv) return select(nfds, r, w, e, t);   /* (all sets empty: Windows' WSAEINVAL, as the game expects) */
     fd_set in[3];
@@ -3506,7 +3627,14 @@ int WINAPI x_connect(SOCKET s, const struct sockaddr *a, int l)
 int WINAPI x_getsockname(SOCKET s, struct sockaddr *a, int *l)
 {
     if (!okw_on) return getsockname(s, a, l);
-    if (tcp_entry(s, 1)) return tcp_name(s, a, l, 0);
+    if (tcp_entry(s, 1)) {
+        int r = tcp_name(s, a, l, 0);
+        char t[20];
+        if (r) tr("game getsockname %u (TCP) -> error %d", (unsigned)s, WSAGetLastError());
+        else tr("game getsockname %u (TCP) -> %s:%u", (unsigned)s, ip_s(((struct sockaddr_in *)a)->sin_addr.s_addr, t),
+                ntohs(((struct sockaddr_in *)a)->sin_port));
+        return r;
+    }
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
     if (!k || !ctx) { LeaveCriticalSection(&okw_lock); return getsockname(s, a, l); }
@@ -3740,11 +3868,15 @@ struct hostent *WINAPI x_gethostbyname(const char *n)
     int mine = !n || !n[0] || !_stricmp(n, me);
     if (!mine) {
         LeaveCriticalSection(&okw_lock);
-        struct hostent *h = gethostbyname(n);
+        /* "oldkid.net" (what NFS3's Join box is pre-filled with, nfs3_fix.c) and "okplay" mean "okplay's room list":
+         * never looked up - oldkid.net is a real host, and the game must never connect to it */
+        int list_name = (game->kinds & OKW_TCP) && mode_choice >= 2 && n && (!_stricmp(n, "oldkid.net") || !_stricmp(n, "okplay"));
+        struct hostent *h = list_name ? NULL : gethostbyname(n);
         if (h || !(game->kinds & OKW_TCP) || mode_choice < 2) return h;
         /* A TCP game gives up on a name that doesn't resolve before it connects: 10.0.0.1 ("pick from the list")
          * lets a typed word such as "okplay" reach connect, where okplay finds the room. */
-        okp_log(1, "wsock: \"%s\" doesn't resolve - the game gets 10.0.0.1, its connect goes to okplay's room list", n ? n : "");
+        if (list_name) okp_log(1, "wsock: \"%s\" - the game gets 10.0.0.1, its connect goes to okplay's room list", n);
+        else okp_log(1, "wsock: \"%s\" doesn't resolve - the game gets 10.0.0.1, its connect goes to okplay's room list", n ? n : "");
         static uint32_t any;
         static char *alist[2];
         static struct hostent ahe;
@@ -3804,9 +3936,21 @@ unsigned long WINAPI x_inet_addr(const char *c) { return inet_addr(c); }
 char *WINAPI x_inet_ntoa(struct in_addr a) { return inet_ntoa(a); }
 int WINAPI x_listen(SOCKET s, int b)
 {
-    if (!okw_on || !tcp_entry(s, 0)) return listen(s, b);
-    if (tcp_mode_pass()) return listen(s, b);
+    if (!okw_on) return listen(s, b);
+    if (!tcp_entry(s, 0)) {
+        /* no entry: the game's own TCP/IP was chosen before this listen (the box came at bind and dropped the
+         * entries, or okplay.ini wsock_mode=original) - okplay's Join box text still has to come out */
+        if (mode_choice == 1 && game->at_listen) game->at_listen(0);
+        return listen(s, b);
+    }
+    if (tcp_mode_pass()) {
+        if (game->at_listen) game->at_listen(0);   /* (nfs3_fix.c: okplay's Join box text out again) */
+        int lr = listen(s, b);
+        tr("game listen %u backlog %d -> %d (Windows' own TCP)", (unsigned)s, b, lr ? WSAGetLastError() : 0);
+        return lr;
+    }
     retry_start();
+    if (game->at_listen) game->at_listen(1);   /* (nfs3_fix.c: the Join box pre-filled with "oldkid.net") */
     int r = 0, host = 0;
     uint16_t port = 0;
     EnterCriticalSection(&okw_lock);
@@ -3827,20 +3971,37 @@ int WINAPI x_listen(SOCKET s, int b)
          * The game makes the same calls when the player enters the TCP menu again with its listener still open, so this
          * PC is only a candidate host: when the game connects out, tcp_unhost_for_connect takes the role back. A PC
          * with a connect of its own going on or up is joining, not hosting; a join left over from before (no such
-         * connect) is taken back here. */
+         * connect) is taken back here.
+         * That rule is the fallback: on a build whose game state is known (game->says_hosts, nfs3_fix.c) the game's
+         * own word decides instead - Host Game sets it before it listens, a menu re-entry leaves it as it was - so a
+         * re-entry lists no room and asks nothing. */
         int again = k->explicit_port && relisten_port == port && GetTickCount() - relisten_tick < 2000;
         int listening = 0;
         for (int i = 0; i < OKW_MAX_SOCKS; i++)
             if (&socks[i] != k && socks[i].used && socks[i].kind == K_TCP && socks[i].tstate == T_LISTEN && socks[i].explicit_port) listening = 1;
-        host = game->host_rule == HOST_LISTEN && k->explicit_port && ctx && !tcp_outbound() && (again || (ctx->is_host && listening));
+        int gnet = 0, gsrv = 0;
+        int said = k->explicit_port && game->says_hosts ? game->says_hosts(&gnet, &gsrv) : -1;
+        int may = game->host_rule == HOST_LISTEN && k->explicit_port && ctx && !tcp_outbound();
+        if (said >= 0) host = may && said;
+        else host = may && (again || (ctx->is_host && listening));
         if (again && ctx) relisten_port = 0;
         if (host && ctx->host_peer) tcp_join_undo(ctx->host_peer, "the game hosts", 0);
-        okp_log(2, "wsock: TCP socket %u listens on port %u%s", (unsigned)s, port,
-                host ? " - this PC hosts (the game listens again: Host Game)" : k->explicit_port ? " - ready, not hosting" : "");
+        if (said >= 0) {
+            gs_net = gnet;
+            gs_srv = gsrv;
+            okp_log(2, "wsock: TCP socket %u listens on port %u - game state: net %d, server %d - %s", (unsigned)s, port,
+                    gnet, gsrv, host ? "Host Game: this PC hosts" : said ? "Host Game, but okplay is not running here or "
+                    "a connect of the game's is going on - not hosting" : "ready, not hosting");
+        } else
+            okp_log(2, "wsock: TCP socket %u listens on port %u%s%s", (unsigned)s, port,
+                    host ? " - this PC hosts (the game listens again: Host Game)" : k->explicit_port ? " - ready, not hosting" : "",
+                    k->explicit_port && game->says_hosts ? " (build not known: the listen-again rule)" : "");
+        tr("game listen %u port %u backlog %d%s", (unsigned)s, port, b, host ? " - hosts" : "");
         if (host && ctx->is_host) { build_room_record(); host = 0; }
     }
     LeaveCriticalSection(&okw_lock);
     if (host) {
+        send_owed_close();   /* (the last room's close, with its id, before this one gets a new id) */
         ask_host_password();
         EnterCriticalSection(&okw_lock);
         host_room();
@@ -3868,7 +4029,9 @@ int WINAPI x_WSAStartup(WORD v, LPWSADATA d)
 {
     if (!okw_on) return WSAStartup(v, d);
     if (!cbt_hook && (game->kinds & OKW_UDP)) cbt_hook = SetWindowsHookExA(WH_CBT, cbt_proc, NULL, GetCurrentThreadId());
-    return WSAStartup(v, d);
+    int r = WSAStartup(v, d);
+    tr("game WSAStartup version %u.%u -> %d", LOBYTE(v), HIBYTE(v), r);
+    return r;
 }
 /* A TCP game done with the network may end its process next. Windows would go on sending what the game closed
  * gracefully (its last message, the FIN) after that; here it is okplay's reliable lane in this process, so it gets
@@ -3913,6 +4076,7 @@ int WINAPI x_WSACleanup(void)
         ctx->is_host = 0;
         ctx->session_open = 0;
         ctx->closing = 1;
+        close_owed = 0;   /* (that room's close goes from here) */
     }
     okp_ctx *wc = withdraw ? ctx : NULL;
     LeaveCriticalSection(&okw_lock);
@@ -3922,6 +4086,7 @@ int WINAPI x_WSACleanup(void)
     LeaveCriticalSection(&okw_lock);
     int r = WSACleanup();
     okp_log(2, "wsock: WSACleanup done (%d)", r);
+    tr("game WSACleanup -> %d", r);
     return r;
 }
 int WINAPI x___WSAFDIsSet(SOCKET s, fd_set *f) { return __WSAFDIsSet(s, f); }
@@ -4075,7 +4240,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
             exit_watch_start(ini);
             if ((game->kinds & OKW_TCP) && !hook_exe_import("KERNEL32.dll", "ExitProcess", (void *)hook_ExitProcess, (void **)&real_ExitProcess))
                 okp_log(2, "wsock: the game's ExitProcess is not seen - no resets for open connections when it ends");
-            if (!strcmp(game->id, "roadrash")) rrf_init(ini);   /* rr_fix.c: Road Rash's netcode fixes, for the builds it knows */
+            if (game->fix_init) game->fix_init(ini);   /* rr_fix.c: Road Rash's netcode fixes; nfs3_fix.c: NFS3's game state */
             int win = GetPrivateProfileIntA("okplay", "wsock_tcp_window", 65536, ini);
             tcp_window = win < 4096 ? 4096 : win > (1 << 20) ? (1 << 20) : (uint32_t)win;
             {

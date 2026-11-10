@@ -10,6 +10,11 @@ shim: tcpsim.exe + okplay wsock's wsock32.dll + an okplay.ini in a temporary fol
 Every scenario says what each side must print (RESULT ok, or e.g. a refusal); a few are shim-only (passwords, builds,
 okplay's own join rules). Boxes never show: the test answers (OKP_TEST_*) are always set, and cancel by default.
 Uses ../bin/tcpsim.exe and ../bin/wsock32.dll (build.sh builds both). No game is started; nothing makes sound.
+Known builds: a scenario with known="modern" (or --build modern|oem|cd for every scenario) runs as a build of the game
+whose own state okplay reads (nfs3_fix.c): OKP_TEST_EXEBUILD names the build, TCPSIM_GAMESTATE makes tcpsim keep the
+game's two values at that build's addresses. Without it the build is not known and okplay's listen-again rule decides.
+TCP_RUN_PHP_SERVER=<path to an okplay.php> runs the *_online scenarios against that script under "php -S" (TCP_RUN_PHP
+names the php program) instead of the stand-in - e.g. the okplay.php of a released pack, to see old servers still work.
 """
 import argparse, os, re, shutil, socket, subprocess, sys, tempfile, threading, time
 
@@ -41,6 +46,10 @@ def S(*steps):   # tcpsim script: what a player does, step by step (tcpsim.c "sc
 
 
 LO = "{lo}:9803"
+# known builds: name -> (fingerprint for OKP_TEST_EXEBUILD, tcpsim's TCPSIM_GAMESTATE)
+BUILDS = {"modern": ("240a083a78ac3b83", "modern"), "oem": ("b390be67925b2ad0", "modern"), "cd": ("53aa0dfcf438788d", "cd")}
+KNOWN = {"all": None}   # --build: every scenario as that build
+PW_ASKED = r"password: (none - an open game|this game needs a password|not asking)"   # one host password question
 NOTICE_NO_ANSWER = "No answer from the host"   # (the notice's sentence, as okplay logs it)
 
 
@@ -65,6 +74,38 @@ SCENARIOS = {
     "standin":    dict(host=H(), joins=[J("{standin}:9803")], ini={"wsock_join": ""}),
     "byip":       dict(host=H(), joins=[J("{lanip}:9803")], ini={"wsock_join": ""}),
     "byip_online": dict(host=H(), joins=[J("{lanip}:9803")], ini={"wsock_join": ""}, online=True),
+    # the Join box's pre-filled "oldkid.net" (and "okplay"): okplay's room list, never a DNS lookup or a connect there
+    "byname_oldkid": dict(host=H(), joins=[J("OldKid.net:9803")], ini={"wsock_join": ""}, env_join={"OKP_TEST_JOIN_PICK": "first"},
+                          modes=("shim",), checks=[("log", "join1", '"OldKid.net" - the game gets 10.0.0.1'),
+                                                   ("nolog", "join1", "doesn't resolve")]),
+    # a known build: the Join box opens pre-filled with "oldkid.net" (nfs3_fix.c); Ok gives the room list
+    "joinbox_prefill": dict(host=S("menu", "host", "lobby:1", "left:1"), joins=[S("menu", "wait:1500", "joinbox", "wait:500", "leave")],
+                            ini={"wsock_join": ""}, env_join={"OKP_TEST_JOIN_PICK": "first"}, modes=("shim",), known="modern",
+                            checks=[("log", "join1", "Join box is pre-filled"), ("log", "join1", '"oldkid.net" - the game gets 10.0.0.1')]),
+    "joinbox_prefill_cd": dict(host=S("menu", "host", "lobby:1", "left:1"), joins=[S("menu", "wait:1500", "joinbox", "wait:500", "leave")],
+                               ini={"wsock_join": ""}, env_join={"OKP_TEST_JOIN_PICK": "first"}, modes=("shim",), known="cd",
+                               checks=[("log", "join1", "Join box is pre-filled"), ("log", "join1", '"oldkid.net" - the game gets 10.0.0.1')]),
+    # okplay.ini nfs3_join_prefill=0: the box stays as the game left it (empty here)
+    "joinbox_prefill_off": dict(host=S("menu", "host", "wait:6000"), joins=[S("menu", "wait:1500", "joinbox")],
+                                ini={"wsock_join": "", "nfs3_join_prefill": "0"}, modes=("shim",), known="modern",
+                                expect_shim={"join1": r"^RESULT fail step 3 \(joinbox\): the Join box is empty", "host": ANY},
+                                checks=[("nolog", "join1", "pre-filled")]),
+    # the game remembered an address from its last run: with okplay on, the box still opens with "oldkid.net"
+    "joinbox_remembered": dict(host=S("menu", "host", "lobby:1", "left:1"), joins=[S("menu", "wait:1500", "joinbox", "wait:500", "leave")],
+                               ini={"wsock_join": ""}, env_join={"OKP_TEST_JOIN_PICK": "first", "TCPSIM_JOINTEXT": "192.168.7.3"},
+                               modes=("shim",), known="modern",
+                               checks=[("log", "join1", "Join box is pre-filled"), ("log", "join1", '"oldkid.net" - the game gets 10.0.0.1')]),
+    # the game remembered okplay's "oldkid.net" and now runs its own TCP/IP (wsock_mode=original): the text comes out,
+    # so Ok never sends the game toward the real site
+    "joinbox_original": dict(host=S("menu", "host", "wait:6000"), joins=[S("menu", "wait:1500", "joinbox")],
+                             ini={"wsock_join": ""}, env_join={"OKP_WSOCK_MODE": "original", "TCPSIM_JOINTEXT": "oldkid.net"},
+                             modes=("shim",), known="modern",
+                             expect_shim={"join1": r"^RESULT fail step 3 \(joinbox\): the Join box is empty", "host": ANY},
+                             checks=[("log", "join1", "taken out of the Join box"), ("nolog", "join1", "pre-filled")]),
+    # ... and an address of the player's own stays as it is for the game's own TCP/IP
+    "joinbox_original_keeps": dict(host=S("menu", "host", "wait:6000"), joins=[S("menu", "wait:1500")],
+                                   ini={"wsock_join": ""}, env_join={"OKP_WSOCK_MODE": "original", "TCPSIM_JOINTEXT": "192.168.7.3"},
+                                   modes=("shim",), known="modern", checks=[("nolog", "join1", "Join box")]),
     "pick":       dict(host=H(), joins=[J()], ini={"wsock_join": ""}, env_join={"OKP_TEST_JOIN_PICK": "first"}),
     "byname":     dict(host=H(), joins=[J("okplay:9803")], expect_real={"join1": r"^RESULT fail address", "host": ANY}, kill_host=True),
     "adopt":      dict(host=H(), joins=[J()], env_join={"OKP_TEST_SYN_DELAY_MS": "3000"}, check="adopt"),
@@ -80,10 +121,10 @@ SCENARIOS = {
     "build_same": dict(host=H(), joins=[J()], env_host={"OKP_TEST_EXEBUILD": "240a083a78ac3b83"},
                        env_join={"OKP_TEST_EXEBUILD": "397dee58eb88822c"}, modes=("shim",)),
     "build_diff_cancel": dict(host=H(), joins=[J()], env_host={"OKP_TEST_EXEBUILD": "240a083a78ac3b83"},
-                              env_join={"OKP_TEST_EXEBUILD": "53aa0dfcf4387888"}, modes=("shim",), kill_host=True,
+                              env_join={"OKP_TEST_EXEBUILD": "53aa0dfcf438788d"}, modes=("shim",), kill_host=True,
                               expect_shim={"join1": r"^RESULT fail refused", "host": ANY}),
     "build_diff_join": dict(host=H(), joins=[J()], env_host={"OKP_TEST_EXEBUILD": "240a083a78ac3b83"},
-                            env_join={"OKP_TEST_EXEBUILD": "53aa0dfcf4387888", "OKP_TEST_BUILD_ANSWER": "join"}, modes=("shim",)),
+                            env_join={"OKP_TEST_EXEBUILD": "53aa0dfcf438788d", "OKP_TEST_BUILD_ANSWER": "join"}, modes=("shim",)),
     # C.8: the host process ends mid-race without closing anything
     "diesoft":    dict(host=H("--die-at", "150", "--die", "soft", frames=600), joins=[J("{lo}:9803", "--expect-loss", "1500")],
                        expect={"host": ANY}),
@@ -116,16 +157,51 @@ SCENARIOS = {
                         freeze=[dict(role="host", on="EVENT say freeze", secs=22)],
                         checks=[("log", "join1", NOTICE_NO_ANSWER),
                                 ("between", "join1", "no answer from the host", "goes to host", r"peer [0-9a-f]+: new")]),
-    # 4. use_password=ask: entering the TCP menu again must not ask for a host password (needs 1.2 step 2)
+    # 4. use_password=ask: entering the TCP menu again must not ask for a host password (a known build: the game's
+    #    own state tells Host Game from a menu re-entry), nor list a room
     "pw_ask_menu": dict(host=S("menu", "host", "lobby:1", "left:1"),
                         joins=[S("menu", "back", "menu", "wait:1500", "join:" + LO, "wait:500", "leave")],
-                        ini={"use_password": "ask"}, modes=("shim",), xfail="1.2 step 2: tell Host Game from a menu re-entry",
-                        checks=[("nolog", "join1", "password: none - an open game")]),
+                        ini={"use_password": "ask"}, modes=("shim",), known="modern",
+                        checks=[("nolog", "join1", PW_ASKED), ("nolog", "join1", "hosting room|this PC hosts"),
+                                ("log", "join1", "game state: net 0, server 1 - ready, not hosting"),
+                                ("log", "host", "game state: net 3, server 1 - Host Game: this PC hosts")]),
+    "pw_ask_menu_cd": dict(host=S("menu", "host", "lobby:1", "left:1"),
+                           joins=[S("menu", "back", "menu", "wait:1500", "join:" + LO, "wait:500", "leave")],
+                           ini={"use_password": "ask"}, modes=("shim",), known="cd",
+                           checks=[("nolog", "join1", PW_ASKED), ("nolog", "join1", "hosting room|this PC hosts"),
+                                   ("log", "join1", "Need for Speed III 1998 CD")]),
+    # 4b. the same on a build okplay doesn't know: the listen-again rule makes each re-entry a candidate host, but the
+    #     password is asked once per okplay session there, not at every re-entry
+    "pw_ask_menu_unknown": dict(host=S("menu", "host", "lobby:1", "left:1"),
+                                joins=[S("menu", "back", "menu", "wait:1500", "back", "menu", "wait:1500", "join:" + LO,
+                                         "wait:500", "leave")], modes=("shim",),
+                                checks=[("count", "join1", PW_ASKED, 1), ("log", "join1", "build not known: the listen-again rule"),
+                                        ("nolog", "join1", "the hosted game is over")]),
+    # 4c. a known build: menu re-entries, then Host Game - one password question, one room, the password applies
+    "known_host_after_menu": dict(host=S("menu", "back", "menu", "wait:1500", "back", "menu", "wait:500", "host", "lobby:1", "left:1"),
+                                  joins=[S("menu", "wait:6000", "join:" + LO, "wait:500", "leave")], known="modern",
+                                  env_host={"OKP_TEST_HOST_PASSWORD": "lap3"}, env_join={"OKP_TEST_JOIN_PASSWORD": "lap3"},
+                                  modes=("shim",), checks=[("count", "host", PW_ASKED, 1), ("count", "host", "hosting room", 1),
+                                                           ("log", "host", "let in \\(password matched\\)")]),
+    # 5b. the same as a known build: the joiner's re-entry lists no room at all
+    "menu_again_online_known": dict(host=S("menu", "host", "lobby:1", "left:1"),
+                                    joins=[S("menu", "back", "menu", "wait:4000", "say:rooms_at_menu", "wait:1500", "join:" + LO,
+                                             "say:rooms_joined", "wait:500", "leave")], known="modern",
+                                    online=True, modes=("shim",), checks=[("rooms", "rooms_at_menu", 1), ("rooms", "rooms_joined", 1),
+                                                                         ("nolog", "join1", "hosting room|comes off the list")]),
+    "host_then_join_known": dict(host=S("menu", "host", "lobby:1", "left:1"),
+                                 joins=[S("menu", "host", "wait:2000", "close", "back", "menu", "wait:1500", "join:" + LO,
+                                          "wait:500", "leave")], modes=("shim",), may_host=("join1",), known="modern",
+                                 checks=[("after", "join1", "the game closed its room", "goes to host")]),
     # 6. join, leave, then Host Game in the same run: a room is listed
     "join_leave_host": dict(host=S("menu", "host", "lobby:1", "left:1"),
                             joins=[S("menu", "join:" + LO, "wait:500", "leave", "back", "menu", "host", "wait:3000")],
                             modes=("shim",), may_host=("join1",),
                             checks=[("after", "join1", "goes to host", "hosting room")]),
+    "join_leave_host_known": dict(host=S("menu", "host", "lobby:1", "left:1"),
+                                  joins=[S("menu", "join:" + LO, "wait:500", "leave", "back", "menu", "host", "wait:3000")],
+                                  modes=("shim",), may_host=("join1",), known="modern",
+                                  checks=[("after", "join1", "goes to host", "hosting room"), ("count", "join1", PW_ASKED, 1)]),
     # 7. pick a room from the list, cancel at its password box, then Host Game
     "pick_cancel_host": dict(host=S("menu", "host", "wait:15000"), env_host={"OKP_TEST_HOST_PASSWORD": "lap3"},
                              joins=[S("menu", "wait:2000", "joinfail:" + LO, "back", "menu", "host", "wait:3000")],
@@ -150,6 +226,44 @@ SCENARIOS = {
                        joins=[S("menu", "join:" + LO, "wait:500", "leave", "back", "await:rehosted", "wait:3000", "menu",
                                 "wait:1500", "join:" + LO, "wait:500", "leave")],
                        env_join={"OKP_TEST_JOIN_PASSWORD": "lap3|lap4"}, modes=("shim",)),
+    # 10b. a known build: the host leaves its lobby and hosts again in the same okplay session (no quit): the password
+    #      is asked again, the room gets a new id, and the new password applies (the joiner's old one would not)
+    "pw_rehost_known": dict(host=S("menu", "host", "lobby:1", "left:1", "close", "menu", "env:OKP_TEST_HOST_PASSWORD=lap4",
+                                   "host", "say:rehosted", "lobby:2", "left:2"), env_host={"OKP_TEST_HOST_PASSWORD": "lap3"},
+                            joins=[S("menu", "join:" + LO, "wait:500", "leave", "back", "await:rehosted", "wait:3000", "menu",
+                                     "wait:1500", "join:" + LO, "wait:500", "leave")], known="modern",
+                            env_join={"OKP_TEST_JOIN_PASSWORD": "lap3|lap4"}, modes=("shim",),
+                            checks=[("count", "host", PW_ASKED, 2), ("distinct", "host", r"hosting room ([0-9a-f]{8})", 2),
+                                    ("log", "host", "the hosted game is over"), ("nolog", "host", "okplay stops")]),
+    # 10c. the same with the room server: after the new Host Game the list shows one room (the old one was closed with
+    #      its own id before the new id was announced)
+    "pw_rehost_known_online": dict(host=S("menu", "host", "lobby:1", "left:1", "close", "menu", "env:OKP_TEST_HOST_PASSWORD=lap4",
+                                          "host", "wait:4000", "say:rooms_rehosted", "say:rehosted", "lobby:2", "left:2"),
+                                   env_host={"OKP_TEST_HOST_PASSWORD": "lap3"},
+                                   joins=[S("menu", "wait:4000", "join:" + LO, "wait:500", "leave", "back", "await:rehosted",
+                                            "wait:1000", "menu", "wait:1500", "join:" + LO, "wait:500", "leave")], known="modern",
+                                   env_join={"OKP_TEST_JOIN_PASSWORD": "lap3|lap4"}, modes=("shim",), online=True,
+                                   checks=[("rooms", "rooms_rehosted", 1), ("count", "host", PW_ASKED, 2),
+                                           ("distinct", "host", r"hosting room ([0-9a-f]{8})", 2), ("nolog", "host", "close room 00000000")]),
+    # 10d. the host leaves its lobby (Disconnect) and stays there: the game keeps its listener open until the next menu
+    #      entry, so the room has to come off the list on the game's own "not hosting"; hosting again lists a new room
+    "lobby_left_online": dict(host=S("menu", "host", "lobby:1", "wait:1500", "say:rooms_hosting", "left:1", "disconnect", "wait:6000",
+                                     "say:rooms_left", "wait:1000", "menu", "wait:2500", "say:rooms_menu", "wait:1000", "host", "wait:4000",
+                                     "say:rooms_again", "wait:1000", "close", "wait:4000", "say:rooms_closed", "wait:1500"),
+                              joins=[S("menu", "wait:4000", "join:" + LO, "wait:2500", "leave")], known="modern",
+                              env_host={"OKP_TEST_CONN_REPORTS": "no"},   # (a new okplay session starts: no question box)
+                              modes=("shim",), online=True,
+                              checks=[("rooms", "rooms_hosting", 1), ("rooms", "rooms_left", 0), ("rooms", "rooms_menu", 0),
+                                      ("rooms", "rooms_again", 1), ("rooms", "rooms_closed", 0),
+                                      ("log", "host", "the game left its lobby"),
+                                      ("distinct", "host", r"hosting room ([0-9a-f]{8})", 2), ("nolog", "host", "close room 00000000")]),
+    # 10e. the same without the room server (LAN): nothing breaks, the next Host Game is a new game
+    "lobby_left_lan": dict(host=S("menu", "host", "lobby:1", "left:1", "disconnect", "wait:4000", "menu", "wait:1000", "host",
+                                  "lobby:2", "left:2"),
+                           joins=[S("menu", "wait:2500", "join:" + LO, "wait:500", "leave", "back", "wait:9000", "menu", "wait:1500",
+                                    "join:" + LO, "wait:500", "leave")], known="modern", modes=("shim",),
+                           env_host={"OKP_TEST_CONN_REPORTS": "no"},
+                           checks=[("log", "host", "the game left its lobby")]),
     # 12. in the lobby the joiner's PC freezes for 20 s, a minute after it joined, then goes on: the stream goes on
     #     (okplay.ini drop_after=40, so only okplay's own peer table could end it)
     "lobby_silence": dict(host=S("menu", "host", "lobby:1", "left:1", "--secs", "150"),
@@ -267,6 +381,9 @@ def run_scenario(sc, mode):
     env["TCPSIM_SIGDIR"] = d   # (scripts' say/await, whatever folder each process runs in)
     if mode == "shim":
         env.update(OKP_WSOCK_MODE="lan", OKP_WSOCK_GAME="nfs3")
+        kb = sc.get("known") or KNOWN["all"]
+        if kb:
+            env.update(OKP_TEST_EXEBUILD=BUILDS[kb][0], TCPSIM_GAMESTATE=BUILDS[kb][1])
         if sc.get("online"):
             env.update(OKP_WSOCK_MODE="online", OKP_SERVER=f"http://127.0.0.1:{STANDIN_PORT}/okplay.php", OKP_STUN="")
     env_host = dict(env, OKP_TEST_HOST_PASSWORD="<none>")
@@ -278,6 +395,10 @@ def run_scenario(sc, mode):
         env_host.update(sc.get("env_host", {}))
         env_join.update(sc.get("env_join", {}))
         env_host2.update(sc.get("env_host2", {}))
+        for e in (env_host, env_join, env_host2):   # a process that says it is a known build plays that build's game state
+            for fp, gs in BUILDS.values():
+                if e.get("OKP_TEST_EXEBUILD") == fp:
+                    e["TCPSIM_GAMESTATE"] = gs
     exe = os.path.join(d, "tcpsim.exe")
     subst = {"lo": "127.0.0.1", "lanip": lan_ip(), "menuport": "9803" if mode == "shim" else "0"}
     procs, dirs = {}, {}
@@ -349,6 +470,12 @@ def script_checks(sc, out):   # what the okplay logs must (not) say, per scenari
             why.append(f"{role}'s log never says /{c[2]}/")
         elif kind == "nolog" and hit(c[2], lines):
             why.append(f"{role}'s log says /{c[2]}/: {hit(c[2], lines)[0].strip()[:120]}")
+        elif kind == "count" and len(hit(c[2], lines)) != c[3]:   # exactly c[3] lines like c[2]
+            why.append(f"{role}'s log says /{c[2]}/ {len(hit(c[2], lines))} time(s), expected {c[3]}")
+        elif kind == "distinct":   # c[3] different values of c[2]'s group 1
+            vals = {re.search(c[2], l).group(1) for l in hit(c[2], lines)}
+            if len(vals) != c[3]:
+                why.append(f"{role}: {len(vals)} different /{c[2]}/ ({', '.join(sorted(vals))}), expected {c[3]}")
         elif kind == "after":   # c[3] after the first line like c[2]
             at = [i for i, l in enumerate(lines) if re.search(c[2], l)]
             if not at:
@@ -443,6 +570,8 @@ def main():
     ap.add_argument("-v", action="store_true", help="print every process's output")
     ap.add_argument("--host-dll", default="", help="the host runs this wsock32.dll (an older build, for old-with-new)")
     ap.add_argument("--join-dll", default="", help="the joiners run this wsock32.dll")
+    ap.add_argument("--build", default="", choices=["", "modern", "oem", "cd"],
+                    help="every scenario as this known build of the game (its own state decides Host Game)")
     a = ap.parse_args()
     if a.list:
         print("\n".join(SCENARIOS))
@@ -451,11 +580,19 @@ def main():
         k, v = kv.split("=", 1)
         EXTRA_ENV[k] = v
     DLLS["host"], DLLS["join"] = a.host_dll or None, a.join_dll or None
+    KNOWN["all"] = a.build or None
     names = [s for s in (a.only.split(",") if a.only else SCENARIOS) if s]
     modes = ["real", "shim"] if a.mode == "both" else [a.mode]
     standin = None
     if "shim" in modes and any(SCENARIOS[n].get("online") for n in names):
-        standin = subprocess.Popen([sys.executable, STANDIN, "--port", str(STANDIN_PORT)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        php_server = os.environ.get("TCP_RUN_PHP_SERVER")   # a released okplay.php instead of the stand-in (old servers keep working)
+        if php_server:
+            d = tempfile.mkdtemp(prefix="tcprun_php_")
+            shutil.copy(php_server, os.path.join(d, "okplay.php"))
+            standin = subprocess.Popen([os.environ.get("TCP_RUN_PHP", "php"), "-S", f"127.0.0.1:{STANDIN_PORT}", "-t", d],
+                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        else:
+            standin = subprocess.Popen([sys.executable, STANDIN, "--port", str(STANDIN_PORT)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1.5)
     rows = []
     try:

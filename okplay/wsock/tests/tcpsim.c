@@ -47,7 +47,14 @@
  *   halfclose  join sends 10 KB then shutdown(SD_SEND); host reads 10 KB then EOF, answers the count, closes
  *   rstunread  host sends 100 B; join closes without reading; host's recv must fail with WSAECONNRESET
  *   window     host doesn't read for 3 s; join sends until WSAEWOULDBLOCK, resumes when writable, all arrives
- * Output: EVENT lines, STAT lines, RESULT ok | RESULT fail <reason>. */
+ * Output: EVENT lines, STAT lines, RESULT ok | RESULT fail <reason>.
+ *
+ * TCPSIM_GAMESTATE=modern|cd: the game's own two values (okplay's nfs3_fix.c reads them on the builds it knows; run
+ * with OKP_TEST_EXEBUILD set to such a build) at that build's addresses, set as the game sets them: Host Game sets
+ * net = 3 and server = 1 before it restarts the service and listens; a join sets server = 0 and net = 3 before it
+ * connects; entering the TCP menu leaves them; leaving a lobby, a failed join and leaving network play reset them
+ * (net 0, server 1). The exe must sit at 0x400000 (build.sh links tcpsim without ASLR); a large zeroed block makes
+ * its image reach those addresses, as the game's does. */
 #define WIN32_LEAN_AND_MEAN
 #include <winsock.h>
 #include <mmsystem.h>
@@ -88,6 +95,41 @@ static unsigned n_wouldblock, n_partial, n_partial_peek, n_dead, n_busy_retries;
 static int claim_delay, die_at = -1, die_hard, expect_loss, lost_err;
 static unsigned n_accepted;
 static int menu_ms = 500, menu_port = -1;
+static volatile DWORD *gs_net;           /* TCPSIM_GAMESTATE: the game's network state (NULL = not emulated) */
+static volatile WORD *gs_srv;            /* ... and "this PC is the server" */
+static char *gs_join;                    /* ... and the Join box's address, typed last (the box opens with it) */
+/* (the game's values sit in its exe's image: this zeroed block stretches tcpsim's image over both builds' addresses) */
+static char gs_cover[0x600000];
+
+static void gs_set(int net, int srv)
+{
+    if (!gs_net) return;
+    *gs_srv = (WORD)srv;
+    *gs_net = (DWORD)net;
+    printf("EVENT game state: net %d, server %d\n", net, srv);
+}
+
+static int gs_init(void)   /* 0 = TCPSIM_GAMESTATE asked for, but the addresses could not be had */
+{
+    char v[16] = "";
+    DWORD net, srv;
+    if (!GetEnvironmentVariableA("TCPSIM_GAMESTATE", v, sizeof(v)) || !v[0]) return 1;
+    DWORD join;
+    if (!strcmp(v, "modern")) { net = 0x7a22e0; srv = 0x7a22da; join = 0x6fbb7e; }
+    else if (!strcmp(v, "cd")) { net = 0x7c92e0; srv = 0x7c92da; join = 0x722b7e; }
+    else { printf("EVENT TCPSIM_GAMESTATE=%s: not modern or cd\n", v); return 0; }
+    if ((DWORD)(UINT_PTR)GetModuleHandleA(NULL) != 0x400000) { printf("EVENT game state: the exe is not at 0x400000\n"); return 0; }
+    if ((UINT_PTR)gs_cover > net || (UINT_PTR)gs_cover + sizeof(gs_cover) < net + 4) {
+        printf("EVENT game state: %08lx is not in this exe's image\n", (unsigned long)net);
+        return 0;
+    }
+    gs_net = (volatile DWORD *)(UINT_PTR)net;
+    gs_srv = (volatile WORD *)(UINT_PTR)srv;
+    gs_join = (char *)(UINT_PTR)join;
+    GetEnvironmentVariableA("TCPSIM_JOINTEXT", gs_join, 30);   /* what the game remembered from its last run (empty without) */
+    gs_set(0, 1);   /* (the game's reset at start) */
+    return 1;
+}
 static DWORD parked_at, t_lost;
 static int script_mode;               /* a broken connection is an event, not a failure (the steps decide) */
 static int got_info, pongs;           /* joiner: the host's game info came (in its lobby); ping answers */
@@ -490,6 +532,7 @@ static SOCKET menu_then_host(unsigned short port, int comms)
     if (comms) { lsock = l; start_comms(); }
     Sleep(menu_ms);
     DWORD t0 = now_ms();
+    gs_set(3, 1);   /* Host Game: before the service restarts */
     if (comms) stop_comms();
     closesocket(l);
     WSACleanup();
@@ -681,6 +724,7 @@ static int run_join(const char *addr, int orig)
     memset(c, 0, sizeof(*c));
     c->used = 1;
     c->s = INVALID_SOCKET;
+    gs_set(3, 0);   /* a join */
     int ok = connect_loop(c, &to, 20000, &attempts, how);
     printf("EVENT %s after %lu ms (%d attempts)\n", how, (unsigned long)(now_ms() - t0), attempts);
     if (!ok) { stop_comms(); printf("RESULT fail %s\n", how); return 1; }
@@ -918,6 +962,7 @@ static int edge_join(const char *edge, const char *addr)
     Sleep(menu_ms);
     t0 = now_ms();
     if (!strcmp(edge, "refuse")) to.sin_port = htons((unsigned short)(ntohs(to.sin_port) + 1));
+    gs_set(3, 0);   /* a join */
     SOCKET s = edge_connect(&to, !strcmp(edge, "refuse") ? 10000 : 20000, how, &attempts);
     printf("EVENT %s after %lu ms (%d attempts)\n", how, (unsigned long)(now_ms() - t0), attempts);
     if (!strcmp(edge, "refuse")) {
@@ -1210,8 +1255,10 @@ static int script_join(const char *addr, int must_fail, char *why)
     got_info = 0;
     pongs = 0;
     LeaveCriticalSection(&comms);
+    gs_set(3, 0);   /* a join: before the connect */
     int ok = connect_loop(c, &to, 20000, &attempts, how);
     printf("EVENT %s after %lu ms (%d attempts)\n", how, (unsigned long)(now_ms() - t0), attempts);
+    if (!ok) gs_set(0, 1);   /* (a failed join: back to the menu, reset) */
     if (must_fail) {
         if (ok) { close_conn(c); strcpy(why, "connected, but this join must fail"); return 0; }
         return 1;
@@ -1249,6 +1296,7 @@ static int run_script(int n, char **steps)
         } else if (!strcmp(st, "back")) {
             printf("EVENT back at Connect Players (the menu's listener stays open)\n");
         } else if (!strcmp(st, "host")) {
+            gs_set(3, 1);   /* Host Game: the reset, then net 3 and server 1, before the service restarts */
             service_restart();
             ok = listen_on(port_arg, "Host Game");
             if (ok) {
@@ -1263,10 +1311,17 @@ static int run_script(int n, char **steps)
         } else if (!strcmp(st, "close")) {
             close_all();
             is_host = 0;
+            gs_set(0, 1);
             printf("EVENT the host left its lobby: connections and listener closed\n");
+        } else if (!strcmp(st, "disconnect")) {   /* the lobby's Disconnect: the game keeps its listener until the next menu entry */
+            for (int i = 0; i < MAXP; i++) if (conns[i].used) close_conn(&conns[i]);   /* (the comms thread goes on selecting) */
+            is_host = 0;
+            gs_set(0, 1);
+            printf("EVENT the host left its lobby: connections closed, the listener stays open\n");
         } else if (!strcmp(st, "quit")) {
             WSADATA w;
             close_all();
+            gs_set(0, 1);
             WSACleanup();
             Sleep(2500);
             WSAStartup(0x0101, &w);
@@ -1283,11 +1338,21 @@ static int run_script(int n, char **steps)
             if (n_accepted != before) { ok = 0; strcpy(why, "a player connected"); }
         } else if (!strncmp(st, "join:", 5) || !strncmp(st, "joinfail:", 9)) {
             ok = script_join(arg, st[4] == 'f', why);
+        } else if (!strcmp(st, "joinbox")) {   /* the Join box: opens with the address typed last, the player presses Ok */
+            char a[64];
+            if (!gs_join) { ok = 0; strcpy(why, "joinbox needs TCPSIM_GAMESTATE"); }
+            else {
+                printf("EVENT the Join box shows \"%s\"\n", gs_join);
+                snprintf(a, sizeof(a), "%s:%u", gs_join, port_arg);
+                ok = gs_join[0] && script_join(a, 0, why);
+                if (!gs_join[0]) strcpy(why, "the Join box is empty");
+            }
         } else if (!strcmp(st, "leave")) {
             unsigned char lv[4] = { 4, (unsigned char)my_player, 0, 0x0c };
             if (conns[0].used && !conns[0].closed) send_retry(&conns[0], lv, 4);
             Sleep(100);
             close_conn(&conns[0]);
+            gs_set(0, 1);
             printf("EVENT left the lobby\n");
         } else if (!strcmp(st, "ping")) {
             unsigned char pg[4] = { 9, (unsigned char)my_player, 1, 2 };
@@ -1340,6 +1405,7 @@ int main(int argc, char **argv)
         printf("usage: tcpsim host|join ADDR[:PORT]|selftest [--port P] [--players N] [--frames F] [--hz H] [--secs S] [--orig] [--edge NAME]\n");
         return 2;
     }
+    if (!gs_init()) { printf("RESULT fail game state\n"); return 2; }
     timeBeginPeriod(1);
     InitializeCriticalSection(&comms);
     is_host = !strcmp(argv[1], "host");
