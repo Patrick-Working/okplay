@@ -235,6 +235,9 @@ typedef struct tagDirectPlay2Data
   GUID   dp1Sessions[ 64 ];
   DWORD  dp1SessionCount;
   int    groupFromWire;   /* applying another machine's group change: send nothing on (groups.c) */
+  /* the machine a join's requests go to (the SP header of the session we Open, as an okplay peer
+   * id; 0 = not known): its replies are taken only from it (DP_ReplyFromNameServer) */
+  unsigned long long joinHostPeer;
 } DirectPlay2Data;
 
 typedef struct IDirectPlayImpl
@@ -256,7 +259,7 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
         void **lplpReply, DWORD *lpdwMsgSize );
 DPSESSIONDESC2 *DP_DuplicateSessionDesc( const DPSESSIONDESC2 *src, BOOL dstAnsi, BOOL srcAnsi );
 HRESULT DP_HandleGameMessage( IDirectPlayImpl *This, void *messageBody, DWORD messageBodySize,
-                              DPID fromId, DPID toId );
+                              DPID fromId, DPID toId, const void *messageHeader );
 HRESULT DP_CreatePlayer( IDirectPlayImpl *This, void *msgHeader, DPID *lpid, DPNAME *lpName,
                          void *data, DWORD dataSize, void *spData, DWORD spDataSize, DWORD dwFlags,
                          HANDLE hEvent, struct PlayerData **playerData, BOOL bAnsi );
@@ -378,6 +381,9 @@ HRESULT DP_LOBBY_HandleChat( IDirectPlayImpl *This, const void *body, DWORD size
  * It returns TRUE when the provider gives us no identity, so classic providers behave exactly as before. */
 DPID DP_SenderMachine( IDirectPlayImpl *This, const void *header, BOOL *known );
 BOOL DP_SenderOwns( IDirectPlayImpl *This, const void *header, DPID owner, const char *what );
+/* a reply to one of our requests (player id, join): did it come from the machine we asked - the
+ * host? TRUE when the provider gives no identity (classic providers, as before) */
+BOOL DP_ReplyFromNameServer( IDirectPlayImpl *This, const void *header, WORD cmd );
 
 /* host.c: accepting joiners */
 HRESULT DP_HOST_HandleForwardAddPlayer( IDirectPlayImpl *This, void *body, DWORD bodySize,

@@ -41,6 +41,7 @@ WINE_DEFAULT_DEBUG_CHANNEL(dplay);
 
 #ifdef OKP_BUILTIN
 void okp_join_failed( IDirectPlaySP *isp, const char *step, HRESULT hr );   /* okplay/src/sp.c */
+extern unsigned long long okp_header_peer( const void *hdr, DWORD hdrsize );
 #endif
 
 /* FIXME: Should this be externed? */
@@ -72,7 +73,7 @@ static void DP_SetPlayerData( lpPlayerData lpPData, DWORD dwFlags,
 static BOOL DP_BuildSPCompoundAddr( LPGUID lpcSpGuid, LPVOID* lplpAddrBuf,
                                     LPDWORD lpdwBufSize );
 
-static DPID DP_GetRemoteNextObjectId(void);
+static DPID DP_GetRemoteNextObjectId( IDirectPlayImpl *This );
 
 static DWORD DP_CopySessionDesc( LPDPSESSIONDESC2 destSessionDesc,
                                  LPCDPSESSIONDESC2 srcSessDesc, BOOL dstAnsi, BOOL srcAnsi );
@@ -270,15 +271,34 @@ static void dplay_destroy(IDirectPlayImpl *obj)
      free( obj );
 }
 
-static inline DPID DP_NextObjectId(void)
+/* the next player/group id. With a limit (DP_LimitObjectIds) numbering starts again at 1 past it;
+ * an id still held by a player or group of this object is skipped (and so is 0). */
+static DPID DP_NextObjectId( IDirectPlayImpl *This )
 {
-  LONG id = InterlockedIncrement( &kludgePlayerGroupId );
-  if ( idLimit && id > idLimit )
+  LONG id = 0, tries;
+
+  for ( tries = 0; tries <= (idLimit ? idLimit + 1 : 16); tries++ )
   {
-    /* start again at 1; only a session that has made more objects than the limit gets here */
-    ERR( "more than %ld player and group ids made in this run; numbering again from 1\n", idLimit );
-    InterlockedCompareExchange( &kludgePlayerGroupId, 1, id );
-    id = 1;
+    id = InterlockedIncrement( &kludgePlayerGroupId );
+    if ( idLimit && (id > idLimit || id <= 0) )
+    {
+      /* only the thread that sees the counter at this value resets it; the others take the next */
+      if ( InterlockedCompareExchange( &kludgePlayerGroupId, 0, id ) == id )
+        ERR( "more than %ld player and group ids made in this run; numbering again from 1\n", idLimit );
+      continue;
+    }
+    if ( !id || id == (LONG)DPID_UNKNOWN )
+      continue;
+    if ( !This )
+      break;
+    EnterCriticalSection( &This->lock );
+    if ( !DP_FindPlayer( This, (DPID)id ) && !DP_FindAnyGroup( This, (DPID)id ) )
+    {
+      LeaveCriticalSection( &This->lock );
+      break;
+    }
+    LeaveCriticalSection( &This->lock );
+    WARN( "id 0x%08lx is still in use - skipped\n", id );
   }
   return (DPID)id;
 }
@@ -578,9 +598,20 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
 
       LPDPMSG_NEWPLAYERIDREPLY lpReply;
 
+      if ( dwMessageBodySize < sizeof( *lpcMsg ) )
+        return DPERR_GENERIC;
+      /* ids are the host's to hand out: a machine that does not host answers nothing */
+      if ( !This->dp2->bHostInterface )
+      {
+        DP_NOTE( "id request ignored: this machine is not the host\n" );
+        return DP_OK;
+      }
+
       *lpdwMsgSize = This->dp2->spData.dwSPHeaderSize + sizeof( *lpReply );
 
       *lplpReply = calloc( 1, *lpdwMsgSize );
+      if ( !*lplpReply )
+        return DPERR_OUTOFMEMORY;
 
       FIXME( "Ignoring dwFlags 0x%08lx in request msg\n",
              lpcMsg->dwFlags );
@@ -593,7 +624,7 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
       lpReply->envelope.wCommandId = DPMSGCMD_NEWPLAYERIDREPLY;
       lpReply->envelope.wVersion   = DPMSGVER_DP6;
 
-      lpReply->dpidNewPlayerId = DP_NextObjectId();
+      lpReply->dpidNewPlayerId = DP_NextObjectId( This );
 
       TRACE( "Allocating new playerid 0x%08lx from remote request\n",
              lpReply->dpidNewPlayerId );
@@ -618,16 +649,42 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
       if ( dwMessageBodySize - offset < 6 )
         return DPERR_GENERIC;
 
-      /* a machine announces players on itself only */
+      /* a machine announces players on itself only. An announcement naming no machine (system
+       * player 0) belongs to the machine that sent it. */
+      if ( !playerInfo.systemPlayerId )
+      {
+        BOOL known;
+        EnterCriticalSection( &This->lock );
+        playerInfo.systemPlayerId = DP_SenderMachine( This, messageHeader, &known );
+        LeaveCriticalSection( &This->lock );
+        if ( known && !playerInfo.systemPlayerId )
+          DP_NOTE( "CREATESESSION for 0x%08lx names no machine and comes from one we do not know - taken\n",
+                   msg->playerId );
+      }
       if ( playerInfo.systemPlayerId &&
            !DP_SenderOwns( This, messageHeader, playerInfo.systemPlayerId, "CREATESESSION" ) )
         return DP_OK;
+      /* a system player stands for its own machine: its id is its machine's */
+      if ( (playerInfo.flags & DPLAYI_PLAYER_SYSPLAYER) && playerInfo.systemPlayerId &&
+           msg->playerId != playerInfo.systemPlayerId )
+      {
+        DP_NOTE( "CREATESESSION for 0x%08lx ignored: a system player of machine 0x%08lx\n", msg->playerId,
+                 playerInfo.systemPlayerId );
+        return DP_OK;
+      }
 
       EnterCriticalSection( &This->lock );
 
       if ( !This->dp2->bConnectionOpen )
       {
         LeaveCriticalSection( &This->lock );
+        return DP_OK;
+      }
+      /* an id in use (or 0) is not created a second time */
+      if ( !msg->playerId || DP_FindPlayer( This, msg->playerId ) || DP_FindAnyGroup( This, msg->playerId ) )
+      {
+        LeaveCriticalSection( &This->lock );
+        DP_NOTE( "CREATESESSION for 0x%08lx ignored: that id is in use\n", msg->playerId );
         return DP_OK;
       }
 
@@ -652,7 +709,9 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
     case DPMSGCMD_NEWPLAYERIDREPLY:
     case DPMSGCMD_FORWARDADDPLAYERNACK:
     case DPMSGCMD_SUPERENUMPLAYERSREPLY:
-      DP_MSG_ReplyReceived( This, wCommandId, messageBody, dwMessageBodySize, messageHeader );
+      /* these answer our requests to the host: taken from the host's machine only */
+      if ( DP_ReplyFromNameServer( This, messageHeader, wCommandId ) )
+        DP_MSG_ReplyReceived( This, wCommandId, messageBody, dwMessageBodySize, messageHeader );
       break;
 
     case DPMSGCMD_GROUPDATACHANGED: {
@@ -837,6 +896,15 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
         LeaveCriticalSection( &This->lock );
         return DP_OK;
       }
+      /* an id in use (or 0) is not created a second time */
+      if ( !msg->playerId || DP_FindPlayer( This, msg->playerId ) || DP_FindAnyGroup( This, msg->playerId ) )
+      {
+        LeaveCriticalSection( &This->lock );
+        DP_NOTE( "ADDFORWARD for 0x%08lx ignored: that id is in use\n", msg->playerId );
+        if ( msg->playerId )
+          DP_MSG_SendAddForwardAck( This, msg->playerId );   /* answered as before */
+        return DP_OK;
+      }
 
       hr = DP_CreatePlayer( This, messageHeader, &msg->playerId, &playerInfo.name,
                             playerInfo.playerData, playerInfo.playerDataLength, playerInfo.spData,
@@ -867,7 +935,7 @@ HRESULT DP_HandleMessage( IDirectPlayImpl *This, void *messageBody,
 }
 
 HRESULT DP_HandleGameMessage( IDirectPlayImpl *This, void *messageBody, DWORD messageBodySize,
-                              DPID fromId, DPID toId )
+                              DPID fromId, DPID toId, const void *messageHeader )
 {
   DPMSG_GENERIC *msg;
   DWORD msgSize;
@@ -875,12 +943,50 @@ HRESULT DP_HandleGameMessage( IDirectPlayImpl *This, void *messageBody, DWORD me
 
   TRACE( "(%p)->(%p,0x%08lx,0x%08lx,0x%08lx)\n", This, messageBody, messageBodySize, fromId, toId );
 
+  if ( messageBodySize < sizeof( DPMSG_SYSMSGENVELOPE ) )
+    return DPERR_GENERIC;
   msg = (DPMSG_GENERIC *) ((char *) messageBody + sizeof( DPMSG_SYSMSGENVELOPE ));
   msgSize = messageBodySize - sizeof( DPMSG_SYSMSGENVELOPE );
 
-  DP_LIFE_Heard( This, fromId );
+  /* from 0 = "a system message" to the game: those are only made on this machine. A game sends
+   * from one of its own players (Send refuses anything else). */
+  if ( fromId == DPID_SYSMSG )
+  {
+    WARN( "game message from player 0 dropped\n" );
+    return DP_OK;
+  }
 
   EnterCriticalSection( &This->lock );
+
+  if ( !This->dp2->bConnectionOpen )
+  {
+    LeaveCriticalSection( &This->lock );
+    return DP_OK;
+  }
+
+  /* the sender must own the player it sends as: a player of another machine we know is refused,
+   * except from the host (it may pass messages on). A player or machine we do not know (yet) is
+   * let through, as before. */
+  {
+    struct PlayerList *plist = DP_FindPlayer( This, fromId );
+    DPID owner = plist ? ( (plist->lpPData->dwFlags & DPLAYI_PLAYER_SYSPLAYER) ? fromId
+                                                                               : plist->lpPData->systemPlayerId ) : 0;
+    BOOL known;
+    DPID sender = DP_SenderMachine( This, messageHeader, &known );
+
+#ifndef DPLAYX_TEST_SKIP_AUTH
+    if ( known && sender && owner && sender != owner && sender != This->dp2->nameServerId )
+    {
+      LeaveCriticalSection( &This->lock );
+      DP_NOTE( "game message from 0x%08lx dropped: sent by machine 0x%08lx, not the player's (0x%08lx)\n",
+               fromId, sender, owner );
+      return DP_OK;
+    }
+#endif
+    /* a message the host passed on says nothing about the player's own machine being alive */
+    if ( !(known && sender && owner && sender != owner) )
+      DP_LIFE_Heard( This, fromId );
+  }
 
   hr = DP_QueueMessage( This, fromId, toId, 0, msg, DP_CopyGeneric, msgSize );
 
@@ -1340,6 +1446,19 @@ static HRESULT WINAPI IDirectPlayImpl_Open( IDirectPlay *iface, DPSESSIONDESC *s
     return IDirectPlayX_Open( &This->IDirectPlay4A_iface, &sd2, sdesc->dwFlags & (DPOPEN_JOIN | DPOPEN_CREATE) );
 }
 
+/* a name pointer of a message copied into buf (size bytes): inside buf, NUL-terminated there */
+static BOOL dp1_name_in( const BYTE *buf, DWORD size, const WCHAR *s )
+{
+    DWORD off, i;
+
+    if ( !s || (const BYTE *)s < buf || (const BYTE *)s >= buf + size ) return FALSE;
+    off = (DWORD)((const BYTE *)s - buf);
+    if ( off % sizeof(WCHAR) ) return FALSE;
+    for ( i = 0; i < (size - off) / sizeof(WCHAR); i++ )
+        if ( !s[ i ] ) return TRUE;
+    return FALSE;
+}
+
 /* Receive: the next message as DirectPlay 1 delivers it. DirectPlay 2's "created" and "destroyed"
  * become DirectPlay 1's DPMSG_ADDPLAYER (names as char[], long name first) and an id-only delete
  * message (DELETEPLAYER or DELETEGROUP); everything else is DirectPlay 2's Unicode message, as Windows
@@ -1352,7 +1471,7 @@ static HRESULT WINAPI IDirectPlayImpl_Receive( IDirectPlay *iface, DPID *from, D
     DWORD bufsize = sizeof(stack), need;
     DPID f = 0, t = 0;
     HRESULT hr;
-    DWORD type;
+    DWORD type = 0, have = 0;
 
     TRACE( "(%p)->(%p,%p,0x%08lx,%p,%p)\n", This, from, to, flags, data, size );
     if ( !from || !to || !size ) return DPERR_INVALIDPARAMS;
@@ -1365,13 +1484,22 @@ static HRESULT WINAPI IDirectPlayImpl_Receive( IDirectPlay *iface, DPID *from, D
         f = *from;
         t = *to;
         hr = DP_IF_Receive( This, &f, &t, flags | DPRECEIVE_PEEK, buf, &got, FALSE );
+        have = got;
         if ( hr != DPERR_BUFFERTOOSMALL ) break;
         if ( buf != stack ) free( buf );
         if ( !(buf = malloc( got )) ) return DPERR_OUTOFMEMORY;
         bufsize = got;
     }
+    /* only a whole create/destroy message is converted (sizes checked; a shorter one passes as it is) */
+    if ( SUCCEEDED(hr) && f == DPID_SYSMSG && have >= sizeof(DWORD) )
+    {
+        type = ((DPMSG_GENERIC *)buf)->dwType;
+        if ( (type == DPSYS_CREATEPLAYERORGROUP && have < sizeof(DPMSG_CREATEPLAYERORGROUP)) ||
+             (type == DPSYS_DESTROYPLAYERORGROUP && have < sizeof(DPMSG_DESTROYPLAYERORGROUP)) )
+            type = 0;
+    }
     if ( FAILED(hr) || f != DPID_SYSMSG ||
-         ((type = ((DPMSG_GENERIC *)buf)->dwType) != DPSYS_CREATEPLAYERORGROUP && type != DPSYS_DESTROYPLAYERORGROUP) )
+         (type != DPSYS_CREATEPLAYERORGROUP && type != DPSYS_DESTROYPLAYERORGROUP) )
     {
         if ( buf != stack ) free( buf );
         if ( FAILED(hr) ) return hr;
@@ -1405,6 +1533,7 @@ static HRESULT WINAPI IDirectPlayImpl_Receive( IDirectPlay *iface, DPID *from, D
             if ( buf != stack ) free( buf );
             return hr;
         }
+        have = got;
     }
     if ( type == DPSYS_CREATEPLAYERORGROUP )
     {
@@ -1414,9 +1543,10 @@ static HRESULT WINAPI IDirectPlayImpl_Receive( IDirectPlay *iface, DPID *from, D
         m.dwType = DP1SYS_ADDPLAYER;
         m.dwPlayerType = c->dwPlayerType == DPPLAYERTYPE_PLAYER ? 1 : 0;
         m.dpId = c->dpId;
-        if ( c->dpnName.lpszLongName )
+        /* the names were copied into buf with the message: used only if they lie in it, terminated */
+        if ( have >= sizeof(*c) && dp1_name_in( buf, have, c->dpnName.lpszLongName ) )
             WideCharToMultiByte( CP_ACP, 0, c->dpnName.lpszLongName, -1, m.szLongName, DPLONGNAMELEN, NULL, NULL );
-        if ( c->dpnName.lpszShortName )
+        if ( have >= sizeof(*c) && dp1_name_in( buf, have, c->dpnName.lpszShortName ) )
             WideCharToMultiByte( CP_ACP, 0, c->dpnName.lpszShortName, -1, m.szShortName, DPSHORTNAMELEN, NULL, NULL );
         m.szLongName[ DPLONGNAMELEN - 1 ] = m.szShortName[ DPSHORTNAMELEN - 1 ] = 0;
         m.dwCurrentPlayers = c->dwCurrentPlayers;
@@ -2252,11 +2382,11 @@ static HRESULT DP_IF_CreateGroup( IDirectPlayImpl *This, void *lpMsgHdr, DPID *l
      */
     if( This->dp2->bHostInterface )
     {
-      *lpidGroup = DP_NextObjectId();
+      *lpidGroup = DP_NextObjectId( This );
     }
     else
     {
-      *lpidGroup = DP_GetRemoteNextObjectId();
+      *lpidGroup = DP_GetRemoteNextObjectId( This );
     }
   }
 
@@ -2848,7 +2978,7 @@ static HRESULT DP_IF_CreatePlayer( IDirectPlayImpl *This, DPID *lpidPlayer,
     /* If we are the session master, we dish out the group/player ids */
     if( This->dp2->bHostInterface )
     {
-      *lpidPlayer = DP_NextObjectId();
+      *lpidPlayer = DP_NextObjectId( This );
     }
     else
     {
@@ -2942,12 +3072,12 @@ static HRESULT WINAPI IDirectPlay4Impl_CreatePlayer( IDirectPlay4 *iface, DPID *
                            lpData, dwDataSize, dwFlags, FALSE );
 }
 
-static DPID DP_GetRemoteNextObjectId(void)
+static DPID DP_GetRemoteNextObjectId( IDirectPlayImpl *This )
 {
   FIXME( ":stub\n" );
 
   /* Hack solution */
-  return DP_NextObjectId();
+  return DP_NextObjectId( This );
 }
 
 static HRESULT WINAPI IDirectPlay2AImpl_DeletePlayerFromGroup( IDirectPlay2A *iface, DPID group,
@@ -4829,6 +4959,12 @@ static HRESULT DP_SecureOpen( IDirectPlayImpl *This, const DPSESSIONDESC2 *lpsd,
 #endif
   }
 
+#ifdef OKP_BUILTIN
+  /* joining: the replies to our requests must come from this machine (DP_ReplyFromNameServer) */
+  This->dp2->joinHostPeer = ( (dwFlags & DPOPEN_JOIN) && spMessageHeader )
+      ? okp_header_peer( spMessageHeader, This->dp2->spData.dwSPHeaderSize ) : 0;
+#endif
+
   /* Invoke the conditional callback for the service provider */
   if( This->dp2->spData.lpCB->Open )
   {
@@ -4965,7 +5101,7 @@ static HRESULT DP_SecureOpen( IDirectPlayImpl *This, const DPSESSIONDESC2 *lpsd,
      * player, and joiners did not see a machine to send to. */
     DWORD createFlags = DPLAYI_PLAYER_SYSPLAYER | DPLAYI_PLAYER_NAMESRVR | DPLAYI_PLAYER_PLAYERLOCAL;
 
-    This->dp2->systemPlayerId = DP_NextObjectId();
+    This->dp2->systemPlayerId = DP_NextObjectId( This );
 
     hr = DP_CreatePlayer( This, NULL, &This->dp2->systemPlayerId, NULL, NULL, 0, NULL, 0,
                           createFlags, NULL, NULL, bAnsi );
@@ -5876,9 +6012,9 @@ static HRESULT DP_IF_CreateGroupInGroup( IDirectPlayImpl *This, void *lpMsgHdr, 
   if( DPID_UNKNOWN == *lpidGroup )
   {
     if( This->dp2->bHostInterface )
-      *lpidGroup = DP_NextObjectId();
+      *lpidGroup = DP_NextObjectId( This );
     else
-      *lpidGroup = DP_GetRemoteNextObjectId();
+      *lpidGroup = DP_GetRemoteNextObjectId( This );
   }
 
   hr = DP_CreateGroup(This, lpMsgHdr, lpidGroup, lpGroupName, lpData, dwDataSize, dwFlags,
@@ -8512,6 +8648,33 @@ BOOL DP_SenderOwns( IDirectPlayImpl *This, const void *header, DPID owner, const
     LeaveCriticalSection( &This->lock );
     DP_NOTE( "%s for 0x%08lx ignored: sent by machine 0x%08lx, not the owner's\n", what, owner, sender );
     return FALSE;
+}
+
+BOOL DP_ReplyFromNameServer( IDirectPlayImpl *This, const void *header, WORD cmd )
+{
+#if defined(OKP_BUILTIN) && !defined(DPLAYX_TEST_SKIP_AUTH)
+    unsigned long long from = okp_header_peer( header, This->dp2->spData.dwSPHeaderSize ), want = 0;
+
+    if ( !from ) return TRUE;   /* no identity: as before */
+    EnterCriticalSection( &This->lock );
+    if ( !This->dp2->bConnectionOpen )
+        want = This->dp2->joinHostPeer;   /* joining: the machine whose session we opened */
+    else if ( This->dp2->nameServerId && This->dp2->nameServerId != This->dp2->systemPlayerId )
+    {
+        void *data = NULL;
+        DWORD size = 0;
+        if ( SUCCEEDED( IDirectPlaySP_GetSPPlayerData( This->dp2->spData.lpISP, This->dp2->nameServerId, &data,
+                                                       &size, DPSET_REMOTE ) ) )
+            want = okp_spdata_peer( data, size );
+    }
+    LeaveCriticalSection( &This->lock );
+    if ( !want || want == from ) return TRUE;
+    DP_NOTE( "reply %u ignored: not from the host's machine\n", cmd );
+    return FALSE;
+#else
+    (void)This; (void)header; (void)cmd;
+    return TRUE;
+#endif
 }
 
 static void DP_QueueNameChanged( IDirectPlayImpl *This, struct PlayerData *p )

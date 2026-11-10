@@ -195,8 +195,19 @@ HRESULT DP_GRP_HandleCreate( IDirectPlayImpl *This, const void *body, DWORD size
     hr = DP_MSG_ReadPackedPlayer( (char *)body, &offset, size, &info );
     if ( FAILED( hr ) )
         return hr;
-    /* a machine announces its own groups only */
+    /* a machine announces its own groups only (naming no machine: the sender's) */
+    if ( !info.systemPlayerId )
+    {
+        BOOL known;
+        EnterCriticalSection( &This->lock );
+        info.systemPlayerId = DP_SenderMachine( This, header, &known );
+        LeaveCriticalSection( &This->lock );
+        if ( known && !info.systemPlayerId )
+            DP_NOTE( "CREATEGROUP 0x%08lx names no machine and comes from one we do not know - taken\n", msg->playerId );
+    }
     if ( info.systemPlayerId && !DP_SenderOwns( This, header, info.systemPlayerId, "CREATEGROUP" ) )
+        return DP_OK;
+    if ( !msg->playerId )
         return DP_OK;
     if ( info.flags & DPLAYI_GROUP_HIDDEN ) flags |= DPGROUP_HIDDEN;
     if ( info.flags & GROUP_STAGING_BIT ) flags |= DPGROUP_STAGINGAREA;

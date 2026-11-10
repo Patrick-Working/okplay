@@ -230,7 +230,7 @@ static HRESULT WINAPI IDirectPlaySPImpl_HandleMessage( IDirectPlaySP *iface, voi
   {
     LPDPMSG_SYSMSGENVELOPE gameMsg = lpMessageBody;
     return DP_HandleGameMessage( This->dplay, lpMessageBody, dwMessageBodySize,
-                                 gameMsg->dwPlayerFrom, gameMsg->dwPlayerTo );
+                                 gameMsg->dwPlayerFrom, gameMsg->dwPlayerTo, lpMessageHeader );
   }
 
   wCommandId = lpMsg->wCommandId;

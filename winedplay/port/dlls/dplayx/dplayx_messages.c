@@ -322,7 +322,7 @@ static HRESULT DP_MSG_ReadString( char *data, DWORD *inoutOffset, DWORD maxSize,
     DWORD maxLength;
     DWORD length;
 
-    if( maxSize - offset < sizeof( WCHAR ) )
+    if( offset > maxSize || maxSize - offset < sizeof( WCHAR ) )
       return DPERR_GENERIC;
 
     maxLength = (maxSize - offset) / sizeof( WCHAR );
@@ -342,7 +342,8 @@ static HRESULT DP_MSG_ReadSizedString( char *data, DWORD *inoutOffset, DWORD max
   DWORD length = size / sizeof( WCHAR ) - 1;
   DWORD offset = *inoutOffset;
 
-  if( maxSize - offset < size )
+  /* the size counts the terminator: at least one WCHAR, inside the message */
+  if( size < sizeof( WCHAR ) || offset > maxSize || maxSize - offset < size )
     return DPERR_GENERIC;
 
   if ( ((WCHAR *) &data[ offset ])[ length ] != L'\0' )
@@ -358,6 +359,9 @@ static HRESULT DP_MSG_ReadInteger( char *data, DWORD *inoutOffset, DWORD maxSize
                                    DWORD *value )
 {
   DWORD offset = *inoutOffset;
+
+  if( offset > maxSize )
+    return DPERR_GENERIC;
 
   switch ( size )
   {
@@ -396,7 +400,7 @@ HRESULT DP_MSG_ReadPackedPlayer( char *data, DWORD *inoutOffset, DWORD maxSize,
 
   memset( playerInfo, 0, sizeof( DPPLAYERINFO ) );
 
-  if( maxSize - offset < sizeof( DPLAYI_PACKEDPLAYER ) )
+  if( offset > maxSize || maxSize - offset < sizeof( DPLAYI_PACKEDPLAYER ) )
     return DPERR_GENERIC;
   packedPlayer = (DPLAYI_PACKEDPLAYER *) &data[ offset ];
   offset += sizeof( DPLAYI_PACKEDPLAYER );
@@ -466,7 +470,7 @@ static HRESULT DP_MSG_ReadSuperPackedPlayer( char *data, DWORD *inoutOffset, DWO
 
   memset( playerInfo, 0, sizeof( DPPLAYERINFO ) );
 
-  if( maxSize - offset < sizeof( DPLAYI_SUPERPACKEDPLAYER ) )
+  if( offset > maxSize || maxSize - offset < sizeof( DPLAYI_SUPERPACKEDPLAYER ) )
     return DPERR_GENERIC;
   packedPlayer = (DPLAYI_SUPERPACKEDPLAYER *) &data[ offset ];
   offset += sizeof( DPLAYI_SUPERPACKEDPLAYER );
@@ -686,6 +690,12 @@ HRESULT DP_MSG_ForwardPlayerCreation( IDirectPlayImpl *This, DPID dpidServer, WC
       This->dp2->lpSessionDesc->dwCurrentPlayers = 0;
 
       offset = enumPlayersReply->packedOffset;
+      if( offset > dwMsgSize )   /* the player list starts inside the message (the readers check the rest) */
+      {
+        free( msgHeader );
+        free( lpMsg );
+        return DPERR_GENERIC;
+      }
       for( i = 0; i < enumPlayersReply->playerCount; ++i )
       {
         DPPLAYERINFO playerInfo;
@@ -701,6 +711,12 @@ HRESULT DP_MSG_ForwardPlayerCreation( IDirectPlayImpl *This, DPID dpidServer, WC
 
         if ( playerInfo.id == dpidServer )
           continue;
+        /* a list naming one player twice (or id 0) adds it once */
+        if ( !playerInfo.id || DP_PlayerExists( This, playerInfo.id ) )
+        {
+          WARN( "player 0x%08lx listed again in the player list - skipped\n", playerInfo.id );
+          continue;
+        }
 
         hr = DP_CreatePlayer( This, msgHeader, &playerInfo.id, &playerInfo.name,
             playerInfo.playerData, playerInfo.playerDataLength, playerInfo.spData,
@@ -1078,8 +1094,8 @@ void DP_MSG_ReplyReceived( IDirectPlayImpl *This, WORD wCommandId, const void *l
   }
   else
   {
-    ERR( "No receipt event set - only expecting in reply mode\n" );
-    DebugBreak();
+    /* a reply nobody waits for (late after a time-out, or unasked): dropped */
+    WARN( "reply %u with no request waiting for it - dropped\n", wCommandId );
   }
 }
 

@@ -728,8 +728,10 @@ static void sw_resolve_pending( struct sw *s, struct sw_if *i )
     }
     else
     {
-        /* Windows' own: its object gets the address the game built, every interface moves over */
-        IUnknown *win = windows_if( s, i->idx );
+        /* Windows' own: its object gets the address the game built, every interface moves over.
+         * InitializeConnection is an IDirectPlay3/4 method: asked through an older interface (the
+         * game's EnumSessions/Open on IDirectPlay or IDirectPlay2), it goes to Windows' IDirectPlay3A. */
+        IUnknown *win = windows_if( s, i->idx >= I_DP3 ? i->idx : I_DP3A );
         HRESULT hr = win ? ((initconn_t)(*(void ***)win)[ SLOT_INITIALIZECONNECTION ])( win, s->pending_addr, 0 ) : DPERR_UNAVAILABLE;
         if ( SUCCEEDED( hr ) )
         {
