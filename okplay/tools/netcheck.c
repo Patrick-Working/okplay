@@ -2,26 +2,30 @@
  * whether Online/LAN Play will work on this PC, and test a real game with a friend.
  *
  * Copy netcheck.exe into the game folder. Two editions:
- *   - the DirectPlay drop-in (dplayx.dll): netcheck drives that dplayx.dll through the normal
- *     DirectPlay API, exactly as the game does, so a passing check means the game's path works too.
- *   - the Winsock edition (our wsock32.dll + okplay.ini, no dplayx.dll: Need for Speed III, Road
- *     Rash): "Winsock mode" - files, room server, UDP/STUN, this PC and the firewall are checked; the
- *     DirectPlay part and the test game do not apply and are skipped.
+ *   - the DirectPlay drop-in (dplayx.dll): the checks drive that dplayx.dll through the normal DirectPlay
+ *     API, exactly as the game does, so a passing check means the game's path works too.
+ *   - the Winsock edition (our wsock32.dll + okplay.ini, no dplayx.dll: Need for Speed III, Road Rash):
+ *     "Winsock mode" - files, room server, UDP/STUN, this PC and the firewall are checked; the DirectPlay part
+ *     does not apply and is skipped.
+ * The test game runs through the test channel both editions' DLLs export (okplay/src/testchan.c), so a player
+ * in a DirectPlay folder and one in a Winsock folder test with each other. With both DLLs in the folder,
+ * dplayx.dll's channel is used (tc_load). Test games of released Connection Checks (0.8.3-0.8.5) speak
+ * DirectPlay: they are listed too, and joined through dplayx.dll's DirectPlay (old_dp, do_join_dp) - from a
+ * Winsock folder they can't be ("DirectPlay only"). A dplayx.dll without the channel gets the DirectPlay test.
  *
  *   netcheck.exe                         the window
  *   netcheck.exe --cli check             the checks, printed (no window)
  *   netcheck.exe --cli host [--secs N]   host a test game for N seconds (default 120)
  *   netcheck.exe --cli join [--session TEXT] [--secs N]
  *                                        join the first test game (whose name contains TEXT)
- *   (host/join in a Winsock folder: they use netcheck-dp.dll, the drop-in under a name no game loads;
- *    without that file: one line saying so, "RESULT skipped", exit 3)
+ *   (host/join with a wsock32.dll that has no test channel: one line saying so, "RESULT skipped", exit 3)
  *   common options: --lan (LAN Play instead of Online Play), --name NAME, --dplayx DLL,
  *                   --transport udp|udp+reliable|reliable (old names udp+tcp, tcp still accepted):
- *                   the mode when hosting - the host decides for the whole game (okplay/src/okp.h)
+ *                   the mode when hosting - the host decides for the whole game (okplay/src/okp.h),
+ *                   --dp: the DirectPlay-message test even where the channel exists (as released builds host)
  *
- * In the window, "Find test games" lists the test games (refreshed every 1.5 s, through DirectPlay
- * like the game's own list) and a double-click joins one. Test games carry NETCHECK_APP, which the
- * room server keeps apart from real games (okplay.php TEST_APP).
+ * In the window, "Find test games" lists the test games (refreshed every 1.5 s) and a double-click joins one.
+ * Test games carry NETCHECK_APP, which the room server keeps apart from real games (okplay.php TEST_APP).
  *
  * Checks: the files (dplayx.dll is the drop-in or wsock32.dll is the Winsock edition, okplay.ini),
  * DirectPlay lists the drop-in's connections, the room server answers (time, public address, open
@@ -31,9 +35,10 @@
  * loss, and a transmission test (game-like unguaranteed traffic, guaranteed messages, large
  * messages) whose delivery counts the other side reports back.
  *
- * Only Windows 95/98-era APIs are linked (wsock32, no getaddrinfo); WinHTTP and AttachConsole are
- * loaded at run time when present. Test games use their own application GUID, so the game never
- * lists them. Output lines: "[ OK ]", "[WARN]", "[FAIL]", "  -   " (info); the CLI ends with
+ * Only Windows 95/98-era APIs are linked (wsock32, no getaddrinfo); WinHTTP, AttachConsole and the test
+ * channel are looked up at run time. (In a Winsock folder the wsock32.dll this program imports is ours: for a
+ * program not on its list of games it passes every call straight to Windows.) Test games use their own
+ * application GUID, so the game never lists them. Output lines: "[ OK ]", "[WARN]", "[FAIL]", "  -   " (info); the CLI ends with
  * "RESULT ok|fail".
  */
 #define INITGUID
@@ -477,14 +482,64 @@ static char g_wsock_ver[32];      /* the Winsock edition's okplay version ("" = 
 static char g_wsock_filever[64];  /* wsock32.dll's file version resource ("" = none) */
 static char g_dropin_ver[32];     /* the drop-in's okplay version, from dplayx.dll's resource */
 static char g_dplayx_filever[64]; /* dplayx.dll's file version (the drop-in reports DirectPlay's) */
-/* The test game speaks through the drop-in. A Winsock edition folder has no dplayx.dll (and must not
-   get one: the game could load it), so the same DLL ships there under a name no game asks for. Both editions
-   carry their traffic through the same shared core, so the test still measures the player's real path. */
-#define TEST_DLL "netcheck-dp.dll"
-static int g_has_testdll;         /* TEST_DLL next to us */
-static int two_pc_ok(void) { return !g_wsock_mode || g_has_testdll; }
-#define WSOCK_LINE "The test game needs " TEST_DLL " next to Connection Check, and it is not here. " \
+/* The test game runs through our DLL in this folder: both editions export the same test channel
+   (okplay/src/testchan.c: OkplayTestHost/List/Join/Send/Recv/Close, OkplayPaths), carried by the shared core
+   that carries the games, so a DirectPlay folder and a Winsock folder test with each other. The rule when both
+   DLLs are here: dplayx.dll's channel, else wsock32.dll's - one DLL, one okplay running the test. A drop-in
+   without the channel (before 0.8.6) keeps the DirectPlay-message test below (old_dp), which is also how test
+   games hosted by released Connection Checks (0.8.3-0.8.5) are joined. */
+typedef int (WINAPI *tc_host_t)(const char *, int, int);
+typedef int (WINAPI *tc_list_t)(int, char *, int);
+typedef int (WINAPI *tc_join_t)(const char *, const char *);
+typedef int (WINAPI *tc_send_t)(DWORD, const void *, int, int);
+typedef int (WINAPI *tc_recv_t)(DWORD *, int *, void *, int);
+typedef void (WINAPI *tc_close_t)(void);
+static struct {
+    int tried;
+    HMODULE dll;
+    const char *file;   /* "dplayx.dll" / "wsock32.dll" (NULL: no channel here) */
+    tc_host_t host; tc_list_t list; tc_join_t join; tc_send_t send; tc_recv_t recv; tc_close_t close;
+} tc;
+static int g_wsock_tc;            /* wsock32.dll here has the channel (looked up at start: it is loaded already) */
+static int g_force_dp;            /* --dp: the DirectPlay-message test even where the channel exists (tests) */
+static int g_use_tc;              /* the test running now goes through the channel */
+static int two_pc_ok(void) { return !g_wsock_mode || g_wsock_tc; }
+#define WSOCK_LINE "The test game needs a newer wsock32.dll: the one here is from an older Oldkid.net Online Play. " \
                    "The checks above cover the room server and your connection."
+#define DP_ONLY_LINE "test games from older Connection Check versions can only be joined from a DirectPlay game's folder"
+
+static int tc_from(HMODULE m, const char *file)
+{
+    if (!m) return 0;
+    tc.host = (tc_host_t)GetProcAddress(m, "OkplayTestHost");
+    tc.list = (tc_list_t)GetProcAddress(m, "OkplayTestList");
+    tc.join = (tc_join_t)GetProcAddress(m, "OkplayTestJoin");
+    tc.send = (tc_send_t)GetProcAddress(m, "OkplayTestSend");
+    tc.recv = (tc_recv_t)GetProcAddress(m, "OkplayTestRecv");
+    tc.close = (tc_close_t)GetProcAddress(m, "OkplayTestClose");
+    if (!tc.host || !tc.list || !tc.join || !tc.send || !tc.recv || !tc.close) return 0;
+    tc.dll = m;
+    tc.file = file;
+    return 1;
+}
+
+/* which DLL carries the test channel here (loaded the first time a test or the check needs it) */
+static int tc_load(void)
+{
+    char path[MAX_PATH];
+    if (tc.tried) return tc.file != NULL;
+    tc.tried = 1;
+    if (g_has_dplayx) {
+        if (g_dplayx_arg[0]) lstrcpynA(path, g_dplayx_arg, sizeof(path));
+        else _snprintf(path, sizeof(path), "%sdplayx.dll", g_dir);
+        if (tc_from(LoadLibraryA(path), "dplayx.dll")) return 1;
+    }
+    if (g_has_wsock) {
+        _snprintf(path, sizeof(path), "%swsock32.dll", g_dir);
+        if (tc_from(LoadLibraryA(path), "wsock32.dll")) return 1;
+    }
+    return 0;
+}
 
 /* one StringFileInfo value of a file's version resource ("" = none) */
 static void ver_string(const char *path, const char *name, char *out, int n)
@@ -601,8 +656,14 @@ static void detect_edition(void)
         file_version(path, g_wsock_filever, sizeof(g_wsock_filever));
     }
     g_wsock_mode = g_has_wsock && !g_has_dplayx;
-    _snprintf(path, sizeof(path), "%s" TEST_DLL, g_dir);
-    g_has_testdll = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+    /* (our wsock32.dll is loaded already - this program imports wsock32.dll, and Windows takes the one in the
+       program's folder first; it passes every call of ours straight to Windows, as for any program not on its
+       list of games) */
+    _snprintf(path, sizeof(path), "%swsock32.dll", g_dir);
+    if (g_has_wsock) {
+        HMODULE m = LoadLibraryA(path);   /* (the loaded one; GetModuleHandle with a folder is NT-only) */
+        g_wsock_tc = m && GetProcAddress(m, "OkplayTestHost") != NULL;
+    }
 }
 
 /* "dplayx.dll 5.3.1.904 (drop-in 0.8.3)" / "wsock32.dll (Winsock edition 0.2.0)": the DLL tested */
@@ -624,7 +685,7 @@ static HRESULT create_dp(void)
     typedef HRESULT (WINAPI *gco_t)(REFCLSID, REFIID, void **);
     if (dp) return DP_OK;
     if (g_dplayx_arg[0]) lstrcpynA(g_dllpath, g_dplayx_arg, sizeof(g_dllpath));
-    else _snprintf(g_dllpath, sizeof(g_dllpath), "%s%s", g_dir, g_wsock_mode ? TEST_DLL : "dplayx.dll");
+    else _snprintf(g_dllpath, sizeof(g_dllpath), "%sdplayx.dll", g_dir);
     if (GetFileAttributesA(g_dllpath) != INVALID_FILE_ATTRIBUTES) g_dll = LoadLibraryA(g_dllpath);
     if (g_dll) {
         gco_t gco = (gco_t)GetProcAddress(g_dll, "DllGetClassObject");
@@ -745,14 +806,15 @@ static int loss_pct(const peer *p)
     return (int)(lost * 100 / expected);
 }
 
-/* how this PC reaches the other players (the drop-in's OkplayPaths; older drop-ins have none): one line,
+/* how this PC reaches the other players (OkplayPaths of the DLL the test runs through; older ones have none): one line,
  * said again only when it changes. Every connection is direct today - a new method shows up here by name. */
 static char g_paths_last[256];
 static void paths_line(void)
 {
     typedef int (WINAPI *paths_t)(char *, int);
 
-    paths_t f = g_dll ? (paths_t)GetProcAddress(g_dll, "OkplayPaths") : NULL;
+    HMODULE m = g_use_tc ? tc.dll : g_dll;
+    paths_t f = m ? (paths_t)GetProcAddress(m, "OkplayPaths") : NULL;
     char raw[1024], out[256] = "";
     int cnt[8] = {0}, nk = 0, n;
     char kinds[8][64];
@@ -853,6 +915,13 @@ static int send_transport(void)
     return !g_hosting && g_host_mode >= 0 ? g_host_mode : g_transport;
 }
 
+/* one message to a player (DPID_ALLPLAYERS: everyone), through the channel or DirectPlay */
+static void nc_send(DPID to, DWORD flags, const void *m, DWORD size)
+{
+    if (g_use_tc) tc.send(to == DPID_ALLPLAYERS ? 0 : to, m, (int)size, flags & DPSEND_GUARANTEED ? 1 : 0);
+    else IDirectPlayX_Send(dp, g_me, to, flags, (void *)m, size);
+}
+
 static void handle_app(DPID from, const void *msg, DWORD size)
 {
     const DWORD *type = (const DWORD *)msg;
@@ -866,7 +935,7 @@ static void handle_app(DPID from, const void *msg, DWORD size)
         if (no_pong) return;
         nc_ping p = *(const nc_ping *)msg;
         p.type = NC_PONG;
-        IDirectPlayX_Send(dp, g_me, from, 0, &p, sizeof(p));
+        nc_send(from, 0, &p, sizeof(p));
     } else if (*type == NC_PONG && size >= sizeof(nc_ping)) {
         const nc_ping *p = (const nc_ping *)msg;
         EnterCriticalSection(&g_cs);
@@ -903,7 +972,7 @@ static void handle_app(DPID from, const void *msg, DWORD size)
         rx_tally *t = tally_get(from, e->run, e->phase);
         nc_report r = {NC_REPORT, e->run, e->phase, e->total, t ? t->received : 0, t ? t->ooo : 0, t ? t->dup : 0,
                        t ? t->bytes : 0, t && t->received ? t->last - t->first : 0};
-        IDirectPlayX_Send(dp, g_me, from, DPSEND_GUARANTEED, &r, sizeof(r));
+        nc_send(from, DPSEND_GUARANTEED, &r, sizeof(r));
     } else if (*type == NC_HELLO && size >= sizeof(nc_hello)) {
         const nc_hello *h = (const nc_hello *)msg;
         if (h->mode <= 2 && g_host_mode != (int)h->mode) {
@@ -938,37 +1007,45 @@ static void handle_app(DPID from, const void *msg, DWORD size)
     }
 }
 
+static volatile LONG g_over;   /* the test game ended under us (the channel: the host is gone) */
+
+static void player_joined(DPID id, const char *name)
+{
+    EnterCriticalSection(&g_cs);
+    peer *p = peer_get(id, name);
+    LeaveCriticalSection(&g_cs);
+    emit(K_OK, "%s joined", p ? p->name : "a player");
+    if (g_hosting) {
+        nc_hello h = {NC_HELLO, (DWORD)g_transport};
+        nc_send(id, DPSEND_GUARANTEED, &h, sizeof(h));
+    }
+}
+
+static void player_left(DPID id)
+{
+    EnterCriticalSection(&g_cs);
+    for (int i = 0; i < npeers; i++)
+        if (peers[i].id == id && !peers[i].gone) {
+            char line[256];
+            peers[i].gone = 1;
+            peer_line(&peers[i], line, sizeof(line));
+            LeaveCriticalSection(&g_cs);
+            emit(K_INFO, "left - final: %s", line);
+            EnterCriticalSection(&g_cs);
+        }
+    LeaveCriticalSection(&g_cs);
+}
+
 static void handle_sys(const DPMSG_GENERIC *g)
 {
     switch (g->dwType) {
     case DPSYS_CREATEPLAYERORGROUP: {
         const DPMSG_CREATEPLAYERORGROUP *m = (const DPMSG_CREATEPLAYERORGROUP *)g;
         if (m->dwPlayerType != DPPLAYERTYPE_PLAYER || m->dpId == g_me) break;
-        EnterCriticalSection(&g_cs);
-        peer *p = peer_get(m->dpId, m->dpnName.lpszShortNameA);
-        LeaveCriticalSection(&g_cs);
-        emit(K_OK, "%s joined", p ? p->name : "a player");
-        if (g_hosting) {
-            nc_hello h = {NC_HELLO, (DWORD)g_transport};
-            IDirectPlayX_Send(dp, g_me, m->dpId, DPSEND_GUARANTEED, &h, sizeof(h));
-        }
+        player_joined(m->dpId, m->dpnName.lpszShortNameA);
         break;
     }
-    case DPSYS_DESTROYPLAYERORGROUP: {
-        const DPMSG_DESTROYPLAYERORGROUP *m = (const DPMSG_DESTROYPLAYERORGROUP *)g;
-        EnterCriticalSection(&g_cs);
-        for (int i = 0; i < npeers; i++)
-            if (peers[i].id == m->dpId && !peers[i].gone) {
-                char line[256];
-                peers[i].gone = 1;
-                peer_line(&peers[i], line, sizeof(line));
-                LeaveCriticalSection(&g_cs);
-                emit(K_INFO, "left - final: %s", line);
-                EnterCriticalSection(&g_cs);
-            }
-        LeaveCriticalSection(&g_cs);
-        break;
-    }
+    case DPSYS_DESTROYPLAYERORGROUP: player_left(((const DPMSG_DESTROYPLAYERORGROUP *)g)->dpId); break;
     case DPSYS_HOST: emit(K_INFO, "the host left; this PC is the host now"); break;
     case DPSYS_SESSIONLOST: emit(K_FAIL, "the connection to the game was lost"); break;
     }
@@ -979,6 +1056,20 @@ static void pump(void)
     static void *buf;
     static DWORD cap;
     if (!buf) { cap = 8192; buf = malloc(cap); }
+    if (g_use_tc) {   /* the channel: messages, and players joining / leaving (testchan.c) */
+        DWORD from;
+        int kind, n;
+        while ((n = tc.recv(&from, &kind, buf, (int)cap - 1)) >= 0) {
+            if (kind == 0) handle_app(from, buf, (DWORD)n);
+            else if (kind == 1) { ((char *)buf)[n] = 0; player_joined(from, (char *)buf); }
+            else if (kind == 2) player_left(from);
+            else if (kind == 3 && !InterlockedExchange(&g_over, 1)) {
+                if (n > 0 && ((char *)buf)[0] == 1) emit(K_INFO, "the host closed the test game");
+                else emit(K_FAIL, "the connection to the game was lost: the host stopped answering");
+            }
+        }
+        return;
+    }
     for (;;) {
         DPID from = 0, to = 0;
         DWORD sz = cap;
@@ -1014,13 +1105,13 @@ static void session_loop(DWORD secs, int auto_xfer_at, int is_host)
     DWORD visible_check = is_host && !g_lan ? start + 4000 : 0;
     int visible = 0, visible_tries = 0;
     (void)ev;
-    while (!g_stop && (secs == 0 || GetTickCount() - start < secs * 1000)) {
+    while (!g_stop && !g_over && (secs == 0 || GetTickCount() - start < secs * 1000)) {
         Sleep(10);
         pump();
         DWORD now = GetTickCount();
         if (now - last_ping >= 200) {
             nc_ping p = {NC_PING, ++seq, timeGetTime()};
-            if (npeers) IDirectPlayX_Send(dp, g_me, DPID_ALLPLAYERS, 0, &p, sizeof(p));
+            if (npeers) nc_send(DPID_ALLPLAYERS, 0, &p, sizeof(p));
             EnterCriticalSection(&g_cs);
             g_pings_sent++;
             LeaveCriticalSection(&g_cs);
@@ -1054,7 +1145,10 @@ static void session_loop(DWORD secs, int auto_xfer_at, int is_host)
                 if (peers[i].gone) continue;
                 char line[256];
                 /* joined, but not one answer in 10 s: the classic sign of a firewall dropping the traffic */
-                if (!peers[i].pongs && !peers[i].fw_hint && now - peers[i].joined > 10000) {
+                /* (counted in pings really sent to them: none go out while this PC runs its own transmission
+                   test, and a player who came in during it is not behind a firewall) */
+                if (!peers[i].pongs && !peers[i].fw_hint && now - peers[i].joined > 10000 &&
+                    g_pings_sent - peers[i].sent_at_join >= 40) {
                     char who[64];
                     peers[i].fw_hint = 1;
                     lstrcpynA(who, peers[i].name, sizeof(who));
@@ -1096,7 +1190,7 @@ static void session_loop(DWORD secs, int auto_xfer_at, int is_host)
                 for (DWORD i = 0; i < phases[ph].count && !g_stop; i++) {
                     nc_bulk *b = (nc_bulk *)m;
                     b->type = NC_BULK; b->run = g_run; b->phase = ph; b->seq = i; b->total = phases[ph].count;
-                    IDirectPlayX_Send(dp, g_me, target, phases[ph].flags, m, phases[ph].size);
+                    nc_send(target, phases[ph].flags, m, phases[ph].size);
                     DWORD until = GetTickCount() + phases[ph].gap_ms;
                     while (GetTickCount() < until) { Sleep(5); pump(); }
                 }
@@ -1107,7 +1201,7 @@ static void session_loop(DWORD secs, int auto_xfer_at, int is_host)
                 DWORD wait = GetTickCount() + 8000, last_end = 0;
                 while (!reports_got[ph] && GetTickCount() < wait && !g_stop) {
                     if (GetTickCount() - last_end >= 1000) {   /* resend until answered */
-                        IDirectPlayX_Send(dp, g_me, target, DPSEND_GUARANTEED, &e, sizeof(e));
+                        nc_send(target, DPSEND_GUARANTEED, &e, sizeof(e));
                         last_end = GetTickCount();
                     }
                     Sleep(10);
@@ -1131,8 +1225,11 @@ static BOOL FAR PASCAL players_cb(DPID id, DWORD type, LPCDPNAME name, DWORD fla
 }
 
 typedef struct { int found; DPSESSIONDESC2 sd; char name[128]; int count; char listed[1024];
-                 int n; DPSESSIONDESC2 sds[32]; char names[32][128]; DWORD cur[32], max[32]; } enum_ctx;
-/* the last round of the test-game list, shown in the window; g_pick = the row the player chose */
+                 int n; DPSESSIONDESC2 sds[32]; char names[32][128]; DWORD cur[32], max[32];
+                 char kind[32]; char host[32][17]; } enum_ctx;
+/* the last round of the test-game list, shown in the window; g_pick = the row the player chose.
+ * kind: 0 a DirectPlay session (old_dp), 'n' a channel room, 'd' a released Connection Check's DirectPlay test
+ * game seen through the channel (host: the room host's peer id, for OkplayTestJoin) */
 static enum_ctx g_list;
 static volatile LONG g_pick = -1;
 #define WM_APP_LIST (WM_APP + 3)
@@ -1152,6 +1249,7 @@ static BOOL FAR PASCAL enum_cb(LPCDPSESSIONDESC2 sd, LPDWORD timeout, DWORD flag
         lstrcpynA(e->names[e->n], n, sizeof(e->names[0]));
         e->cur[e->n] = sd->dwCurrentPlayers;
         e->max[e->n] = sd->dwMaxPlayers;
+        e->kind[e->n] = 0;
         e->n++;
     }
     if (g_cli && !strstr(e->listed, n) && strlen(e->listed) + strlen(n) + 4 < sizeof(e->listed)) {
@@ -1179,6 +1277,7 @@ static void reset_session_state(void)
     g_paths_last[0] = 0;
     ntallies = 0;
     LeaveCriticalSection(&g_cs);
+    InterlockedExchange(&g_over, 0);
 }
 
 static int create_player(void)
@@ -1213,15 +1312,47 @@ static int start_dp(void)
     return 1;
 }
 
+/* the test game's route for this run: 1 = the channel, 0 = DirectPlay messages (old_dp), -1 = none here */
+static int test_route(void)
+{
+    if (!g_force_dp && tc_load()) return 1;
+    return g_has_dplayx ? 0 : -1;
+}
+
+static void hosting_done(const char *sess, DWORD took)
+{
+    emit(K_OK, "hosting \"%s\" (took %lu ms)", sess, (unsigned long)took);
+    emit(K_INFO, "ask a friend to run Connection Check and click Find test games%s", g_lan ? " (same network)" : "");
+    _snprintf(g_status, sizeof(g_status), "Hosting \"%s\"", sess);
+}
+
 static int do_host(DWORD secs)
 {
-    if (!two_pc_ok()) { emit(K_INFO, "%s", WSOCK_LINE); return 1; }
+    int route = test_route();
+    if (route < 0) { emit(K_INFO, "%s", WSOCK_LINE); return 1; }
     emit(K_HEAD, "Hosting a test game (%s, %s)", g_lan ? "LAN Play" : "Online Play", transport_labels[g_transport]);
     g_hosting = 1;
     reset_session_state();
-    if (!start_dp()) return 0;
     char sess[128];
     _snprintf(sess, sizeof(sess), SESSION_PREFIX "%s", g_name);
+    DWORD t = GetTickCount();
+    if (route == 1) {   /* the channel */
+        g_use_tc = 1;
+        if (tc.host(g_name, g_lan, g_transport) <= 0) {
+            emit(K_FAIL, "could not host: Oldkid.net Online Play could not start in %s (its log says why)", tc.file);
+            tc.close();
+            g_use_tc = 0;
+            return 0;
+        }
+        hosting_done(sess, GetTickCount() - t);
+        session_loop(secs, 0, 1);
+        tc.close();
+        g_use_tc = 0;
+        emit(K_INFO, "stopped hosting");
+        return 1;
+    }
+    /* old_dp: a DirectPlay session through dplayx.dll (a drop-in without the channel, or --dp) */
+    if (!start_dp()) return 0;
     DPSESSIONDESC2 sd;
     memset(&sd, 0, sizeof(sd));
     sd.dwSize = sizeof(sd);
@@ -1229,27 +1360,40 @@ static int do_host(DWORD secs)
     sd.guidApplication = NETCHECK_APP;
     sd.dwMaxPlayers = 8;
     sd.lpszSessionNameA = sess;
-    DWORD t = GetTickCount();
     HRESULT hr = IDirectPlayX_Open(dp, &sd, DPOPEN_CREATE);
     if (FAILED(hr)) { emit(K_FAIL, "could not host (0x%08lx)", (unsigned long)hr); release_dp(); return 0; }
-    emit(K_OK, "hosting \"%s\" (took %lu ms)", sess, (unsigned long)(GetTickCount() - t));
+    DWORD took = GetTickCount() - t;
     if (!create_player()) { release_dp(); return 0; }
-    emit(K_INFO, "ask a friend to run Connection Check and click Join a test game%s",
-         g_lan ? " (same network)" : "");
-    _snprintf(g_status, sizeof(g_status), "Hosting \"%s\"", sess);
+    hosting_done(sess, took);
     session_loop(secs, 0, 1);
     release_dp();
     emit(K_INFO, "stopped hosting");
     return 1;
 }
 
-static int do_join(DWORD secs)
+/* in the test game: measure until the time is up or Stop, then the final lines */
+static void joined_run(DWORD secs)
 {
-    if (!two_pc_ok()) { emit(K_INFO, "%s", WSOCK_LINE); return 1; }
-    emit(K_HEAD, "Joining a test game (%s; the host decides the transmit mode)", g_lan ? "LAN Play" : "Online Play");
-    g_hosting = 0;
-    g_host_mode = -1;
-    reset_session_state();
+    emit(K_INFO, "measuring ping; the transmission test starts in 8 seconds");
+    session_loop(secs, 8, 0);
+    EnterCriticalSection(&g_cs);
+    for (int i = 0; i < npeers; i++) {
+        char line[256];
+        peer_line(&peers[i], line, sizeof(line));
+        int l = loss_pct(&peers[i]);
+        int kind = !peers[i].pongs ? K_FAIL : (l > 5 || peers[i].rtt_sum / peers[i].pongs > 250) ? K_WARN : K_OK;
+        LeaveCriticalSection(&g_cs);
+        emit(kind, "%s", line);
+        EnterCriticalSection(&g_cs);
+    }
+    LeaveCriticalSection(&g_cs);
+}
+
+/* old_dp: find and join a DirectPlay test game - the player's pick, or with `only` the first named like it */
+static int do_join_dp(DWORD secs, const char *only)
+{
+    if (!only) emit(K_HEAD, "Joining a test game (%s; the host decides the transmit mode)", g_lan ? "LAN Play" : "Online Play");
+    if (only) lstrcpynA(g_filter, only, sizeof(g_filter));
     if (!start_dp()) return 0;
     enum_ctx e;
     memset(&e, 0, sizeof(e));
@@ -1257,15 +1401,18 @@ static int do_join(DWORD secs)
     memset(&sd, 0, sizeof(sd));
     sd.dwSize = sizeof(sd);
     sd.guidApplication = NETCHECK_APP;
-    if (g_cli)
+    if (only) {
+        /* (the channel's list showed it: no second "looking" line) */
+    } else if (g_cli)
         emit(K_INFO, "looking for test games%s%s%s...", g_filter[0] ? " named like \"" : "", g_filter,
              g_filter[0] ? "\"" : "");
     else
         emit(K_INFO, "looking for test games: double-click one in the list (right) to join it");
-    _snprintf(g_status, sizeof(g_status), "Looking for test games...");
+    if (!only) _snprintf(g_status, sizeof(g_status), "Looking for test games...");
     InterlockedExchange(&g_pick, -1);
     DWORD until = GetTickCount() + 30000;
-    while (!e.found && !g_stop && (!g_cli || GetTickCount() < until)) {
+    int pick_self = g_cli || only;
+    while (!e.found && !g_stop && (!pick_self || GetTickCount() < until)) {
         char listed[1024];
         memcpy(listed, e.listed, sizeof(listed));
         int count = e.count;
@@ -1274,7 +1421,7 @@ static int do_join(DWORD secs)
         e.count = count;
         HRESULT hr = IDirectPlayX_EnumSessions(dp, &sd, 1500, enum_cb, &e, DPENUMSESSIONS_AVAILABLE);
         if (FAILED(hr)) { emit(K_FAIL, "searching for games failed (0x%08lx)", (unsigned long)hr); release_dp(); return 0; }
-        if (!g_cli) {
+        if (!pick_self) {
             /* the window picks: keep the list for it, and take the chosen row */
             e.found = 0;
             EnterCriticalSection(&g_cs);
@@ -1289,6 +1436,7 @@ static int do_join(DWORD secs)
             memcpy(g_list.names, e.names, sizeof(e.names));
             memcpy(g_list.cur, e.cur, sizeof(e.cur));
             memcpy(g_list.max, e.max, sizeof(e.max));
+            memset(g_list.kind, 0, sizeof(g_list.kind));
             LeaveCriticalSection(&g_cs);
             if (g_wnd) PostMessageA(g_wnd, WM_APP_LIST, 0, 0);
         }
@@ -1319,20 +1467,152 @@ static int do_join(DWORD secs)
     if (!create_player()) { release_dp(); return 0; }
     IDirectPlayX_EnumPlayers(dp, NULL, players_cb, NULL, 0);
     _snprintf(g_status, sizeof(g_status), "In \"%s\"", e.name);
-    emit(K_INFO, "measuring ping; the transmission test starts in 8 seconds");
-    session_loop(secs, 8, 0);
-    EnterCriticalSection(&g_cs);
-    for (int i = 0; i < npeers; i++) {
-        char line[256];
-        peer_line(&peers[i], line, sizeof(line));
-        int l = loss_pct(&peers[i]);
-        int kind = !peers[i].pongs ? K_FAIL : (l > 5 || peers[i].rtt_sum / peers[i].pongs > 250) ? K_WARN : K_OK;
-        LeaveCriticalSection(&g_cs);
-        emit(kind, "%s", line);
-        EnterCriticalSection(&g_cs);
-    }
-    LeaveCriticalSection(&g_cs);
+    joined_run(secs);
     release_dp();
+    return 1;
+}
+
+/* the channel's list -> rows (kind 'n' / 'd'); a row that can't be joined here carries the DirectPlay-only mark */
+static int tc_rows(enum_ctx *e, int *dp_only)
+{
+    static char buf[8192];
+    int n = tc.list(g_lan, buf, sizeof(buf));
+    *dp_only = 0;
+    e->n = 0;
+    for (char *l = n > 0 ? strtok(buf, "\n") : NULL; l && e->n < 32; l = strtok(NULL, "\n")) {
+        char k = 0, host[17] = "", room[9];
+        unsigned long cur = 0, mx = 0;
+        int at = 0;
+        if (sscanf(l, "%c %16s %8s %lu %lu %n", &k, host, room, &cur, &mx, &at) < 5 || !at) continue;
+        if (k != 'n' && k != 'd') continue;
+        int i = e->n++;
+        e->kind[i] = k;
+        lstrcpynA(e->host[i], host, sizeof(e->host[i]));
+        e->cur[i] = cur;
+        e->max[i] = mx;
+        remember_name(l + at);
+        if (k == 'd' && !g_has_dplayx) {
+            _snprintf(e->names[i], sizeof(e->names[i]), "%s (DirectPlay only)", l + at);
+            (*dp_only)++;
+        } else if (k == 'd') _snprintf(e->names[i], sizeof(e->names[i]), "%s (older Connection Check)", l + at);
+        else lstrcpynA(e->names[i], l + at, sizeof(e->names[i]));
+        e->names[i][sizeof(e->names[i]) - 1] = 0;
+    }
+    return e->n;
+}
+
+static int do_join(DWORD secs)
+{
+    int route = test_route();
+    if (route < 0) { emit(K_INFO, "%s", WSOCK_LINE); return 1; }
+    g_hosting = 0;
+    g_host_mode = -1;
+    reset_session_state();
+    if (route == 0) {
+        if (!g_force_dp)
+            emit(K_INFO, "this dplayx.dll is from an older Oldkid.net Online Play: only test games of older Connection "
+                         "Check versions show here - a newer dplayx.dll sees them all");
+        return do_join_dp(secs, NULL);
+    }
+    emit(K_HEAD, "Joining a test game (%s; the host decides the transmit mode)", g_lan ? "LAN Play" : "Online Play");
+    if (g_cli)
+        emit(K_INFO, "looking for test games%s%s%s...", g_filter[0] ? " named like \"" : "", g_filter,
+             g_filter[0] ? "\"" : "");
+    else
+        emit(K_INFO, "looking for test games: double-click one in the list (right) to join it");
+    _snprintf(g_status, sizeof(g_status), "Looking for test games...");
+    g_use_tc = 1;
+    InterlockedExchange(&g_pick, -1);
+    static enum_ctx e;
+    char listed[1024] = "";
+    int found = -1, dp_only_said = 0, ever = 0;
+    DWORD until = GetTickCount() + 30000, last = 0;
+    while (found < 0 && !g_stop && (!g_cli || GetTickCount() < until)) {
+        if (last && GetTickCount() - last < 1500 && (g_cli || g_pick < 0)) { Sleep(20); continue; }
+        last = GetTickCount();
+        int dp_only = 0, n = tc_rows(&e, &dp_only);
+        ever += n > 0;
+        if (dp_only && !dp_only_said) { dp_only_said = 1; emit(K_INFO, "%s (%d listed now)", DP_ONLY_LINE, dp_only); }
+        if (g_cli) {
+            for (int i = 0; i < n && found < 0; i++) {
+                if (!strstr(listed, e.names[i]) && strlen(listed) + strlen(e.names[i]) + 4 < sizeof(listed)) {
+                    strcat(listed, "\n");
+                    strcat(listed, e.names[i]);
+                    emit(K_INFO, "found \"%s\" (%lu/%lu players)", e.names[i], (unsigned long)e.cur[i], (unsigned long)e.max[i]);
+                }
+                if (e.kind[i] == 'd' && !g_has_dplayx) continue;
+                if (!g_filter[0] || strstr(e.names[i], g_filter)) found = i;
+            }
+            continue;
+        }
+        EnterCriticalSection(&g_cs);
+        LONG pick = InterlockedExchange(&g_pick, -1);
+        if (pick >= 0 && pick < g_list.n) {
+            if (g_list.kind[pick] == 'd' && !g_has_dplayx) {
+                char said[160];
+                lstrcpynA(said, g_list.names[pick], sizeof(said));
+                LeaveCriticalSection(&g_cs);
+                emit(K_INFO, "\"%s\": %s", said, DP_ONLY_LINE);
+                EnterCriticalSection(&g_cs);
+            } else {   /* the row picked, as it was shown */
+                e.n = g_list.n;
+                memcpy(e.names, g_list.names, sizeof(e.names));
+                memcpy(e.kind, g_list.kind, sizeof(e.kind));
+                memcpy(e.host, g_list.host, sizeof(e.host));
+                found = pick;
+            }
+        }
+        if (found < 0) {
+            g_list.n = e.n;
+            memcpy(g_list.names, e.names, sizeof(e.names));
+            memcpy(g_list.cur, e.cur, sizeof(e.cur));
+            memcpy(g_list.max, e.max, sizeof(e.max));
+            memcpy(g_list.kind, e.kind, sizeof(e.kind));
+            memcpy(g_list.host, e.host, sizeof(e.host));
+        }
+        LeaveCriticalSection(&g_cs);
+        if (g_wnd && found < 0) PostMessageA(g_wnd, WM_APP_LIST, 0, 0);
+    }
+    if (g_wnd) {   /* empty the list: we are in a game or stopped */
+        EnterCriticalSection(&g_cs);
+        g_list.n = 0;
+        LeaveCriticalSection(&g_cs);
+        PostMessageA(g_wnd, WM_APP_LIST, 0, 0);
+    }
+    if (found < 0) {
+        tc.close();
+        g_use_tc = 0;
+        if (g_stop) { emit(K_INFO, "stopped looking"); return 1; }
+        emit(K_FAIL, "no test game found in 30 seconds%s", ever ? " with that name" :
+             g_lan ? " - is the host on the same network?" : " - is someone hosting one right now?");
+        return 0;
+    }
+    char name[128];
+    lstrcpynA(name, e.names[found], sizeof(name));
+    if (e.kind[found] == 'd') {   /* a released Connection Check's test game: DirectPlay, through dplayx.dll */
+        char *mark = strstr(name, " (older Connection Check)");
+        if (mark) *mark = 0;
+        tc.close();
+        g_use_tc = 0;
+        emit(K_INFO, "\"%s\" is a test game of an older Connection Check: joining it through DirectPlay", name);
+        return do_join_dp(secs, name);
+    }
+    DWORD t = GetTickCount();
+    int r = tc.join(e.host[found], g_name);
+    if (r <= 0) {
+        emit(K_FAIL, "joining \"%s\" failed: %s", name, r == -1 ? "it is not listed any more" :
+             r == -2 ? "no direct path to the host (both routers block it, or a firewall)" :
+             r == -3 ? "the test game is full (8 players)" : "the host did not answer");
+        tc.close();
+        g_use_tc = 0;
+        return 0;
+    }
+    DWORD jt = GetTickCount() - t;
+    emit(jt > 10000 ? K_WARN : K_OK, "joined \"%s\" in %lu ms", name, (unsigned long)jt);
+    _snprintf(g_status, sizeof(g_status), "In \"%s\"", name);
+    joined_run(secs);
+    tc.close();
+    g_use_tc = 0;
     return 1;
 }
 
@@ -1424,13 +1704,24 @@ static void check_all(void)
         emit(K_OK, "wsock32.dll is Oldkid.net Online Play's Winsock edition, version %s",
              g_wsock_ver[0] ? g_wsock_ver : "unknown");
     if (g_wsock_mode)
-        emit(K_INFO, "no dplayx.dll here: this game uses the Winsock edition, so the DirectPlay checks are skipped%s",
-             g_has_testdll ? " (the test game works: " TEST_DLL " is here)" : "");
+        emit(K_INFO, "no dplayx.dll here: this game uses the Winsock edition, so the DirectPlay checks are skipped");
     else if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
         emit(K_FAIL, "there is no dplayx.dll next to this program - put netcheck.exe in the game folder, "
                      "next to the drop-in's dplayx.dll");
     else if (g_has_wsock)
         emit(K_INFO, "dplayx.dll is here too: the DirectPlay checks below test dplayx.dll");
+    /* which DLL the test game goes through (the rule at tc_load: dplayx.dll's channel, else wsock32.dll's) */
+    if (tc_load())
+        emit(K_INFO, "the test game runs through %s%s", tc.file, g_has_wsock && g_has_dplayx ?
+             " (with dplayx.dll and wsock32.dll both here, Connection Check uses dplayx.dll's test channel when it has one)" : "");
+    else if (g_has_dplayx)
+        emit(K_INFO, "the test game runs through dplayx.dll's DirectPlay (this dplayx.dll is from an older Oldkid.net "
+                     "Online Play: it sees only test games of older Connection Check versions)");
+    else if (g_wsock_mode)
+        emit(K_WARN, "the test game needs a newer wsock32.dll: the one here is from an older Oldkid.net Online Play "
+                     "(the checks below still work)");
+    if (g_wsock_mode && two_pc_ok())
+        emit(K_INFO, "the transmit mode applies here too; %s", DP_ONLY_LINE);
     _snprintf(path, sizeof(path), "%sokplay.ini", g_dir);
     char wmode[16] = "ask";
     if (g_wsock_mode) GetPrivateProfileStringA("okplay", "wsock_mode", "ask", wmode, sizeof(wmode), path);
@@ -2024,13 +2315,13 @@ static void update_buttons(void)
 {
     int busy = g_busy != 0;
     EnableWindow(h_btn[0], !busy);
-    EnableWindow(h_btn[1], !busy && two_pc_ok());   /* (Winsock folder without the test DLL: no two-PC test) */
+    EnableWindow(h_btn[1], !busy && two_pc_ok());   /* (an older wsock32.dll: no test game) */
     EnableWindow(h_btn[2], !busy && two_pc_ok());
     EnableWindow(h_btn[3], busy);
     EnableWindow(h_btn[4], busy);
     EnableWindow(h_name, !busy);
     EnableWindow(h_conn, !busy);
-    EnableWindow(h_transport, !busy);
+    EnableWindow(h_transport, !busy && two_pc_ok());
     EnableWindow(h_joinsel, busy && SendMessageA(h_list, LB_GETCOUNT, 0, 0) > 0);
 }
 
@@ -2188,14 +2479,15 @@ static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         mk("STATIC", "Transmit mode (when hosting):", 0, 452, 14, 150, 20, w, 0);
         h_transport = mk("COMBOBOX", "", CBS_DROPDOWNLIST | WS_TABSTOP, 602, 10, 270, 200, w, ID_TRANSPORT);
         for (int i = 0; i < 3; i++) SendMessageA(h_transport, CB_ADDSTRING, 0, (LPARAM)transport_labels[i]);
-        SendMessageA(h_transport, CB_SETCURSEL, g_transport, 0);
+        if (!two_pc_ok()) SendMessageA(h_transport, CB_ADDSTRING, 0, (LPARAM)"not used: no test game with this wsock32.dll");
+        SendMessageA(h_transport, CB_SETCURSEL, two_pc_ok() ? g_transport : 3, 0);
         h_btn[0] = mk("BUTTON", "1. Check my connection", BS_PUSHBUTTON | WS_TABSTOP, 10, 44, 170, 30, w, ID_CHECK);
         h_btn[1] = mk("BUTTON", "2. Host a test game", BS_PUSHBUTTON | WS_TABSTOP, 190, 44, 150, 30, w, ID_HOST);
         h_btn[2] = mk("BUTTON", "3. Find test games", BS_PUSHBUTTON | WS_TABSTOP, 350, 44, 150, 30, w, ID_JOIN);
         h_btn[3] = mk("BUTTON", "Transmission test", BS_PUSHBUTTON | WS_TABSTOP, 510, 44, 130, 30, w, ID_XFER);
         h_btn[4] = mk("BUTTON", "Stop", BS_PUSHBUTTON | WS_TABSTOP, 650, 44, 80, 30, w, ID_STOP);
-        mk("STATIC", !two_pc_ok() ? "This game uses the Winsock edition: click Check my connection. The two-PC test "
-                                    "game (Host / Find) needs " TEST_DLL " in this folder."
+        mk("STATIC", !two_pc_ok() ? "Click Check my connection. The test game (Host / Find) needs a newer wsock32.dll "
+                                    "than the one in this folder."
                      : "Check first. Then one player hosts a test game; the other clicks Find test games and "
                      "double-clicks it: you both see the ping and the transmission results.", 0, 10, 82, 900, 18, w, 0);
         h_listlabel = mk("STATIC", "Test games (double-click to join):", 0, 0, 0, 10, 10, w, 0);
@@ -2358,6 +2650,10 @@ int main(int argc, char **argv)
     /* host open games without the drop-in's password box (builtin.c: test answers) */
     SetEnvironmentVariableA("OKP_TEST_HOST_PASSWORD", "<none>");
     _putenv("OKP_TEST_HOST_PASSWORD=<none>");
+    /* a test game hosted by another Connection Check version: no "different version of the game" box (builtin.c
+       DP_BUILTIN_CheckBuild compares the exes - here two Connection Checks, never two games) */
+    SetEnvironmentVariableA("OKP_TEST_BUILD_ANSWER", "join");
+    _putenv("OKP_TEST_BUILD_ANSWER=join");
     /* no report boxes over this tool (okplay/src/report.c): they wait for the game */
     SetEnvironmentVariableA("OKP_REPORTS_NO_ASK", "1");
     _putenv("OKP_REPORTS_NO_ASK=1");
@@ -2374,6 +2670,7 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--session") && i + 1 < argc) lstrcpynA(g_filter, argv[++i], sizeof(g_filter));
         else if (!strcmp(argv[i], "--secs") && i + 1 < argc) secs = (DWORD)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--dplayx") && i + 1 < argc) lstrcpynA(g_dplayx_arg, argv[++i], sizeof(g_dplayx_arg));
+        else if (!strcmp(argv[i], "--dp")) g_force_dp = 1;
         else if (!strcmp(argv[i], "--transport") && i + 1 < argc) {
             const char *t = argv[++i];
             g_transport = !strcmp(t, "reliable") || !strcmp(t, "tcp") ? 2
@@ -2395,12 +2692,12 @@ int main(int argc, char **argv)
               : !strcmp(job, "join") ? JOB_JOIN : 0;
         if (!j) {
             emit(K_INFO, "usage: netcheck --cli check|host|join [--lan] [--name N] [--session TEXT] [--secs N] "
-                         "[--transport udp|udp+reliable|reliable] [--dplayx DLL]");
+                         "[--transport udp|udp+reliable|reliable] [--dplayx DLL] [--dp]");
             return 2;
         }
         if (!two_pc_ok() && j != JOB_CHECK) {   /* nothing to test: say so, and exit 3 */
             emit(K_INFO, "%s", WSOCK_LINE);
-            emit(K_INFO, "RESULT skipped (no " TEST_DLL ": use --cli check)");
+            emit(K_INFO, "RESULT skipped (this wsock32.dll has no test game: use --cli check)");
             return 3;
         }
         g_job_secs = secs ? secs : (j == JOB_HOST ? 120 : 40);

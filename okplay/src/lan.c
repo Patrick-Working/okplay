@@ -231,7 +231,7 @@ static void take_offer(okp_ctx *c, const okp_wire *w, const uint8_t *body, int b
     uint16_t elen;
     memcpy(&elen, body, 2);
     if (elen < 92 || elen > 1024 || 2 + elen + 1 > blen) return;
-    if (!okp_enum_blob_ok(body + 2, elen)) return;
+    if (okp_tc_blob_ok(body + 2, elen) ? !c->tc : !okp_enum_blob_ok(body + 2, elen)) return;   /* (test rooms: testchan.c) */
     const uint8_t *p = body + 2 + elen;
     int n = *p++;
     if (n > LAN_OFFER_CANDS || 2 + elen + 1 + n * (int)sizeof(okp_ccand) > blen) return;

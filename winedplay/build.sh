@@ -35,14 +35,17 @@ gcc -shared -o bin/plain/dplayx.dll $P shim/dplayx.def -Wl,--enable-stdcall-fixu
 D=$(build_wine dropin "-DOKP_BUILTIN -include $OK/src/okp_stdio.h -iquote $OK/src")
 OFLAGS="$CPU -O2 -g -fno-omit-frame-pointer -Wall -Wextra -Wno-unused-parameter -Wno-cast-function-type -Wno-format-truncation -D_WIN32_WINNT=0x0601 -DWINVER=0x0601 -DOKP_BUILTIN -include $OK/src/okp_stdio.h -I$OK/include -I$OK/src"
 O=""
-for f in sp net rdv lan util crash compat okp_printf report okbox; do
+for f in sp net testchan rdv lan util crash compat okp_printf report okbox; do
     gcc $OFLAGS -c -o obj/okplay/$f.o $OK/src/$f.c
     O="$O obj/okplay/$f.o"
 done
 windres -DOKP_BUILTIN -I$OK/src -O coff -o obj/dropin/dplayx_res.o shim/dplayx.rc
 # the public DirectPlay entry points go through the mode switch (shim/mode.c: okplay.ini mode=)
 { sed -E 's/^(DirectPlay[A-Za-z]*|DllGetClassObject)=([A-Za-z]+@)/\1=MODE_\2/' shim/dplayx.def
-  echo "SPInit=SPInit@4"; echo "OkplayPaths=OkplayPaths@8"; } > obj/dropin/dplayx.def
+  echo "SPInit=SPInit@4"; echo "OkplayPaths=OkplayPaths@8"
+  # Connection Check's test channel (okplay/src/testchan.c), the same exports as okplay wsock's wsock32.def
+  for e in OkplayTestHost@12 OkplayTestList@12 OkplayTestJoin@8 OkplayTestSend@16 OkplayTestRecv@16 OkplayTestClose@0; do
+      echo "${e%@*}=$e"; done; } > obj/dropin/dplayx.def
 grep -q "DirectPlayCreate=MODE_DirectPlayCreate@12" obj/dropin/dplayx.def || { echo "mode switch not wired into the exports"; exit 1; }
 gcc -shared -o bin/dropin/dplayx.dll $D $O obj/dropin/dplayx_res.o obj/dropin/dplayx.def \
     -Wl,--enable-stdcall-fixup -static-libgcc $LIBS -lwsock32 -lversion -lvfw32 -lgdi32

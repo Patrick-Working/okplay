@@ -14,7 +14,7 @@ OUT="$here/bin"
 EXTRA=""
 if [ -n "$OKW_LAB_SRC" ]; then OUT="$here/bin/lab"; mkdir -p "$OUT"; FLAGS="$FLAGS -DOKW_LAB"; EXTRA="$OKW_LAB_SRC"; fi
 gcc $FLAGS -shared -o "$OUT/wsock32.dll" "$here/wsock.c" "$here/rr_fix.c" "$here/nfs3_fix.c" "$here/ddshow.c" "$here/wsock32.def" $EXTRA \
-    $OK/src/net.c $OK/src/rdv.c $OK/src/lan.c $OK/src/util.c $OK/src/compat.c $OK/src/crash.c $OK/src/report.c $OK/src/upnp.c $OK/src/okp_printf.c $OK/src/okbox.c \
+    $OK/src/net.c $OK/src/testchan.c $OK/src/rdv.c $OK/src/lan.c $OK/src/util.c $OK/src/compat.c $OK/src/crash.c $OK/src/report.c $OK/src/upnp.c $OK/src/okp_printf.c $OK/src/okbox.c \
     -Wl,--enable-stdcall-fixup -Wl,--kill-at -static-libgcc -lws2_32 -liphlpapi -lwinhttp -lbcrypt -lversion -lgdi32
 bash "$OK/../winedplay/check9x.sh" "$(cygpath -aw "$OUT/wsock32.dll")"
 echo "built $OUT/wsock32.dll"

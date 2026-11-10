@@ -309,8 +309,20 @@ SCENARIOS = {
 }
 
 
+# Fixed folders, reused by every scenario: Windows Firewall asks once per program path, so a fresh temp folder
+# per scenario put one prompt on the screen for each of them.
+FOLDERS = os.path.join(HERE, "..", "..", "tests", "out", "tcp")
+SLOT = [0]
+
+
 def folder(mode, ini, dll=None):
-    d = tempfile.mkdtemp(prefix=f"tcpsim_{mode}_")
+    SLOT[0] += 1
+    d = os.path.abspath(os.path.join(FOLDERS, f"{mode}_{SLOT[0]}"))
+    for _ in range(50):   # (the last scenario's programs may still hold a file for a moment)
+        shutil.rmtree(d, ignore_errors=True)
+        if not os.path.exists(d): break
+        time.sleep(0.1)
+    os.makedirs(d, exist_ok=True)
     shutil.copy(os.path.join(BIN, "tcpsim.exe"), d)
     if mode == "shim":
         shutil.copy(dll or os.path.join(BIN, "wsock32.dll"), os.path.join(d, "wsock32.dll"))
@@ -408,6 +420,7 @@ class Sampler:
 
 
 def run_scenario(sc, mode):
+    SLOT[0] = 0
     d = folder(mode, sc.get("ini", {}))
     env = {k: v for k, v in os.environ.items() if not k.startswith("OKP_")}
     env.update(EXTRA_ENV)
@@ -635,7 +648,8 @@ def main():
     if "shim" in modes and any(SCENARIOS[n].get("online") for n in names):
         php_server = os.environ.get("TCP_RUN_PHP_SERVER")   # a released okplay.php instead of the stand-in (old servers keep working)
         if php_server:
-            d = tempfile.mkdtemp(prefix="tcprun_php_")
+            d = os.path.abspath(os.path.join(FOLDERS, "php"))
+            os.makedirs(d, exist_ok=True)
             shutil.copy(php_server, os.path.join(d, "okplay.php"))
             standin = subprocess.Popen([os.environ.get("TCP_RUN_PHP", "php"), "-S", f"127.0.0.1:{STANDIN_PORT}", "-t", d],
                                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

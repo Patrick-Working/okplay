@@ -51,3 +51,10 @@ EXPORTS
     TransmitFile=MSWSOCK.TransmitFile @1140
     AcceptEx=MSWSOCK.AcceptEx @1141
     GetAcceptExSockaddrs=MSWSOCK.GetAcceptExSockaddrs @1142
+    OkplayPaths=OkplayPaths@8 @1200
+    OkplayTestHost=OkplayTestHost@12 @1201
+    OkplayTestList=OkplayTestList@12 @1202
+    OkplayTestJoin=OkplayTestJoin@8 @1203
+    OkplayTestSend=OkplayTestSend@16 @1204
+    OkplayTestRecv=OkplayTestRecv@16 @1205
+    OkplayTestClose=OkplayTestClose@0 @1206

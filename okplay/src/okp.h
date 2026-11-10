@@ -296,6 +296,7 @@ typedef struct {
     int sess_role;                 /* 0 = no game, 1 = host, 2 = joiner */
     int sess_peers;
     char sess_result[32];          /* "ok" or how the join failed */
+    int tc;                        /* the test channel's own context (testchan.c): its list keeps test rooms */
 } okp_ctx;
 
 /* util.c */
@@ -460,6 +461,8 @@ void okp_peer_add_cands(okp_ctx *c, okp_peer *p, const SOCKADDR_IN6 *cands, int 
 int  okp_cand_ok(const okp_ctx *c, const SOCKADDR_IN6 *a);
 int  okp_pdata_parse(const void *buf, DWORD sz, uint64_t *peer, SOCKADDR_IN6 *out, int max);
 int  okp_enum_blob_ok(const uint8_t *b, int n);
+int  okp_tc_blob_ok(const uint8_t *b, int n);   /* a test channel room's record ("okTC", testchan.c) */
+int  okp_paths_text(okp_ctx *c, char *out, int outsz);   /* OkplayPaths' text: how this PC reaches each player */
 void okp_peer_free_bufs(okp_peer *p);                                   /* lock held */
 int  okp_send_data(okp_ctx *c, uint64_t to, const void *buf, int len, int flags);
 int  okp_wait_path(okp_ctx *c, uint64_t peer, DWORD timeout_ms);
@@ -502,6 +505,10 @@ void okp_report_session_begin(okp_ctx *c, int host);
 void okp_report_session_result(okp_ctx *c, const char *result);
 void okp_report_session_end(okp_ctx *c);
 void okp_report_set_ini(const char *key, const char *value);
+
+/* testchan.c - Connection Check's test game over the core, exported by both editions (OkplayTest*) */
+okp_ctx *okp_tc_ctx(void);   /* the test channel's context while one runs, else NULL */
+int okp_tc_dll_ready(void);  /* each edition: its part of the core is set up (logs, Winsock); 1 = ready */
 
 /* lan.c */
 int  okp_lan_open_query(okp_ctx *c);

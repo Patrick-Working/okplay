@@ -4227,6 +4227,38 @@ int WINAPI x_WSACleanup(void)
 }
 int WINAPI x___WSAFDIsSet(SOCKET s, fd_set *f) { return __WSAFDIsSet(s, f); }
 
+/* ---------------------------------------------------------------- Connection Check (okplay/src/testchan.c)
+ *
+ * The test channel (OkplayTest*) and OkplayPaths are the core's, the same as the drop-in's. They work in any
+ * program that loads this DLL, not only a game on the list: the channel has an okplay of its own and never
+ * goes through the virtual sockets above. In a program that isn't a game here (okw_on 0: Connection Check),
+ * DllMain set nothing up, so the first call does what the core needs - logs (logs\), Winsock - and nothing
+ * else: no box, no hook. */
+int okp_tc_dll_ready(void)
+{
+    static int done;
+    if (okw_on || done) return 1;
+    done = 1;
+    okp_sys_init();
+    WSADATA w;
+    WSAStartup(MAKEWORD(2, 2), &w);
+    okp_log_init(g_self);
+    okp_log_header();
+    okp_log(1, "wsock: okplay " OKP_VERSION_STR " loaded by a program that is not a game here - only its test channel runs");
+    return 1;
+}
+
+/* how this PC reaches each player (net.c okp_paths_text): the test game's players while one runs, else the game's */
+int WINAPI OkplayPaths(char *out, int outsz)
+{
+    okp_ctx *c = okp_tc_ctx();
+    if (c || !okw_on) return okp_paths_text(c, out, outsz);
+    EnterCriticalSection(&okw_lock);   /* (okw_lock, then ctx->lock: the order everywhere here) */
+    int n = okp_paths_text(ctx, out, outsz);
+    LeaveCriticalSection(&okw_lock);
+    return n;
+}
+
 /* ---------------------------------------------------------------- the exit watch
  *
  * Closed in the middle of a race, Road Rash's window goes but the game never reaches its own shutdown: the process

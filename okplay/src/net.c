@@ -124,10 +124,10 @@ int okp_pdata_parse(const void *buf, DWORD sz, uint64_t *peer, SOCKADDR_IN6 *out
 /* A session record (dplayx ENUMSESSIONSREPLY) from the server or the LAN is handed straight to
  * Windows' dplayx, so check its layout first: envelope, DPSESSIONDESC2 size, and a session name
  * that is NUL-terminated (as a 2-byte NUL, like dplayx reads it) inside the record. */
-int okp_enum_blob_ok(const uint8_t *b, int n)
+static int record_ok(const uint8_t *b, int n, const char *magic)
 {
     if (!b || n < 92 + 2 || n > 1024) return 0;
-    if (memcmp(b, "play", 4) != 0) return 0;
+    if (memcmp(b, magic, 4) != 0) return 0;
     uint16_t cmd;
     uint32_t sdsize, off;
     memcpy(&cmd, b + 4, 2);
@@ -139,6 +139,12 @@ int okp_enum_blob_ok(const uint8_t *b, int n)
         if (b[i] == 0 && b[i + 1] == 0) return 1;
     return 0;
 }
+
+int okp_enum_blob_ok(const uint8_t *b, int n) { return record_ok(b, n, "play"); }
+
+/* A test channel room's record (testchan.c): the same layout under "okTC" in place of "play", so every
+ * DirectPlay path (okp_enum_blob_ok, also in released builds) passes it over and no game ever lists it */
+int okp_tc_blob_ok(const uint8_t *b, int n) { return record_ok(b, n, "okTC"); }
 
 void okp_peer_add_cands(okp_ctx *c, okp_peer *p, const SOCKADDR_IN6 *cands, int n)
 {
@@ -850,6 +856,37 @@ int okp_peer_info(okp_ctx *c, uint64_t peer, okp_peer_info_t *out)
     }
     LeaveCriticalSection(&c->lock);
     return found;
+}
+
+/* How this PC reaches each player right now (both editions export it as OkplayPaths, for Connection Check):
+ * one line per player with a working path, "<method> <where> <family> <rtt ms>\n". Method is always "direct"
+ * today (okplay has no relay and opens no router ports; a new method gets a new word here). Where: "internet"
+ * (a public address) or "local" (a private one: same network, or a VPN). No addresses: the text goes into
+ * reports. Returns the number of lines, -1 when c is NULL (no game open). Takes c->lock. */
+int okp_paths_text(okp_ctx *c, char *out, int outsz)
+{
+    int n = 0, len = 0;
+    if (!out || outsz < 1) return -1;
+    out[0] = 0;
+    if (!c) return -1;
+    EnterCriticalSection(&c->lock);
+    for (int i = 0; i < OKP_MAX_PEERS; i++) {
+        const okp_peer *p = &c->peers[i];
+        if (!p->used || !p->have_path) continue;
+        int v4 = okp_addr_is_v4(&p->path);
+        const uint8_t *a6 = (const uint8_t *)&p->path.sin6_addr;
+        int pub = v4 ? okp_addr_is_public_v4(&p->path)
+                     : !((a6[0] & 0xFE) == 0xFC || (a6[0] == 0xFE && (a6[1] & 0xC0) == 0x80));
+        char line[64];
+        int l = _snprintf(line, sizeof(line), "direct %s %s %lu\n", pub ? "internet" : "local",
+                          v4 ? "IPv4" : "IPv6", (unsigned long)p->rtt);
+        if (l < 0 || len + l >= outsz) break;
+        memcpy(out + len, line, l + 1);
+        len += l;
+        n++;
+    }
+    LeaveCriticalSection(&c->lock);
+    return n;
 }
 
 int okp_send_unlocked(okp_ctx *c, uint64_t peer, const void *buf, int len)

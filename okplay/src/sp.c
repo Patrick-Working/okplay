@@ -66,37 +66,20 @@ static int ensure_started(okp_ctx *c)
     return okp_rdv_start(c);
 }
 
-/* Exported for Connection Check: how this PC reaches each player right now, one line per player with a
- * working path: "<method> <where> <family> <rtt ms>\n". Method is always "direct" today (okplay has no
- * relay and opens no router ports; a new method gets a new word here). Where: "internet" (a public
- * address) or "local" (a private one: same network, or a VPN). No addresses: the text goes into reports.
- * Returns the number of lines, -1 when no game is open. Call it from the thread that owns the session. */
+/* Exported for Connection Check: how this PC reaches each player (net.c okp_paths_text): the test channel's
+ * players while a test game runs (testchan.c), else this game's. -1 when neither is open. */
 int WINAPI OkplayPaths(char *out, int outsz)
 {
-    okp_ctx *c = g_paths_ctx;
-    int n = 0, len = 0;
-    if (!out || outsz < 1) return -1;
-    out[0] = 0;
-    if (!c) return -1;
-    EnterCriticalSection(&c->lock);
-    for (int i = 0; i < OKP_MAX_PEERS; i++) {
-        const okp_peer *p = &c->peers[i];
-        if (!p->used || !p->have_path) continue;
-        int v4 = okp_addr_is_v4(&p->path);
-        const uint8_t *a6 = (const uint8_t *)&p->path.sin6_addr;
-        int pub = v4 ? okp_addr_is_public_v4(&p->path)
-                     : !((a6[0] & 0xFE) == 0xFC || (a6[0] == 0xFE && (a6[1] & 0xC0) == 0x80));
-        char line[64];
-        int l = _snprintf(line, sizeof(line), "direct %s %s %lu\n", pub ? "internet" : "local",
-                          v4 ? "IPv4" : "IPv6", (unsigned long)p->rtt);
-        if (l < 0 || len + l >= outsz) break;
-        memcpy(out + len, line, l + 1);
-        len += l;
-        n++;
-    }
-    LeaveCriticalSection(&c->lock);
-    return n;
+    okp_ctx *c = NULL;
+#ifdef OKP_BUILTIN
+    c = okp_tc_ctx();
+#endif
+    return okp_paths_text(c ? c : g_paths_ctx, out, outsz);
 }
+
+#ifdef OKP_BUILTIN
+int okp_tc_dll_ready(void) { return 1; }   /* testchan.c: okp_attach ran at load (logs, Winsock) */
+#endif
 
 static void wait_srflx(okp_ctx *c, DWORD ms)
 {
@@ -111,6 +94,7 @@ static uint16_t dp_version(okp_ctx *c) { return c->dp_version ? c->dp_version : 
 
 void okp_self_probe(okp_ctx *c)
 {
+    if (!c->isp) return;   /* (no DirectPlay behind it: the test channel's own record, testchan.c) */
     uint8_t req[DPENUM_REQ_SIZE];
     memset(req, 0, sizeof(req));
     uint32_t magic = 0x79616c70;          /* "play" */
@@ -174,6 +158,7 @@ static int room_matches(okp_ctx *c, const okp_room *rm)
 
 void okp_inject_rooms(okp_ctx *c)
 {
+    if (!c->isp) return;   /* (the test channel lists its rooms itself) */
     okp_room *copy = (okp_room *)malloc(sizeof(okp_room) * OKP_MAX_ROOMS);
     if (!copy) return;
     EnterCriticalSection(&c->lock);

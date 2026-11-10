@@ -583,7 +583,9 @@ static int parse_list(okp_ctx *c, char *rest, okp_room *rooms)
             okp_urldec(exee, rm->exe, sizeof(rm->exe));
         }
         if (rm->room == 0 || rm->host == 0 || rm->host == c->self) continue;
-        if (!okp_enum_blob_ok(rm->enumblob, rm->enumlen)) {
+        if (okp_tc_blob_ok(rm->enumblob, rm->enumlen)) {   /* a test channel room (testchan.c): only its own list keeps it */
+            if (!c->tc) continue;
+        } else if (!okp_enum_blob_ok(rm->enumblob, rm->enumlen)) {
             okp_log(1, "rdv: room %08x has a malformed session record - ignored", rm->room);
             continue;
         }
