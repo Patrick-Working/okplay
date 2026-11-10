@@ -223,12 +223,27 @@ void dds_init(void)
  * (Need for Speed III) is then told it was switched away from, and DirectDraw answers that by giving up the
  * full-screen mode: the screen keeps the last picture and the box is never seen.  While a box is open the
  * "you are no longer in front" messages stop at okplay. */
-static HWND dd_game_wnd;
-static WNDPROC dd_game_proc;
+static HWND dd_game_wnd;            /* the window guarded last: in front again when the box closes */
 static volatile LONG dd_guard;
+/* A window we take the place of keeps its own procedure in this property: each window is taken over once, and our
+ * procedure is never stored as "the old one" (box 1 over window A, box 2 over window B, box 3 over A again used to do
+ * that with one shared variable - the procedure then called itself until the stack ran out). */
+static const char DD_PROP[] = "okwsock.ddproc";
+#define DD_MAXWND 8
+static HWND dd_wnds[DD_MAXWND];     /* windows taken over, given back when this DLL is unloaded */
+static int dd_nwnd;
+
+static void dd_forget(HWND w)
+{
+    EnterCriticalSection(&dd_lock);
+    for (int i = 0; i < dd_nwnd; i++) if (dd_wnds[i] == w) { dd_wnds[i] = dd_wnds[--dd_nwnd]; break; }
+    LeaveCriticalSection(&dd_lock);
+}
 
 static LRESULT CALLBACK dds_game_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
+    WNDPROC old = (WNDPROC)GetPropA(w, DD_PROP);
+    if (!old) return DefWindowProcA(w, m, wp, lp);   /* (never: the property is set before this is put in place) */
     if (dd_guard) {
         int off = (m == WM_ACTIVATEAPP && !wp) || (m == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE) || m == WM_KILLFOCUS ||
                   (m == WM_NCACTIVATE && !wp);
@@ -237,7 +252,13 @@ static LRESULT CALLBACK dds_game_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             okp_log(3, "ddshow: game window message 0x%04x wp %lx lp %lx%s", m, (unsigned long)wp, (unsigned long)lp, off ? " - kept from the game" : "");
         if (off) return m == WM_NCACTIVATE ? TRUE : 0;
     }
-    return CallWindowProcA(dd_game_proc, w, m, wp, lp);
+    if (m == WM_NCDESTROY) {   /* the window goes: its own procedure back, and forgotten here */
+        RemovePropA(w, DD_PROP);
+        if ((WNDPROC)GetWindowLongA(w, GWL_WNDPROC) == dds_game_wndproc) SetWindowLongA(w, GWL_WNDPROC, (LONG)old);
+        dd_forget(w);
+        if (w == dd_game_wnd) dd_game_wnd = NULL;
+    }
+    return CallWindowProcA(old, w, m, wp, lp);
 }
 
 static BOOL CALLBACK dds_game_win(HWND w, LPARAM lp)   /* a visible top-level window of this program, not a dialog */
@@ -257,17 +278,45 @@ static void dds_guard_begin(void)
     HWND w = NULL;
     EnumWindows(dds_game_win, (LPARAM)&w);
     if (!w) return;
-    if (w != dd_game_wnd || (WNDPROC)GetWindowLongA(w, GWL_WNDPROC) != dds_game_wndproc) {
-        if (w == dd_game_wnd) {   /* someone put a window procedure in front of ours since: leave it, say so */
-            okp_log(2, "ddshow: the game window's procedure changed since okplay took its place in front");
-        } else {
-            dd_game_proc = (WNDPROC)SetWindowLongA(w, GWL_WNDPROC, (LONG)dds_game_wndproc);
-            dd_game_wnd = w;
+    if (!GetPropA(w, DD_PROP)) {   /* not taken over yet */
+        WNDPROC cur = (WNDPROC)GetWindowLongA(w, GWL_WNDPROC);
+        int room = 0;
+        if (cur && cur != dds_game_wndproc) {
+            EnterCriticalSection(&dd_lock);
+            room = dd_nwnd < DD_MAXWND;
+            if (room) dd_wnds[dd_nwnd++] = w;
+            LeaveCriticalSection(&dd_lock);
+        }
+        if (room) {
+            SetPropA(w, DD_PROP, (HANDLE)cur);   /* the old procedure first, then ours in its place */
+            WNDPROC was = (WNDPROC)SetWindowLongA(w, GWL_WNDPROC, (LONG)dds_game_wndproc);
+            if (was && was != cur && was != dds_game_wndproc) SetPropA(w, DD_PROP, (HANDLE)was);   /* (changed meanwhile) */
             okp_log(2, "ddshow: watching the game window %p (thread %lx; the box opens on thread %lx)", (void *)w,
                     (unsigned long)GetWindowThreadProcessId(w, NULL), (unsigned long)GetCurrentThreadId());
         }
+    } else if ((WNDPROC)GetWindowLongA(w, GWL_WNDPROC) != dds_game_wndproc) {
+        /* someone put a window procedure in front of ours since: ours still runs behind it, left as it is */
+        okp_log(3, "ddshow: the game window's procedure changed since okplay took its place in front");
     }
+    dd_game_wnd = w;
     InterlockedExchange(&dd_guard, 1);
+}
+
+void dds_detach(void)   /* this DLL is unloaded while the process goes on: every window gets its own procedure back */
+{
+    if (!dd_ready) return;
+    EnterCriticalSection(&dd_lock);
+    for (int i = 0; i < dd_nwnd; i++) {
+        HWND w = dd_wnds[i];
+        WNDPROC old = (WNDPROC)GetPropA(w, DD_PROP);
+        if (!IsWindow(w) || !old) continue;
+        if ((WNDPROC)GetWindowLongA(w, GWL_WNDPROC) == dds_game_wndproc) {
+            SetWindowLongA(w, GWL_WNDPROC, (LONG)old);
+            RemovePropA(w, DD_PROP);
+        }   /* (else another procedure sits in front of ours and calls it: nothing can be undone safely) */
+    }
+    dd_nwnd = 0;
+    LeaveCriticalSection(&dd_lock);
 }
 
 void dds_guard_end(void)   /* the box is gone: the game window in front again, then its messages as usual */

@@ -16,6 +16,8 @@
  *   of the last frame it got (RESULT ok then).
  *   tcpsim selftest
  *   tcpsim probe      (socket + closesocket only, and the own-address lookup: through okplay no box may come)
+ *   tcpsim script [--port 9803] [--menu-port P] [--secs S] STEP...
+ *               what a player does, one step after the other, in one run of the game (see "scripts" below)
  *
  * The patterns are the game's (described in okplay's docs, not copied code):
  *  - a probe socket that is only created and closed;
@@ -87,6 +89,8 @@ static int claim_delay, die_at = -1, die_hard, expect_loss, lost_err;
 static unsigned n_accepted;
 static int menu_ms = 500, menu_port = -1;
 static DWORD parked_at, t_lost;
+static int script_mode;               /* a broken connection is an event, not a failure (the steps decide) */
+static int got_info, pongs;           /* joiner: the host's game info came (in its lobby); ping answers */
 
 /* game state (under comms) */
 static int my_player, race_on, burst_sent;
@@ -246,6 +250,10 @@ static void host_msg(conn *c, const unsigned char *m, int len)   /* comms thread
         send_bundles();
         break;
     }
+    case 9:   /* scripts: a ping, answered at once */
+        if (len != 4) { fail("bad ping length %d", len); return; }
+        send_retry(c, m, 4);
+        break;
     default:
         fail("unknown message type %d", m[0]);
     }
@@ -261,6 +269,7 @@ static void join_msg(conn *c, const unsigned char *m, int len)   /* comms thread
         nplayers = m[2];
         frames = (int)get32(m + 3);
         printf("EVENT game info: I am player %d of %d, %d frames\n", my_player, nplayers, frames);
+        got_info = 1;
         if (frames > max_frames) { fail("the host wants %d frames (at most %d here)", frames, max_frames); return; }
         b[0] = 0x0c;
         b[1] = (unsigned char)my_player;
@@ -303,6 +312,10 @@ static void join_msg(conn *c, const unsigned char *m, int len)   /* comms thread
         bundles++;
         break;
     }
+    case 9:
+        if (len != 4) { fail("bad ping answer"); return; }
+        pongs++;
+        break;
     default:
         fail("unknown message type %d", m[0]);
     }
@@ -329,7 +342,9 @@ static int receive(conn *c)   /* 1 = error (the connection goes) */
 
 static void conn_error(conn *c)   /* comms thread: closesocket, out of the list */
 {
-    if (!is_host && expect_loss && !t_lost) { t_lost = now_ms(); lost_err = WSAGetLastError(); }
+    if (script_mode) printf("EVENT connection %d closed (%s, error %d)\n", c->player,
+                            c->got_leave ? "after its leave message" : "no leave message", WSAGetLastError());
+    else if (!is_host && expect_loss && !t_lost) { t_lost = now_ms(); lost_err = WSAGetLastError(); }
     else if (!c->got_leave && !failed) {
         if (is_host) fail("player %d's connection broke before it left (error %d)", c->player, WSAGetLastError());
         else if ((int)bundles < frames) fail("the host's connection broke (error %d)", WSAGetLastError());
@@ -1094,12 +1109,232 @@ static int selftest(void)
     return bad ? 1 : 0;
 }
 
+/* ------------------------------------------------------------------ scripts
+ *
+ * One run of the game as a list of what the player does, so a new menu path is one line in tcp_run.py:
+ *   menu          enter the "Network (TCP)" menu: the game listens on its port (--menu-port, else --port). With a
+ *                 listener still open from before it first closes it, restarts Winsock and makes a probe - the same
+ *                 calls as Host Game
+ *   back          back to Connect Players (the game keeps its listener open: nothing happens on the sockets)
+ *   host          Host Game: close, Winsock restart, probe, listen again on --port
+ *   close         the host backs out of its lobby: its connections and its listener close
+ *   quit          leave network play: everything closes, Winsock is cleaned up, 2.5 s pass
+ *   lobby:N       host: wait (--secs) until N players in all have reached the lobby
+ *   left:N        host: wait until N players in all have left
+ *   quiet:MS      host: nobody may connect for MS ms
+ *   join:ADDR     connect (the game's loop, 20 s) and reach the host's lobby; joinfail:ADDR: the connect must fail
+ *   leave         the joiner leaves the lobby (leave message, then close)
+ *   ping          a message to the host that must be answered within 10 s
+ *   wait:MS       nothing for MS ms
+ *   say:NAME      tell the others (a file NAME.sig in this folder or TCPSIM_SIGDIR), await:NAME waits for it (120 s)
+ *   env:K=V       a setting for what comes next (the test answers okplay reads, e.g. OKP_TEST_JOIN_PICK)
+ * Every step prints EVENT step ...; the first one that does not go as expected ends the run: RESULT fail step N. */
+static int next_slot = 1;
+static unsigned short port_arg = 9803;   /* --port: Host Game's */
+
+static int listen_on(unsigned short port, const char *what)
+{
+    SOCKET l = tcp_bound(port);
+    struct sockaddr_in a;
+    int al = sizeof(a);
+    if (l == INVALID_SOCKET || listen(l, 5)) {
+        printf("EVENT %s: listen on %u failed (%d)\n", what, port, WSAGetLastError());
+        if (l != INVALID_SOCKET) closesocket(l);
+        return 0;
+    }
+    getsockname(l, (struct sockaddr *)&a, &al);
+    EnterCriticalSection(&comms);
+    lsock = l;
+    LeaveCriticalSection(&comms);
+    printf("EVENT %s: listening on port %u\n", what, ntohs(a.sin_port));
+    if (!comms_running) start_comms();
+    return 1;
+}
+
+static void service_restart(void)   /* the game's service close, Winsock restart and probe (Host Game, a menu re-entry) */
+{
+    WSADATA w;
+    if (comms_running) stop_comms();
+    if (lsock != INVALID_SOCKET) { closesocket(lsock); lsock = INVALID_SOCKET; }
+    WSACleanup();
+    WSAStartup(0x0101, &w);
+    closesocket(socket(AF_INET, SOCK_STREAM, 0));
+}
+
+static void host_claim(void)   /* host: accepted connections become players */
+{
+    EnterCriticalSection(&comms);
+    if (parked != INVALID_SOCKET && next_slot < MAXP) {
+        conn *c = &conns[next_slot];
+        memset(c, 0, sizeof(*c));
+        c->used = 1;
+        c->s = parked;
+        c->player = next_slot++;
+        c->connected = 1;
+        parked = INVALID_SOCKET;
+        printf("EVENT player %d connected\n", c->player);
+    }
+    LeaveCriticalSection(&comms);
+}
+
+static int host_count(int what)   /* 0: players that reached the lobby, 1: players that left */
+{
+    int n = 0;
+    EnterCriticalSection(&comms);
+    for (int i = 1; i < next_slot; i++) n += what ? (conns[i].got_leave && conns[i].closed) : conns[i].got_car;
+    LeaveCriticalSection(&comms);
+    return n;
+}
+
+static void close_all(void)
+{
+    if (comms_running) stop_comms();
+    for (int i = 0; i < MAXP; i++) if (conns[i].used) close_conn(&conns[i]);
+    if (parked != INVALID_SOCKET) { closesocket(parked); parked = INVALID_SOCKET; }
+    if (lsock != INVALID_SOCKET) { closesocket(lsock); lsock = INVALID_SOCKET; }
+}
+
+static int script_join(const char *addr, int must_fail, char *why)
+{
+    struct sockaddr_in to;
+    char how[64];
+    int attempts;
+    DWORD t0 = now_ms();
+    if (!comms_running) { strcpy(why, "not at the menu (no comms thread)"); return 0; }
+    if (!parse_addr(addr, &to, 9803)) { sprintf(why, "address %s does not resolve", addr); return must_fail; }
+    conn *c = &conns[0];
+    EnterCriticalSection(&comms);
+    memset(c, 0, sizeof(*c));
+    c->used = 1;
+    c->s = INVALID_SOCKET;
+    got_info = 0;
+    pongs = 0;
+    LeaveCriticalSection(&comms);
+    int ok = connect_loop(c, &to, 20000, &attempts, how);
+    printf("EVENT %s after %lu ms (%d attempts)\n", how, (unsigned long)(now_ms() - t0), attempts);
+    if (must_fail) {
+        if (ok) { close_conn(c); strcpy(why, "connected, but this join must fail"); return 0; }
+        return 1;
+    }
+    if (!ok) { sprintf(why, "connect: %s", how); return 0; }
+    unsigned char v[0x29];
+    memset(v, 0, sizeof(v));
+    memcpy(v + 1, "27, 2.0", 7);
+    send_retry(c, v, 0x29);
+    for (DWORD t1 = now_ms(); !got_info && !c->closed && now_ms() - t1 < 10000;) Sleep(10);
+    if (!got_info) { strcpy(why, c->closed ? "the host closed the connection before its game info" : "no game info from the host in 10 s"); return 0; }
+    printf("EVENT in the lobby as player %d\n", my_player);
+    return 1;
+}
+
+static int run_script(int n, char **steps)
+{
+    char why[200] = "";
+    int i, ok = 1;
+    unsigned short mport = (unsigned short)(menu_port >= 0 ? menu_port : 9803);
+    script_mode = 1;
+    is_host = 0;
+    for (i = 0; i < n && ok && !failed; i++) {
+        const char *st = steps[i], *arg = strchr(st, ':');
+        arg = arg ? arg + 1 : "";
+        DWORD t0 = now_ms();
+        printf("EVENT step %d %s\n", i + 1, st);
+        why[0] = 0;
+        if (!strcmp(st, "menu")) {
+            if (lsock != INVALID_SOCKET) service_restart();
+            else closesocket(socket(AF_INET, SOCK_STREAM, 0));   /* the game's probe */
+            is_host = 0;
+            ok = listen_on(mport, "the TCP menu");
+            if (!ok) strcpy(why, "menu listen failed");
+        } else if (!strcmp(st, "back")) {
+            printf("EVENT back at Connect Players (the menu's listener stays open)\n");
+        } else if (!strcmp(st, "host")) {
+            service_restart();
+            ok = listen_on(port_arg, "Host Game");
+            if (ok) {
+                char me[256];
+                struct hostent *h;
+                is_host = 1;
+                printf("EVENT Host Game: listening again on port %u after %lu ms\n", port_arg, (unsigned long)(now_ms() - t0));
+                gethostname(me, sizeof(me));
+                h = gethostbyname(me);
+                if (h && h->h_addr_list[0]) printf("EVENT my address %s\n", inet_ntoa(*(struct in_addr *)h->h_addr_list[0]));
+            } else strcpy(why, "Host Game's listen failed");
+        } else if (!strcmp(st, "close")) {
+            close_all();
+            is_host = 0;
+            printf("EVENT the host left its lobby: connections and listener closed\n");
+        } else if (!strcmp(st, "quit")) {
+            WSADATA w;
+            close_all();
+            WSACleanup();
+            Sleep(2500);
+            WSAStartup(0x0101, &w);
+            is_host = 0;
+            printf("EVENT left network play\n");
+        } else if (!strncmp(st, "lobby:", 6) || !strncmp(st, "left:", 5)) {
+            int want = atoi(arg), what = st[1] == 'e', have;
+            while ((have = host_count(what)) < want && now_ms() - t0 < (DWORD)secs * 1000 && !failed) { host_claim(); Sleep(5); }
+            printf("EVENT %d player(s) %s\n", have, what ? "left" : "in the lobby");
+            if (have < want) { ok = 0; sprintf(why, "%d of %d players %s in %d s", have, want, what ? "left" : "came", secs); }
+        } else if (!strncmp(st, "quiet:", 6)) {
+            unsigned before = n_accepted;
+            while (now_ms() - t0 < (DWORD)atoi(arg) && n_accepted == before) { host_claim(); Sleep(5); }
+            if (n_accepted != before) { ok = 0; strcpy(why, "a player connected"); }
+        } else if (!strncmp(st, "join:", 5) || !strncmp(st, "joinfail:", 9)) {
+            ok = script_join(arg, st[4] == 'f', why);
+        } else if (!strcmp(st, "leave")) {
+            unsigned char lv[4] = { 4, (unsigned char)my_player, 0, 0x0c };
+            if (conns[0].used && !conns[0].closed) send_retry(&conns[0], lv, 4);
+            Sleep(100);
+            close_conn(&conns[0]);
+            printf("EVENT left the lobby\n");
+        } else if (!strcmp(st, "ping")) {
+            unsigned char pg[4] = { 9, (unsigned char)my_player, 1, 2 };
+            int before = pongs;
+            if (conns[0].closed || !conns[0].used) { ok = 0; strcpy(why, "no connection to the host"); }
+            else {
+                send_retry(&conns[0], pg, 4);
+                while (pongs == before && !conns[0].closed && now_ms() - t0 < 10000) Sleep(10);
+                if (pongs == before) { ok = 0; strcpy(why, conns[0].closed ? "the connection closed" : "no answer in 10 s"); }
+                else printf("EVENT ping answered in %lu ms\n", (unsigned long)(now_ms() - t0));
+            }
+        } else if (!strncmp(st, "wait:", 5)) {
+            DWORD ms = (DWORD)atoi(arg);
+            while (now_ms() - t0 < ms) { if (is_host) host_claim(); Sleep(5); }
+        } else if (!strncmp(st, "say:", 4) || !strncmp(st, "await:", 6)) {
+            char f[MAX_PATH], dir[MAX_PATH] = ".";
+            GetEnvironmentVariableA("TCPSIM_SIGDIR", dir, sizeof(dir));   /* (processes in different folders) */
+            snprintf(f, sizeof(f), "%s/%s.sig", dir, arg);
+            if (st[0] == 's') {
+                FILE *fp = fopen(f, "w");
+                if (fp) fclose(fp);
+                printf("EVENT say %s\n", arg);
+            } else {
+                while (GetFileAttributesA(f) == INVALID_FILE_ATTRIBUTES && now_ms() - t0 < 120000) { if (is_host) host_claim(); Sleep(20); }
+                if (GetFileAttributesA(f) == INVALID_FILE_ATTRIBUTES) { ok = 0; sprintf(why, "nobody said %s", arg); }
+            }
+        } else if (!strncmp(st, "env:", 4)) {
+            _putenv(arg);
+        } else {
+            ok = 0;
+            sprintf(why, "unknown step");
+        }
+        if (failed && ok) { ok = 0; lstrcpynA(why, fail_reason, sizeof(why)); }
+    }
+    close_all();
+    if (ok && !failed) { printf("RESULT ok\n"); return 0; }
+    printf("RESULT fail step %d (%s): %s\n", i, steps[i - 1], why[0] ? why : fail_reason);
+    return 1;
+}
+
 int main(int argc, char **argv)
 {
     WSADATA w;
     const char *edge = NULL, *addr = NULL;
     unsigned short port = 9803;
-    int orig = 0;
+    int orig = 0, nsteps = 0;
+    char **steps = (char **)calloc(argc, sizeof(char *));
     setvbuf(stdout, NULL, _IONBF, 0);
     if (argc < 2 || WSAStartup(0x0101, &w)) {
         printf("usage: tcpsim host|join ADDR[:PORT]|selftest [--port P] [--players N] [--frames F] [--hz H] [--secs S] [--orig] [--edge NAME]\n");
@@ -1124,7 +1359,9 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--expect-loss") && i + 1 < argc) expect_loss = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--menu-ms") && i + 1 < argc) menu_ms = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--menu-port") && i + 1 < argc) menu_port = atoi(argv[++i]);
+        else if (argv[i][0] != '-' && steps) steps[nsteps++] = argv[i];   /* script steps */
     }
+    port_arg = port;
     if (nplayers < 2 || nplayers > MAXP || frames < 1 || hz < 1) return 2;
     max_frames = frames > 100000 ? frames : 100000;   /* a joiner takes the host's frame count */
     t_sent = (DWORD *)calloc(max_frames + 1, sizeof(DWORD));
@@ -1138,6 +1375,7 @@ int main(int argc, char **argv)
         printf("EVENT probes done, own address %s\nRESULT ok\n", h && h->h_addr_list[0] ? inet_ntoa(*(struct in_addr *)h->h_addr_list[0]) : "?");
         r = 0;
     } else if (!strcmp(argv[1], "selftest")) r = selftest();
+    else if (!strcmp(argv[1], "script")) r = run_script(nsteps, steps);
     else if (edge) r = is_host ? edge_host(edge, port) : edge_join(edge, addr ? addr : "127.0.0.1");
     else if (is_host) r = run_host(port);
     else if (addr) r = run_join(addr, orig);

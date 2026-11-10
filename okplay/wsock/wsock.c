@@ -132,6 +132,7 @@ typedef struct okw_tconn {          /* one stream connection (also one waiting i
     uint32_t sel_gen;
     int sel_shown, sel_consumed;
     DWORD t_state;
+    int held;                       /* okp_peer_hold taken on the peer for this connection (tconn_hold) */
 } okw_tconn;
 
 #define OKW_MAX_SOCKS 64
@@ -381,6 +382,9 @@ static int is_authed(uint64_t peer)   /* okw_lock held */
     return 0;
 }
 
+static volatile LONG ui_pending;   /* (the notices, below) */
+static volatile LONG ui_wrongpw;   /* a TCP game's late "wrong password": shown through run_box like the other notices */
+
 static DWORD WINAPI wrong_password_box(LPVOID arg)
 {
     (void)arg;
@@ -428,8 +432,13 @@ static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held *
             SecureZeroMemory(join_hash, sizeof(join_hash));
             okp_log(1, "wsock: wrong password - the host did not let us in");
             if (!getenv("OKP_TEST_JOIN_PASSWORD") && !auth_in_list) {
-                HANDLE t = CreateThread(NULL, 0, wrong_password_box, NULL, 0, NULL);
-                if (t) CloseHandle(t);
+                if (game->kinds & OKW_TCP) {   /* a full-screen game: only run_box keeps a box in sight (ddshow.c) */
+                    InterlockedExchange(&ui_wrongpw, 1);
+                    InterlockedExchange(&ui_pending, 1);
+                } else {
+                    HANDLE t = CreateThread(NULL, 0, wrong_password_box, NULL, 0, NULL);
+                    if (t) CloseHandle(t);
+                }
             }
         }
         nheld = 0;
@@ -738,9 +747,29 @@ static okw_tconn *tconn_new(void)   /* okw_lock held */
     return NULL;
 }
 
+/* The core forgets a peer that has no DirectPlay players once its path is quiet for a while (it never knows the
+ * shim's players), and with it the lane a stream lives on. So each stream connection holds its peer: taken once
+ * when the connection begins, given back once - when it dies (reset, refused, given up) or is freed, whichever
+ * comes first. okw_lock held; ctx->lock is taken inside (the usual order). */
+static void tconn_hold(okw_tconn *c)
+{
+    if (!ctx || c->held) return;
+    EnterCriticalSection(&ctx->lock);   /* (okp_peer_hold enters it again: the peer can't go in between) */
+    if (okp_peer_get(ctx, c->peer, 0)) { okp_peer_hold(ctx, c->peer, 1); c->held = 1; }
+    LeaveCriticalSection(&ctx->lock);
+}
+
+static void tconn_unhold(okw_tconn *c)   /* okw_lock held; ctx is the one the hold was taken on (end_session) */
+{
+    if (!c->held) return;
+    c->held = 0;
+    if (ctx) okp_peer_hold(ctx, c->peer, 0);
+}
+
 static void tconn_free(okw_tconn *c)   /* okw_lock held */
 {
     if (!c) return;
+    tconn_unhold(c);
     free(c->ring);
     memset(c, 0, sizeof(*c));
 }
@@ -759,6 +788,7 @@ static void tconn_abort(okw_tconn *c, int reason, int err)   /* okw_lock held */
     if (!c->rst_sent && !c->rst_rx && (c->state == T_ESTAB || c->state == T_SYN_SENT)) TFRAME(c, TF_RST, c->snd_next, &r, 1);
     c->rst_sent = 1;
     if (!c->err) c->err = err;
+    tconn_unhold(c);
     c->rx_gen++;
     okp_log(2, "wsock: TCP connection %08x with %016llx reset here (reason %d)", (unsigned)c->id, (unsigned long long)c->peer, reason);
     wake();
@@ -829,6 +859,7 @@ static void tcp_syn(uint64_t from, const okw_thdr *h, const uint8_t *b, int bl) 
     c->rport = sport;
     c->rip = standin_of(from);
     c->snd_wnd = c->snd_limit = win;
+    tconn_hold(c);
     {
         okp_peer_info_t pi;
         if (okp_peer_info(ctx, from, &pi)) { c->base_giveup = pi.r_giveup; c->base_restarts = pi.r_restarts; c->info_init = 1; }
@@ -878,6 +909,7 @@ static void tcp_rx(uint64_t from, const uint8_t *d, int len)   /* okw_lock held,
             c->state = T_FAILED;
             c->err = c->so_error = WSAECONNREFUSED;
             c->rst_rx = 1;
+            tconn_unhold(c);
             okp_log(1, "wsock: TCP connect to %016llx port %u refused (reason %d)", (unsigned long long)from, c->rport, bl ? b[0] : 0);
             wake();
         }
@@ -918,6 +950,7 @@ static void tcp_rx(uint64_t from, const uint8_t *d, int len)   /* okw_lock held,
         c->rst_rx = 1;
         if (c->state == T_SYN_SENT) { c->state = T_FAILED; c->err = c->so_error = WSAECONNREFUSED; }
         else if (!c->err) c->err = WSAECONNRESET;
+        tconn_unhold(c);
         c->rx_gen++;
         okp_log(2, "wsock: TCP connection %08x reset by %016llx (reason %d)", (unsigned)c->id, (unsigned long long)from, bl ? b[0] : 0);
         wake();
@@ -927,6 +960,8 @@ static void tcp_rx(uint64_t from, const uint8_t *d, int len)   /* okw_lock held,
 
 static void send_syn(okw_tconn *c);
 static void host_room(void);
+static void tcp_conn_gone(uint64_t peer);
+static int room_live(int i);
 
 /* okplay's lane to a player broke (messages given up, or the player started over), or nothing at all came from it
  * for drop_after: its connections get a reset instead of waiting forever (B.10). Every 250 ms. */
@@ -980,7 +1015,9 @@ static void tcp_tick(void)   /* okw_lock held */
             else if (c->state == T_SYN_SENT) tconn_abort(c, 5, WSAECONNABORTED);
             else if (c->state == T_ESTAB && !c->err) TFRAME(c, TF_FIN, c->snd_next, NULL, 0);
             okp_log(2, "wsock: TCP connection %08x: the game's abandoned connect was not taken over - closed", (unsigned)c->id);
+            uint64_t peer = c->peer;
             tconn_free(c);
+            tcp_conn_gone(peer);
             continue;
         }
         if (c->state == T_SYN_SENT && !c->syn_held && now - c->t_state >= 20000) {
@@ -1202,6 +1239,12 @@ static int room_advert(const okp_room *rm, uint16_t *port, const uint8_t **ad)
     return 0;
 }
 
+/* okplay that did not start (no network, no thread): kept here and stopped later with no lock held (its network
+ * thread may be waiting for okw_lock); the next time the game opens its network menu okplay tries again */
+static okp_ctx *failed_ctx;
+static int start_failed;
+static DWORD start_failed_tick;
+
 static void start_okplay(void)   /* okw_lock held; the first time the game uses UDP */
 {
     if (started) return;
@@ -1209,7 +1252,7 @@ static void start_okplay(void)   /* okw_lock held; the first time the game uses 
     okp_config_load();
     want_lan = mode_choice == 3;
     okp_ctx *c = (okp_ctx *)calloc(1, sizeof(okp_ctx));
-    if (!c) return;
+    if (!c) { start_failed = 1; start_failed_tick = GetTickCount(); return; }
     c->host_transport = -1;
     InitializeCriticalSection(&c->lock);
     c->mode = want_lan ? OKP_MODE_LAN : OKP_MODE_ONLINE;
@@ -1224,7 +1267,11 @@ static void start_okplay(void)   /* okw_lock held; the first time the game uses 
     okp_log_header();
     okp_log_sysinfo();
     if (!okp_net_start(c) || !okp_rdv_start(c)) {
-        okp_log(0, "wsock: okplay could not start");
+        /* (no network: okp_net_start told the player, once per game run) */
+        okp_log(0, "wsock: okplay could not start - it tries again when the game opens its network menu again");
+        failed_ctx = c;
+        start_failed = 1;
+        start_failed_tick = GetTickCount();
         return;
     }
     ctx = c;
@@ -1269,9 +1316,12 @@ static void stop_ctx(okp_ctx *c, int withdraw)   /* no lock held; c already deta
 static void end_session(void)   /* no lock held */
 {
     EnterCriticalSection(&okw_lock);
-    okp_ctx *c = ctx;
+    okp_ctx *c = ctx, *fc = failed_ctx;
     int withdraw = c && c->room && (c->is_host || c->closing) && c->mode == OKP_MODE_ONLINE;
+    for (int i = 0; i < OKW_MAX_CONNS; i++) tconn_unhold(&conns[i]);   /* (on the okplay that stops: once each) */
     ctx = NULL;
+    failed_ctx = NULL;
+    start_failed = 0;
     started = 0;   /* (okw_self stays: a game may keep the own address it looked up once) */
     mode_provisional = 0;
     InterlockedExchange(&mode_choice, 0);
@@ -1299,6 +1349,7 @@ static void end_session(void)   /* no lock held */
     npend = 0;
     t_start_ms = 0;
     LeaveCriticalSection(&okw_lock);
+    if (fc) stop_ctx(fc, 0);
     if (!c) return;
     okp_log(1, "wsock: the game left network play - okplay stops; the next TCP/IP game asks again");
     if (c->sess_role == 2 && c->host_peer) {   /* a joiner that never heard from its host */
@@ -1311,6 +1362,23 @@ static void end_session(void)   /* no lock held */
     }
     okp_report_session_end(c);   /* report.c: one connection line for this game */
     stop_ctx(c, withdraw);
+}
+
+/* the game opens its network menu (a listen) after okplay failed to start: one more try. No lock held */
+static void retry_start(void)
+{
+    if (!start_failed) return;
+    EnterCriticalSection(&okw_lock);
+    int again = start_failed && !ctx && GetTickCount() - start_failed_tick >= 2000;
+    okp_ctx *fc = again ? failed_ctx : NULL;
+    if (again) { failed_ctx = NULL; start_failed = 0; started = 0; }
+    LeaveCriticalSection(&okw_lock);
+    if (fc) stop_ctx(fc, 0);
+    if (!again) return;
+    okp_log(1, "wsock: trying to start okplay again");
+    EnterCriticalSection(&okw_lock);
+    if (!started && mode_choice >= 2) start_okplay();
+    LeaveCriticalSection(&okw_lock);
 }
 
 /* A new game, so the mode and the host's password are asked again: the game has had no UDP socket open for
@@ -1336,12 +1404,19 @@ static void check_new_game(void)
     if (over) end_session();
 }
 
-/* become the host of a room (the game broadcast) */
+/* become the host of a room (the game broadcast, or a TCP game's host rule).
+ * The room id: pending_room is chosen once per okplay session (with the host's password box, which salts the hash
+ * with it) and only end_session clears it, so every room this PC hosts in one session has the same id. That is why
+ * a close followed by a host within the room-server thread's 100 ms (tcp_close, then the game listens again) never
+ * left the old id listed: there is no old id. But a fresh token for the same id was refused by the room server
+ * ("owned by another host") until the old entry expired, so a TCP game keeps the token while the id stays. */
 static void host_room(void)   /* okw_lock held */
 {
     if (!ctx || ctx->is_host) return;
-    ctx->room = pending_room ? pending_room : ((uint32_t)okp_rand64() | 1);
-    snprintf(ctx->tok, sizeof(ctx->tok), "%016llx", (unsigned long long)okp_rand64());
+    uint32_t room = pending_room ? pending_room : ((uint32_t)okp_rand64() | 1);
+    if (!(game->kinds & OKW_TCP) || ctx->room != room || !ctx->tok[0])
+        snprintf(ctx->tok, sizeof(ctx->tok), "%016llx", (unsigned long long)okp_rand64());
+    ctx->room = room;
     ctx->is_host = 1;
     ctx->closing = 0;
     room_closed = 0;
@@ -1354,14 +1429,17 @@ static void host_room(void)   /* okw_lock held */
     okp_rdv_wake(ctx);
 }
 
-/* join the room whose host is `host` (the game sent to that host's stand-in address) */
-static void join_room(uint64_t host)   /* okw_lock held */
+/* join the room whose host is `host` (the game sent to that host's stand-in address). 1 = in that room (now or
+ * already), 0 = not: no okplay, this PC hosts, or the room is not listed. Quiet: a UDP host calls it with every
+ * packet it sends to a player; the TCP paths (tcp_join) say why. */
+static int join_room_in(uint64_t host, uint32_t only)   /* okw_lock held; only: that room of the host (0 = any) */
 {
-    if (!ctx || ctx->is_host || ctx->host_peer == host) return;
+    if (!ctx || ctx->is_host) return 0;
+    if (ctx->host_peer == host) return 1;
     EnterCriticalSection(&ctx->lock);
     for (int i = 0; i < ctx->nrooms; i++) {
         okp_room *rm = &ctx->rooms[i];
-        if (rm->host != host) continue;
+        if (rm->host != host || (only && rm->room != only)) continue;
         ctx->room = rm->room;
         ctx->host_peer = host;
         okp_peer *p = okp_peer_get(ctx, host, 1);
@@ -1373,10 +1451,13 @@ static void join_room(uint64_t host)   /* okw_lock held */
         okp_log(1, "wsock: joining room %08x host %016llx (%d candidates)", room, (unsigned long long)host, nc);
         okp_report_session_begin(ctx, 0);
         if (ctx->mode == OKP_MODE_ONLINE) okp_rdv_knock(ctx, room);
-        return;
+        return 1;
     }
     LeaveCriticalSection(&ctx->lock);
+    return 0;
 }
+
+static int join_room(uint64_t host) { return join_room_in(host, 0); }   /* okw_lock held */
 
 /* undo join_room after the host said no: the list goes back to the room list (with its lock marker)
  * instead of that host's own broadcasts, so picking the room again asks again */
@@ -1398,6 +1479,143 @@ static void leave_room(uint64_t host)   /* okw_lock held */
     ctx->session_open = 0;
     browse_tick = 0;
     okp_log(2, "wsock: left room of host %016llx", (unsigned long long)host);
+}
+
+/* ---------------------------------------------------------------- TCP: a join and the host role, taken back
+ *
+ * What a TCP join sets - the room (ctx->host_peer, ctx->room), the host the game's connects go to (picked_host), the
+ * password state (auth_*) - is set on the way in and taken back on every way out by tcp_join_undo: the join was
+ * refused, cancelled or not answered, or the last stream connection to that host closed. Otherwise a later connect
+ * goes to the old host without asking, and Host Game never hosts. */
+
+static int tcp_conns_to(uint64_t peer)   /* okw_lock held: our stream connections with that player (any state) */
+{
+    int n = 0;
+    for (int i = 0; i < OKW_MAX_CONNS; i++) if (conns[i].used && conns[i].peer == peer) n++;
+    return n;
+}
+
+static int tcp_outbound(void)   /* okw_lock held: a connect of ours that is going on, waits to be taken over, or is up */
+{
+    for (int i = 0; i < OKW_MAX_CONNS; i++)
+        if (conns[i].used && conns[i].initiator && !conns[i].err && (conns[i].state == T_SYN_SENT || conns[i].state == T_ESTAB))
+            return 1;
+    return 0;
+}
+
+static int tcp_room_players(void)   /* okw_lock held: players connected to this PC's room (accepted or not yet) */
+{
+    int n = 0;
+    for (int i = 0; i < OKW_MAX_CONNS; i++)
+        if (conns[i].used && !conns[i].initiator && conns[i].state == T_ESTAB && !conns[i].err && !conns[i].fin_rx) n++;
+    return n;
+}
+
+/* drop: also forget the host as a peer, with what waits in its queue (a password): only for a join that never got
+ * a connection - a connection just closed still has its last frames (the FIN) to deliver */
+static void tcp_join_undo(uint64_t host, const char *why, int drop)   /* okw_lock held */
+{
+    int was_in = ctx && host && ctx->host_peer == host;
+    if (host && picked_host == host) picked_host = 0;
+    if (host && auth_host == host) {   /* (a late answer from that host is then ignored: it is not auth_host any more) */
+        auth_host = 0;
+        auth_room = 0;
+        auth_state = 0;
+        SecureZeroMemory(join_hash, sizeof(join_hash));
+        nheld = 0;
+    }
+    if (!was_in) return;
+    okp_report_session_end(ctx);   /* (the join's connection line) */
+    EnterCriticalSection(&ctx->lock);
+    okp_peer *p = okp_peer_get(ctx, host, 0);
+    if (drop && p && !p->hold && !tcp_conns_to(host)) {
+        okp_peer_free_bufs(p);
+        p->qn = 0;
+        p->used = 0;
+    }
+    ctx->host_peer = 0;
+    ctx->room = 0;
+    LeaveCriticalSection(&ctx->lock);
+    ctx->session_open = 0;
+    browse_tick = 0;
+    okp_log(1, "wsock: not in the room of host %016llx any more (%s)", (unsigned long long)host, why);
+}
+
+/* join `host`'s room for a stream connect: 1 = in it. Never quiet: each refusal says why. okw_lock held, ctx set */
+static int tcp_join(uint64_t host)
+{
+    if (ctx->is_host) {
+        okp_log(1, "wsock: not joining host %016llx - this PC hosts room %08x", (unsigned long long)host, ctx->room);
+        return 0;
+    }
+    if (ctx->host_peer && ctx->host_peer != host && !tcp_conns_to(ctx->host_peer))
+        tcp_join_undo(ctx->host_peer, "the game joins another room", 0);
+    if (ctx->host_peer && ctx->host_peer != host) {
+        okp_log(1, "wsock: not joining host %016llx - still connected to host %016llx", (unsigned long long)host,
+                (unsigned long long)ctx->host_peer);
+        return 0;
+    }
+    uint32_t live = 0;
+    EnterCriticalSection(&ctx->lock);
+    for (int i = 0; i < ctx->nrooms; i++) if (ctx->rooms[i].host == host && room_live(i)) live = ctx->rooms[i].room;
+    /* a peer left from an earlier join, with nothing of ours on it: forgotten, so this join starts its lane afresh (the
+     * host may have started okplay again since - a new session with the same id - and the old lane answers nothing) */
+    okp_peer *p = ctx->host_peer != host ? okp_peer_get(ctx, host, 0) : NULL;
+    if (p && !p->hold && !tcp_conns_to(host)) {
+        okp_peer_free_bufs(p);
+        p->qn = 0;
+        p->used = 0;
+    }
+    LeaveCriticalSection(&ctx->lock);
+    if (join_room_in(host, live)) return 1;   /* (its newest room: an older one of the same host may still be listed) */
+    okp_log(1, "wsock: not joining host %016llx - its room is not listed (any more)", (unsigned long long)host);
+    return 0;
+}
+
+/* a stream connection was freed: the last one to the room's host ends the join */
+static void tcp_conn_gone(uint64_t peer)   /* okw_lock held */
+{
+    if (ctx && peer && ctx->host_peer == peer && !ctx->is_host && !tcp_conns_to(peer))
+        tcp_join_undo(peer, "the game closed its last connection to that host", 0);
+}
+
+/* The game connects out while this PC counts as a host: its last listen was not Host Game but the player entering
+ * the TCP menu again (the game makes the same calls). With nobody in the room the host role goes and the room comes
+ * off the list now - sent from here with this room's id and token, before a join changes ctx->room (the room
+ * server's thread reads it later and would close the wrong room). With players in the room the connect is refused:
+ * a host does not walk out on its players. No lock held: 0 = go on as a joiner, -1 = refuse. */
+static int tcp_unhost_for_connect(void)
+{
+    EnterCriticalSection(&okw_lock);
+    okp_ctx *c = ctx;
+    if (!c || !c->is_host || game->host_rule != HOST_LISTEN) { LeaveCriticalSection(&okw_lock); return 0; }
+    int n = tcp_room_players();
+    if (n) {
+        okp_log(1, "wsock: the game connects out while %d player(s) are in its room %08x - the connect is refused", n, c->room);
+        LeaveCriticalSection(&okw_lock);
+        return -1;
+    }
+    okp_log(1, "wsock: the game connects out - this PC joins; its room %08x comes off the list", c->room);
+    int withdraw = c->room && c->mode == OKP_MODE_ONLINE;
+    c->is_host = 0;
+    c->session_open = 0;
+    c->closing = 1;          /* (nothing announces it meanwhile) */
+    room_closed = 0;         /* (not "the game left its room": no new session comes of this) */
+    relisten_port = 0;
+    LeaveCriticalSection(&okw_lock);
+    DWORD t0 = GetTickCount();
+    if (withdraw) okp_rdv_close(c);   /* (no lock held: plain HTTP takes over a second on Windows 9x) */
+    EnterCriticalSection(&okw_lock);
+    if (ctx == c) {
+        /* a close the room server's thread may still send goes out with a token that owns no room */
+        snprintf(c->tok, sizeof(c->tok), "%016llx", (unsigned long long)okp_rand64());
+        c->room = 0;
+        c->closing = 0;
+        c->sess_role = 0;    /* (a room nobody was in: no connection line for it) */
+        if (withdraw) okp_log(2, "wsock: room withdrawn in %lu ms", (unsigned long)(GetTickCount() - t0));
+    }
+    LeaveCriticalSection(&okw_lock);
+    return 0;
 }
 
 /* every call from the game: while it isn't hosting or in a room and has a socket waiting for broadcasts
@@ -1529,6 +1747,7 @@ void *const okw_imp_CreateThread __asm__("__imp__CreateThread@24") = (void *)okw
 typedef struct { int kind; GUID g; WCHAR w[64]; INT_PTR r; void *p; } okw_box;
 struct okw_listbox_s;
 static INT_PTR lb_run_any(void *L);
+static const WCHAR no_answer_text[] = L"No answer from the host. The game may have started or closed.";   /* (notice_no_answer) */
 
 /* Notices from okplay's core - a newer version, the room server out of reach, TCP/IP not working, a crash
  * report or connection reports waiting (the DirectPlay drop-in has the same boxes and shows them at once on
@@ -1537,7 +1756,6 @@ static INT_PTR lb_run_any(void *L);
  * then run_box shows them on the game's own thread with its messages held, like the other boxes. The two
  * questions come from report.c's own thread, which waits for the answer. */
 static CRITICAL_SECTION ui_lock;
-static volatile LONG ui_pending;
 static struct { int on; char latest[24], note[256]; } ui_update;
 static struct { int on; char server[160], why[200]; } ui_unreach;
 static struct { int on; } ui_nonet;
@@ -1609,6 +1827,16 @@ static INT_PTR run_box(okw_box *b)
     else if (b->kind == 7) b->r = okbox_ask_crash_report(ui_crash.path);
     else if (b->kind == 8) b->r = okbox_ask_conn_reports();
     else if (b->kind == 10) b->r = lb_run_any(b->p);   /* a TCP game's room list / "Connecting..." */
+    else if (b->kind == 11) {   /* "No answer from the host" (notice_no_answer) */
+        struct pw_dialog d;
+        WCHAR title[96];
+        memset(&d, 0, sizeof(d));
+        okbox_brand(title, 96);
+        d.title = title;
+        d.text = no_answer_text;
+        d.ok = L"OK";
+        b->r = (okbox_show(&d), 1);
+    }
     else if (b->kind == 9) {
         struct pw_dialog d;
         WCHAR title[96];
@@ -1692,7 +1920,7 @@ static void ui_show_pending(void)
         okw_box b;
         memset(&b, 0, sizeof(b));
         EnterCriticalSection(&ui_lock);
-        b.kind = ui_update.on ? 4 : ui_unreach.on ? 5 : ui_nonet.on ? 6 : ui_crash.on ? 7 : ui_conn.on ? 8 : 0;
+        b.kind = ui_update.on ? 4 : ui_unreach.on ? 5 : ui_nonet.on ? 6 : ui_crash.on ? 7 : ui_conn.on ? 8 : ui_wrongpw ? 3 : 0;
         if (!b.kind) InterlockedExchange(&ui_pending, 0);
         LeaveCriticalSection(&ui_lock);
         if (!b.kind) break;
@@ -1701,6 +1929,7 @@ static void ui_show_pending(void)
         if (b.kind == 4) ui_update.on = 0;
         else if (b.kind == 5) ui_unreach.on = 0;
         else if (b.kind == 6) ui_nonet.on = 0;
+        else if (b.kind == 3) InterlockedExchange(&ui_wrongpw, 0);
         else if (b.kind == 7) { ui_crash.on = 0; ui_crash.answer = r; SetEvent(ui_crash.done); }
         else { ui_conn.on = 0; ui_conn.answer = r; SetEvent(ui_conn.done); }
         LeaveCriticalSection(&ui_lock);
@@ -1745,7 +1974,11 @@ static int choose_mode(void)
             mode_provisional = 0;
             EnterCriticalSection(&okw_lock);
             okp_ctx *c = started && m != 2 ? ctx : NULL;
-            if (c) { ctx = NULL; started = 0; }
+            if (c) {
+                for (int i = 0; i < OKW_MAX_CONNS; i++) tconn_unhold(&conns[i]);
+                ctx = NULL;
+                started = 0;
+            }
             LeaveCriticalSection(&okw_lock);
             if (c) {
                 okp_log(1, "wsock: okplay had started as Online Play while the box was open - %s", m == 3 ?
@@ -2215,6 +2448,19 @@ static int room_tcp(const okp_room *rm, uint16_t *ports, int *np)
     return 0;
 }
 
+/* a room a joiner should see (ctx->lock held): on a LAN an offer that is still fresh, and per host only its newest
+ * room - a host that hosted again in a new okplay session leaves its old room in the LAN list until that slot is
+ * reused, so "the only room of this game" and the list saw two. (The room server's list is replaced whole.) */
+static int room_live(int i)
+{
+    const okp_room *rm = &ctx->rooms[i];
+    if (ctx->mode != OKP_MODE_LAN) return 1;
+    if (okp_now() - rm->seen > OKP_LAN_ROOM_TTL) return 0;
+    for (int j = 0; j < ctx->nrooms; j++)
+        if (j != i && ctx->rooms[j].host == rm->host && (int)(ctx->rooms[j].seen - rm->seen) > 0) return 0;
+    return 1;
+}
+
 typedef struct {
     uint64_t host;
     uint32_t room;
@@ -2248,7 +2494,7 @@ static int room_of(uint64_t host, okw_roominfo *ri)   /* okw_lock held */
     int found = 0;
     EnterCriticalSection(&ctx->lock);
     for (int i = 0; i < ctx->nrooms && !found; i++)
-        if (ctx->rooms[i].host == host && room_tcp(&ctx->rooms[i], NULL, NULL)) { room_read(&ctx->rooms[i], ri); found = 1; }
+        if (ctx->rooms[i].host == host && room_live(i) && room_tcp(&ctx->rooms[i], NULL, NULL)) { room_read(&ctx->rooms[i], ri); found = 1; }
     LeaveCriticalSection(&ctx->lock);
     return found;
 }
@@ -2274,7 +2520,7 @@ static int resolve_rules(uint32_t ip, uint16_t port, uint64_t *host, const char 
         okp_room *rm = &ctx->rooms[i];
         uint16_t ports[8];
         int np = 0;
-        if (!room_tcp(rm, ports, &np)) continue;
+        if (!room_live(i) || !room_tcp(rm, ports, &np)) continue;
         n++;
         only = rm->host;
         if (picked_host && rm->host == picked_host) picked = rm->host;
@@ -2327,7 +2573,7 @@ static void lb_refresh(HWND dlg, okw_listbox *L)
     if (ctx) {
         if (GetTickCount() - L->last_enum >= 1500) { L->last_enum = GetTickCount(); ask_for_rooms(); }
         EnterCriticalSection(&ctx->lock);
-        for (int i = 0; i < ctx->nrooms && n < 32; i++) if (room_tcp(&ctx->rooms[i], NULL, NULL)) room_read(&ctx->rooms[i], &ri[n++]);
+        for (int i = 0; i < ctx->nrooms && n < 32; i++) if (room_live(i) && room_tcp(&ctx->rooms[i], NULL, NULL)) room_read(&ctx->rooms[i], &ri[n++]);
         LeaveCriticalSection(&ctx->lock);
     }
     LeaveCriticalSection(&okw_lock);
@@ -2476,8 +2722,9 @@ static int room_list_box(uint64_t *host)
     return 1;
 }
 
-/* "Connecting..." until the okplay path to `host` is up (LB_PATH) or the password was answered (LB_AUTH) */
-static int wait_box(int mode, uint64_t host, const char *name, DWORD max_ms)
+/* "Connecting..." until the okplay path to `host` is up (LB_PATH) or the password was answered (LB_AUTH): IDOK = there,
+ * IDCANCEL = the player cancelled, IDABORT = max_ms passed */
+static INT_PTR wait_box(int mode, uint64_t host, const char *name, DWORD max_ms)
 {
     okw_listbox L;
     okw_box b;
@@ -2486,29 +2733,50 @@ static int wait_box(int mode, uint64_t host, const char *name, DWORD max_ms)
     L.host = host;
     L.max_ms = max_ms;
     lstrcpynA(L.name, name && name[0] ? name : "the host", sizeof(L.name));
-    if (lb_waited(&L)) return 1;
+    if (lb_waited(&L)) return IDOK;
     Sleep(100);   /* (on a LAN it is there at once: no window for that) */
-    if (lb_waited(&L)) return 1;
+    if (lb_waited(&L)) return IDOK;
     L.hidden = test_ui(NULL, 0);
     memset(&b, 0, sizeof(b));
     b.kind = 10;
     b.p = &L;
-    return run_box(&b) == IDOK;
+    return run_box(&b);
 }
 
-/* the room has a password: asked here (game thread), then the host's yes / no awaited. 1 = let in */
+/* The host never answered about the password (its PC froze, its game started or closed): the player is told, as for a
+ * wrong password, instead of finding the game back at its menu with no word. Tests (OKP_TEST_JOIN_PASSWORD) get the
+ * log line only. Its sentence (no_answer_text, with the boxes) belongs with okbox.c's texts, one place for every
+ * sentence a player reads; it stays in this file until that shared code takes it. */
+static void notice_no_answer(void)   /* the game's thread, no lock held */
+{
+    okw_box b;
+    okp_log(1, "wsock: notice to the player: No answer from the host. The game may have started or closed.");
+    if (okbox_test_answers() && getenv("OKP_TEST_JOIN_PASSWORD")) return;
+    memset(&b, 0, sizeof(b));
+    b.kind = 11;
+    run_box(&b);
+}
+
+/* the room has a password: asked here (game thread), then the host's yes / no awaited. 1 = let in; on every other way
+ * out the join is taken back (tcp_join_undo: nothing more goes to that host, the next try asks again) */
 static int tcp_password(uint64_t host, uint32_t room, const char *name)
 {
     okw_box b;
     EnterCriticalSection(&okw_lock);
-    int known = auth_host == host && auth_state == 2;
+    int known = auth_host == host && auth_room == room && auth_state == 2;   /* (a new room of the same host asks again) */
     LeaveCriticalSection(&okw_lock);
     if (known) return 1;
     okp_log(1, "wsock: %s has a password - asking for it", name);
     memset(&b, 0, sizeof(b));
     b.kind = 2;
     b.g = room_guid(room);
-    if (!run_box(&b)) { okp_log(1, "wsock: password cancelled - not joining"); return 0; }
+    if (!run_box(&b)) {
+        okp_log(1, "wsock: password cancelled - not joining");
+        EnterCriticalSection(&okw_lock);
+        tcp_join_undo(host, "password cancelled", 1);
+        LeaveCriticalSection(&okw_lock);
+        return 0;
+    }
     EnterCriticalSection(&okw_lock);
     wide_to_ascii(b.w, join_hash, sizeof(join_hash));
     auth_host = host;
@@ -2516,29 +2784,40 @@ static int tcp_password(uint64_t host, uint32_t room, const char *name)
     auth_state = 1;
     auth_tick = 0;
     nheld = 0;
-    join_room(host);
-    okw_tick();   /* (the password goes now) */
+    int in = ctx && tcp_join(host);
+    if (in) okw_tick();   /* (the password goes now) */
     InterlockedExchange(&auth_in_list, 1);   /* a "no" is shown here, not by control() */
     LeaveCriticalSection(&okw_lock);
     SecureZeroMemory(b.w, sizeof(b.w));
-    wait_box(LB_AUTH, host, name, 15000);
+    INT_PTR w = in ? wait_box(LB_AUTH, host, name, 15000) : IDCANCEL;
     InterlockedExchange(&auth_in_list, 0);
     EnterCriticalSection(&okw_lock);
-    int st = auth_state;
-    if (st != 2) leave_room(host);
+    int st = in ? auth_state : -2;
+    if (st == 0 && ctx) okp_report_session_result(ctx, "refused");   /* the host turned us away */
+    if (st != 2)
+        tcp_join_undo(host, st == 0 ? "wrong password" : st == -2 ? "not joined" : w == IDABORT ? "no answer about the password" :
+                      "the player stopped waiting for the host", 1);
     LeaveCriticalSection(&okw_lock);
     if (st == 2) { okp_log(1, "wsock: the host let us in"); return 1; }
-    okp_log(1, "wsock: %s", st == 1 ? "no answer from the host about the password - not joining" : "wrong password - not joining");
-    if (st != 1 && !getenv("OKP_TEST_JOIN_PASSWORD")) {
-        memset(&b, 0, sizeof(b));
-        b.kind = 3;
-        run_box(&b);
+    if (st == 1 && w == IDABORT) {
+        okp_log(1, "wsock: no answer from the host about the password - not joining");
+        notice_no_answer();
+    } else if (st == 1 || st == -2) {
+        okp_log(1, "wsock: not joining");
+    } else {
+        okp_log(1, "wsock: wrong password - not joining");
+        if (!getenv("OKP_TEST_JOIN_PASSWORD")) {
+            memset(&b, 0, sizeof(b));
+            b.kind = 3;
+            run_box(&b);
+        }
     }
     return 0;
 }
 
 /* The game's connect, on its own thread: which room host it goes to, with the boxes that may need (room list, build
- * question, password, waiting for the connection). 1 = go (*host set), 0 = refused. No lock held. */
+ * question, password, waiting for the connection). 1 = go (*host set, joined), 0 = refused, with nothing of a join
+ * left behind. No lock held. */
 static int tcp_find_host(uint32_t ip, uint16_t port, uint64_t *host)
 {
     DWORD t0 = GetTickCount();
@@ -2556,6 +2835,9 @@ static int tcp_find_host(uint32_t ip, uint16_t port, uint64_t *host)
     }
     if (!found) {
         okp_log(1, "wsock: TCP connect to %s:%u - not an address okplay knows: the room list (%d rooms of this game)", ip_s(ip, t), port, n);
+        EnterCriticalSection(&okw_lock);
+        picked_host = 0;   /* (the player picks again) */
+        LeaveCriticalSection(&okw_lock);
         if (!room_list_box(host)) { okp_log(1, "wsock: no room picked - the connect is refused"); return 0; }
         listed = 1;
         how = "picked from the list";
@@ -2565,13 +2847,23 @@ static int tcp_find_host(uint32_t ip, uint16_t port, uint64_t *host)
     EnterCriticalSection(&okw_lock);
     int have = ctx && room_of(*host, &ri);
     LeaveCriticalSection(&okw_lock);
-    if (have && !build_ok(*host, ri.build, ri.exe)) return 0;
+    if (have && !build_ok(*host, ri.build, ri.exe)) {
+        EnterCriticalSection(&okw_lock);
+        tcp_join_undo(*host, "another build, the player did not join", 1);
+        LeaveCriticalSection(&okw_lock);
+        return 0;
+    }
     EnterCriticalSection(&okw_lock);
-    if (ctx) join_room(*host);
+    int in = ctx && tcp_join(*host);
+    if (!in) tcp_join_undo(*host, "not joined", 1);
     LeaveCriticalSection(&okw_lock);
+    if (!in) return 0;
     if (have && ri.locked && !tcp_password(*host, ri.room, ri.name)) return 0;
-    if (listed && !wait_box(LB_PATH, *host, have ? ri.name : "", 15000)) {
+    if (listed && wait_box(LB_PATH, *host, have ? ri.name : "", 15000) != IDOK) {
         okp_log(1, "wsock: no connection to that host (cancelled, or 15 s) - the connect is refused");
+        EnterCriticalSection(&okw_lock);
+        tcp_join_undo(*host, "no connection to that host", 1);
+        LeaveCriticalSection(&okw_lock);
         return 0;
     }
     return 1;
@@ -2632,15 +2924,21 @@ static int tcp_connect(SOCKET s, const struct sockaddr *a, int l)   /* a virtual
     }
     LeaveCriticalSection(&okw_lock);
     if (e) return set_err(e);
-    uint64_t host;
+    uint64_t host = 0;
+    if (!adopted && tcp_unhost_for_connect() < 0) return set_err(WSAECONNREFUSED);
     if (!adopted && !tcp_find_host(in->sin_addr.s_addr, port, &host)) return set_err(WSAECONNREFUSED);
     EnterCriticalSection(&okw_lock);
     k = tsock_of(s);
     okw_tconn *c = NULL;
     if (adopted) { if (!k || k->c != o) e = WSAEINVAL; }
     else if (!k || k->c || (k->tstate != T_NEW && k->tstate != T_BOUND)) e = WSAEINVAL;
+    else if (!ctx || !tcp_join(host)) e = WSAECONNREFUSED;   /* (okplay stopped meanwhile) */
     else if (!(c = tconn_new())) e = WSAENOBUFS;
-    if (e) { LeaveCriticalSection(&okw_lock); return set_err(e); }
+    if (e) {
+        if (!adopted && host) tcp_join_undo(host, "the connect failed here", 0);
+        LeaveCriticalSection(&okw_lock);
+        return set_err(e);
+    }
     if (!adopted) {
         if (k->tstate == T_NEW) { k->port = eph_port(); k->tstate = T_BOUND; }
         c->state = T_SYN_SENT;
@@ -2652,8 +2950,8 @@ static int tcp_connect(SOCKET s, const struct sockaddr *a, int l)   /* a virtual
         c->dst_ip = in->sin_addr.s_addr;
         c->rip = standin_of(host);
         k->c = c;
-        join_room(host);
-        picked_host = host;
+        picked_host = host;   /* (the game's retries go there too; taken back with the join) */
+        tconn_hold(c);
         lane_base(c);
         /* After a box that took most of the game's 1 s, it is about to close this socket and try again: the SYN waits
          * 50 ms, and the next attempt takes the connection over (tests: OKP_TEST_SYN_DELAY_MS holds every SYN). */
@@ -2894,8 +3192,10 @@ static void tcp_close(okw_sock *k)   /* okw_lock held; a virtual TCP socket the 
             else if (!c->wr_shut && !c->err) TFRAME(c, TF_FIN, c->snd_next, NULL, 0);   /* graceful: what was sent still goes */
         }
         okp_log(2, "wsock: TCP connection %08x closed by the game", (unsigned)c->id);
+        uint64_t peer = c->peer;
         tconn_free(c);
         k->c = NULL;
+        tcp_conn_gone(peer);
     }
     wake();   /* (a select or accept waiting on it in another thread) */
 }
@@ -3162,8 +3462,9 @@ int WINAPI x_bind(SOCKET s, const struct sockaddr *a, int l)
         EnterCriticalSection(&okw_lock);
         okw_sock *tk = tsock_of(s);
         int r = tk ? tcp_bind(tk, a, l) : bind(s, a, l);
+        int window = relisten_port && GetTickCount() - relisten_tick < 2000;
         LeaveCriticalSection(&okw_lock);
-        ui_show_pending();
+        if (!window) ui_show_pending();   /* (never between a listener's close and the next listen: the host rule's 2 s) */
         return r;
     }
     EnterCriticalSection(&okw_lock);
@@ -3505,6 +3806,7 @@ int WINAPI x_listen(SOCKET s, int b)
 {
     if (!okw_on || !tcp_entry(s, 0)) return listen(s, b);
     if (tcp_mode_pass()) return listen(s, b);
+    retry_start();
     int r = 0, host = 0;
     uint16_t port = 0;
     EnterCriticalSection(&okw_lock);
@@ -3521,13 +3823,18 @@ int WINAPI x_listen(SOCKET s, int b)
          * restarts Winsock and listens on the same port again within about 100 ms; a joiner keeps its listener and
          * connects from another socket. So a listen on a port whose listener this game closed less than 2 s ago
          * hosts. (Port 1030, the original 1998 exe's, follows the same rule: no capture of it yet - if its Host Game
-         * doesn't re-listen, it won't host, which fails visibly instead of listing every joiner.) */
+         * doesn't re-listen, it won't host, which fails visibly instead of listing every joiner.)
+         * The game makes the same calls when the player enters the TCP menu again with its listener still open, so this
+         * PC is only a candidate host: when the game connects out, tcp_unhost_for_connect takes the role back. A PC
+         * with a connect of its own going on or up is joining, not hosting; a join left over from before (no such
+         * connect) is taken back here. */
         int again = k->explicit_port && relisten_port == port && GetTickCount() - relisten_tick < 2000;
         int listening = 0;
         for (int i = 0; i < OKW_MAX_SOCKS; i++)
             if (&socks[i] != k && socks[i].used && socks[i].kind == K_TCP && socks[i].tstate == T_LISTEN && socks[i].explicit_port) listening = 1;
-        host = game->host_rule == HOST_LISTEN && k->explicit_port && ctx && !ctx->host_peer && (again || (ctx->is_host && listening));
-        if (again) relisten_port = 0;
+        host = game->host_rule == HOST_LISTEN && k->explicit_port && ctx && !tcp_outbound() && (again || (ctx->is_host && listening));
+        if (again && ctx) relisten_port = 0;
+        if (host && ctx->host_peer) tcp_join_undo(ctx->host_peer, "the game hosts", 0);
         okp_log(2, "wsock: TCP socket %u listens on port %u%s", (unsigned)s, port,
                 host ? " - this PC hosts (the game listens again: Host Game)" : k->explicit_port ? " - ready, not hosting" : "");
         if (host && ctx->is_host) { build_room_record(); host = 0; }
@@ -3596,6 +3903,7 @@ static void tcp_linger(void)   /* no lock held */
 int WINAPI x_WSACleanup(void)
 {
     if (!okw_on) return WSACleanup();
+    DWORD t0 = GetTickCount();
     tcp_linger();
     okp_log(2, "wsock: the game calls WSACleanup (it is done with the network)");
     int withdraw = 0;
@@ -3606,8 +3914,12 @@ int WINAPI x_WSACleanup(void)
         ctx->session_open = 0;
         ctx->closing = 1;
     }
+    okp_ctx *wc = withdraw ? ctx : NULL;
     LeaveCriticalSection(&okw_lock);
-    if (withdraw) okp_rdv_close(ctx);
+    if (wc) okp_rdv_close(wc);
+    EnterCriticalSection(&okw_lock);
+    if (relisten_port) relisten_tick += GetTickCount() - t0;   /* okplay's own wait is not the game's: out of the 2 s */
+    LeaveCriticalSection(&okw_lock);
     int r = WSACleanup();
     okp_log(2, "wsock: WSACleanup done (%d)", r);
     return r;
@@ -3782,6 +4094,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
             if (tr_on) { DWORD id; CloseHandle(CreateThread(NULL, 0, tr_writer, NULL, 0, &id)); }
         }
         DisableThreadLibraryCalls(inst);
+    } else if (why == DLL_PROCESS_DETACH && okw_on && !res && (game->kinds & OKW_TCP)) {
+        dds_detach();   /* unloaded while the game goes on: its windows must not keep calling into this DLL */
     }
     return TRUE;
 }

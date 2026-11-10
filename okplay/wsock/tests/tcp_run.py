@@ -5,7 +5,7 @@
 
 real: tcpsim.exe alone in a temporary folder - Windows' own TCP (the reference).
 shim: tcpsim.exe + okplay wsock's wsock32.dll + an okplay.ini in a temporary folder, OKP_WSOCK_GAME=nfs3, LAN Play
-      (Online Play with a local room-server stand-in, server/rdv_standin.py, for the *_online scenarios): every stream
+      (Online Play with a local room-server stand-in, server/rdv_standin.py on port 8790, for the *_online scenarios): every stream
       socket is virtual and travels over okplay's reliable lane, each process its own okplay peer.
 Every scenario says what each side must print (RESULT ok, or e.g. a refusal); a few are shim-only (passwords, builds,
 okplay's own join rules). Boxes never show: the test answers (OKP_TEST_*) are always set, and cancel by default.
@@ -17,6 +17,8 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 BIN = os.path.normpath(os.path.join(HERE, "..", "bin"))
 STANDIN = os.path.normpath(os.path.join(HERE, "..", "..", "server", "rdv_standin.py"))
 EXTRA_ENV = {}
+DLLS = {"host": None, "join": None}
+STANDIN_PORT = 8790   # our own room-server stand-in (never 8787: another stand-in may run there on purpose)
 OK = r"^RESULT ok"
 ANY = "."
 
@@ -32,6 +34,14 @@ def lan_ip():
 
 def H(*a, players=2, frames=None, port=9803):
     return ["host", "--port", str(port), "--players", str(players)] + (["--frames", str(frames)] if frames else []) + list(a)
+
+
+def S(*steps):   # tcpsim script: what a player does, step by step (tcpsim.c "scripts"); options may come among them
+    return ["script", "--port", "9803", "--menu-port", "{menuport}"] + list(steps)
+
+
+LO = "{lo}:9803"
+NOTICE_NO_ANSWER = "No answer from the host"   # (the notice's sentence, as okplay logs it)
 
 
 def J(addr="{lo}:9803", *a, menu=True):
@@ -79,14 +89,85 @@ SCENARIOS = {
                        expect={"host": ANY}),
     "diehard":    dict(host=H("--die-at", "150", "--die", "hard", frames=600),
                        joins=[J("{lo}:9803", "--expect-loss", "18000", "--secs", "60")], expect={"host": ANY}),
+    # Menu paths, as steps a player takes in one run of the game (tcpsim script; okplay only). The game makes the same
+    # socket calls for Host Game as for entering the TCP menu again with its listener still open.
+    # 1. a joiner goes back to Connect Players and into the TCP menu again before joining
+    "menu_again": dict(host=S("menu", "host", "lobby:1", "left:1"),
+                       joins=[S("menu", "back", "menu", "wait:1500", "join:" + LO, "wait:500", "leave")], modes=("shim",)),
+    # 5. the same with the room server: once the joiner is in, the list shows the host's room only
+    "menu_again_online": dict(host=S("menu", "host", "lobby:1", "left:1"),
+                              joins=[S("menu", "back", "menu", "wait:4000", "say:rooms_at_menu", "wait:1500", "join:" + LO,
+                                       "say:rooms_joined", "wait:500", "leave")],
+                              online=True, modes=("shim",), checks=[("rooms", "rooms_joined", 1)]),
+    # (the same family: a PC that hosted, backed out and joins someone else)
+    "host_then_join": dict(host=S("menu", "host", "lobby:1", "left:1"),
+                           joins=[S("menu", "host", "wait:2000", "close", "back", "menu", "wait:1500", "join:" + LO,
+                                    "wait:500", "leave")], modes=("shim",), may_host=("join1",)),
+    # 2. wrong password, back to Connect Players, into the TCP menu again, the right password - one run
+    "pw_retry":   dict(host=S("menu", "host", "lobby:1", "left:1"), env_host={"OKP_TEST_HOST_PASSWORD": "lap3"},
+                       joins=[S("menu", "wait:1500", "joinfail:" + LO, "back", "menu", "wait:1500", "join:" + LO, "wait:500", "leave")],
+                       env_join={"OKP_TEST_JOIN_PASSWORD": "guess|lap3"}, modes=("shim",),
+                       checks=[("log", "host", "turned away \\(wrong password\\)")]),
+    # 3. the host's PC freezes while it should check the password: the player is told, nothing more goes to that
+    #    host, and joining again works once the host is back
+    "pw_noanswer": dict(host=S("menu", "host", "lobby:1", "left:1"), env_host={"OKP_TEST_HOST_PASSWORD": "lap3"},
+                        joins=[S("menu", "wait:2500", "say:freeze", "wait:1000", "joinfail:" + LO, "wait:10000", "join:" + LO, "wait:500", "leave")],
+                        env_join={"OKP_TEST_JOIN_PASSWORD": "lap3|lap3"}, modes=("shim",),
+                        freeze=[dict(role="host", on="EVENT say freeze", secs=22)],
+                        checks=[("log", "join1", NOTICE_NO_ANSWER),
+                                ("between", "join1", "no answer from the host", "goes to host", r"peer [0-9a-f]+: new")]),
+    # 4. use_password=ask: entering the TCP menu again must not ask for a host password (needs 1.2 step 2)
+    "pw_ask_menu": dict(host=S("menu", "host", "lobby:1", "left:1"),
+                        joins=[S("menu", "back", "menu", "wait:1500", "join:" + LO, "wait:500", "leave")],
+                        ini={"use_password": "ask"}, modes=("shim",), xfail="1.2 step 2: tell Host Game from a menu re-entry",
+                        checks=[("nolog", "join1", "password: none - an open game")]),
+    # 6. join, leave, then Host Game in the same run: a room is listed
+    "join_leave_host": dict(host=S("menu", "host", "lobby:1", "left:1"),
+                            joins=[S("menu", "join:" + LO, "wait:500", "leave", "back", "menu", "host", "wait:3000")],
+                            modes=("shim",), may_host=("join1",),
+                            checks=[("after", "join1", "goes to host", "hosting room")]),
+    # 7. pick a room from the list, cancel at its password box, then Host Game
+    "pick_cancel_host": dict(host=S("menu", "host", "wait:15000"), env_host={"OKP_TEST_HOST_PASSWORD": "lap3"},
+                             joins=[S("menu", "wait:2000", "joinfail:" + LO, "back", "menu", "host", "wait:3000")],
+                             ini={"wsock_join": ""}, env_join={"OKP_TEST_JOIN_PICK": "first"}, modes=("shim",),
+                             may_host=("join1",), checks=[("after", "join1", "password cancelled", "hosting room")]),
+    # 8. join host A from the list, leave, join host B from the list: the list shows again, A hears nothing more
+    "join_a_then_b": dict(host=S("menu", "host", "lobby:1", "left:1", "quiet:12000"), host2=S("menu", "host", "lobby:1", "left:1"),
+                          ini={"wsock_join": "", "name": "Alpha"}, host2_ini={"name": "Bravo"},
+                          joins=[S("menu", "wait:2000", "env:OKP_TEST_JOIN_PICK=Alpha", "join:" + LO, "wait:500", "leave",
+                                   "back", "menu", "wait:1500", "env:OKP_TEST_JOIN_PICK=Bravo", "join:" + LO, "wait:500", "leave")],
+                          modes=("shim",), checks=[("after", "join1", "connection .* closed by the game", "picked from the list")]),
+    # 9. the host leaves its lobby just as the joiner's password goes out (the room is still in the joiner's list): the
+    #    joiner is told, nothing of the join stays, and its Host Game then hosts
+    "host_closes_at_pw": dict(host=S("menu", "host", "wait:3000", "say:closing", "close", "wait:30000"),
+                              env_host={"OKP_TEST_HOST_PASSWORD": "lap3"}, env_join={"OKP_TEST_JOIN_PASSWORD": "lap3"},
+                              joins=[S("menu", "await:closing", "wait:300", "joinfail:" + LO, "back", "menu", "host", "wait:3000")],
+                              modes=("shim",), may_host=("join1",),
+                              checks=[("log", "join1", NOTICE_NO_ANSWER), ("after", "join1", "no answer from the host", "hosting room")]),
+    # 10. the host closes its room, leaves network play and hosts again with another password: the joiner is asked again
+    "pw_rehost":  dict(host=S("menu", "host", "lobby:1", "left:1", "close", "quit", "env:OKP_TEST_HOST_PASSWORD=lap4",
+                              "menu", "host", "say:rehosted", "lobby:2", "left:2"), env_host={"OKP_TEST_HOST_PASSWORD": "lap3"},
+                       joins=[S("menu", "join:" + LO, "wait:500", "leave", "back", "await:rehosted", "wait:3000", "menu",
+                                "wait:1500", "join:" + LO, "wait:500", "leave")],
+                       env_join={"OKP_TEST_JOIN_PASSWORD": "lap3|lap4"}, modes=("shim",)),
+    # 12. in the lobby the joiner's PC freezes for 20 s, a minute after it joined, then goes on: the stream goes on
+    #     (okplay.ini drop_after=40, so only okplay's own peer table could end it)
+    "lobby_silence": dict(host=S("menu", "host", "lobby:1", "left:1", "--secs", "150"),
+                          joins=[S("menu", "join:" + LO, "wait:63000", "say:freezeme", "wait:500", "ping", "leave")],
+                          ini={"drop_after": "40"}, modes=("shim",), freeze=[dict(role="join1", on="EVENT say freezeme", secs=20)]),
+    # 13. three players in the lobby; one leaves, enters the menu again and joins again
+    "lobby3":     dict(host=S("menu", "host", "lobby:2", "left:3"),
+                       joins=[S("menu", "join:" + LO, "wait:6000", "leave"),
+                              S("menu", "join:" + LO, "wait:500", "leave", "back", "menu", "wait:1500", "join:" + LO, "wait:500", "leave")],
+                       modes=("shim",)),
 }
 
 
-def folder(mode, ini):
+def folder(mode, ini, dll=None):
     d = tempfile.mkdtemp(prefix=f"tcpsim_{mode}_")
     shutil.copy(os.path.join(BIN, "tcpsim.exe"), d)
     if mode == "shim":
-        shutil.copy(os.path.join(BIN, "wsock32.dll"), d)
+        shutil.copy(dll or os.path.join(BIN, "wsock32.dll"), os.path.join(d, "wsock32.dll"))
         settings = {"loglevel": "3", "use_password": "off", "exit_watch": "0", "wsock_join": "auto"}
         settings.update(ini)
         with open(os.path.join(d, "okplay.ini"), "w") as f:
@@ -128,41 +209,166 @@ class Proc:
         return "\n".join(self.lines)
 
 
+class Freezer:
+    """Stops a process (every thread, as a PC whose game froze) for `secs` once a process prints `on`."""
+    def __init__(self, procs, role, on, secs):
+        self.procs, self.role, self.on, self.secs, self.done = procs, role, on, secs, None
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        import ctypes
+        t0 = time.time()
+        while time.time() - t0 < 150 and not self.done:
+            if any(any(self.on in l for l in list(p.lines)) for p in list(self.procs.values())):
+                p = self.procs.get(self.role)
+                if p is None or p.p.poll() is not None:
+                    return
+                nt = ctypes.windll.ntdll
+                h = ctypes.c_void_p(int(p.p._handle))
+                nt.NtSuspendProcess(h)
+                time.sleep(self.secs)
+                nt.NtResumeProcess(h)
+                self.done = time.time()
+                return
+            time.sleep(0.05)
+
+
+def standin_rooms():
+    import urllib.request, json
+    try:
+        with urllib.request.urlopen(f"http://127.0.0.1:{STANDIN_PORT}/okplay.php?a=list&fmt=json", timeout=5) as r:
+            return len(json.loads(r.read().decode())["rooms"])
+    except Exception as e:
+        return f"? ({e})"
+
+
+class Sampler:
+    """The room server's list (the stand-in) each time a process prints "EVENT say rooms..."."""
+    def __init__(self, procs):
+        self.procs, self.samples, self.stop = procs, [], False
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self):
+        seen = set()
+        while not self.stop:
+            for p in list(self.procs.values()):
+                for i, l in enumerate(list(p.lines)):
+                    m = re.match(r"EVENT say (rooms\S*)", l)
+                    if m and (p.name, i) not in seen:
+                        seen.add((p.name, i))
+                        self.samples.append((m.group(1), standin_rooms()))
+            time.sleep(0.05)
+
+
 def run_scenario(sc, mode):
     d = folder(mode, sc.get("ini", {}))
     env = {k: v for k, v in os.environ.items() if not k.startswith("OKP_")}
     env.update(EXTRA_ENV)
+    env["TCPSIM_SIGDIR"] = d   # (scripts' say/await, whatever folder each process runs in)
     if mode == "shim":
         env.update(OKP_WSOCK_MODE="lan", OKP_WSOCK_GAME="nfs3")
         if sc.get("online"):
-            env.update(OKP_WSOCK_MODE="online", OKP_SERVER="http://127.0.0.1:8787/okplay.php", OKP_STUN="")
+            env.update(OKP_WSOCK_MODE="online", OKP_SERVER=f"http://127.0.0.1:{STANDIN_PORT}/okplay.php", OKP_STUN="")
     env_host = dict(env, OKP_TEST_HOST_PASSWORD="<none>")
-    env_join = dict(env, OKP_TEST_JOIN_PICK="cancel", OKP_TEST_BUILD_ANSWER="cancel", OKP_TEST_JOIN_PASSWORD="<cancel>")
+    # (a joiner that turns host gets a host's answer too: a test never shows a real box)
+    env_join = dict(env, OKP_TEST_JOIN_PICK="cancel", OKP_TEST_BUILD_ANSWER="cancel", OKP_TEST_JOIN_PASSWORD="<cancel>",
+                    OKP_TEST_HOST_PASSWORD="<none>")
+    env_host2 = dict(env_host)
     if mode == "shim":
         env_host.update(sc.get("env_host", {}))
         env_join.update(sc.get("env_join", {}))
+        env_host2.update(sc.get("env_host2", {}))
     exe = os.path.join(d, "tcpsim.exe")
     subst = {"lo": "127.0.0.1", "lanip": lan_ip(), "menuport": "9803" if mode == "shim" else "0"}
-    host = None
-    joins = []
-    if sc["host"] is not None:
-        host = Proc("host", [exe] + sc["host"], d, env_host)
-        if any("{standin}" in x for j in sc["joins"] for x in j):
-            m = host.wait_line(r"EVENT my address (\S+)", 15)
-            subst["standin"] = m.group(1) if m else "0.0.0.0"
+    procs, dirs = {}, {}
+    # --host-dll / --join-dll: another build of the shim on one side (old with new), each side in its own folder
+    jd = folder(mode, sc.get("ini", {}), DLLS["join"]) if mode == "shim" and DLLS["join"] else d
+    for role in ("host", "host2"):   # the hosts first, each listening before the joiners start
+        if sc.get(role) is None:
+            continue
+        hd = folder(mode, sc.get("ini", {}), DLLS["host"]) if mode == "shim" and DLLS["host"] and role == "host" else d
+        if role == "host2":   # another PC: its own folder (its own okplay.ini, e.g. another player name)
+            hd = folder(mode, dict(sc.get("ini", {}), **sc.get("host2_ini", {})))
+        dirs[role] = hd
+        procs[role] = Proc(role, [os.path.join(hd, "tcpsim.exe")] + [x.format(**subst) for x in sc[role]], hd,
+                           env_host if role == "host" else env_host2)
+        tag = "standin" if role == "host" else "standin2"
+        if any("{%s}" % tag in x for j in sc["joins"] for x in j):
+            m = procs[role].wait_line(r"EVENT my address (\S+)", 15)
+            subst[tag] = m.group(1) if m else "0.0.0.0"
         time.sleep(1.5)
     for i, ja in enumerate(sc["joins"]):
-        joins.append(Proc(f"join{i + 1}", [exe] + [x.format(**subst) for x in ja], d, env_join))
-    out = {p.name: p.finish(150) for p in joins}
-    out["_pids"] = {p.name: p.p.pid for p in joins}
-    if host:
+        procs[f"join{i + 1}"] = Proc(f"join{i + 1}", [os.path.join(jd, "tcpsim.exe")] + [x.format(**subst) for x in ja], jd, env_join)
+        dirs[f"join{i + 1}"] = jd
+    fr = [Freezer(procs, f["role"], f["on"], f["secs"]) for f in sc.get("freeze", [])]
+    sampler = Sampler(procs) if sc.get("online") and mode == "shim" else None
+    out = {n: p.finish(180) for n, p in procs.items() if n.startswith("join")}
+    for role in ("host", "host2"):
+        if role not in procs:
+            continue
         if sc.get("kill_host"):
             time.sleep(1)
-            if host.p.poll() is None:
-                host.p.kill()
-        out["host"] = host.finish(150)
+            if procs[role].p.poll() is None:
+                procs[role].p.kill()
+        out[role] = procs[role].finish(180)
+    for f in fr:
+        f.done = f.done or True
+    if sampler:
+        sampler.stop = True
+        out["_rooms"] = sampler.samples
+    out["_pids"] = {n: p.p.pid for n, p in procs.items()}
+    out["_dirs"] = dirs
     out["_dir"] = d
     return out
+
+
+def log_of(out, role):   # one process's okplay log
+    logs = os.path.join(out["_dirs"].get(role, out["_dir"]), "logs")
+    pid = out["_pids"].get(role)
+    if not os.path.isdir(logs) or pid is None:
+        return ""
+    return "".join(open(os.path.join(logs, f), errors="replace").read() for f in sorted(os.listdir(logs))
+                   if f.endswith(f"-{pid}.log"))
+
+
+def script_checks(sc, out):   # what the okplay logs must (not) say, per scenario ("checks" in SCENARIOS)
+    why = []
+    for c in sc.get("checks", []):
+        kind = c[0]
+        if kind == "rooms":   # the room server's list at each "say <name>": c[2] rooms
+            got = [n for name, n in out.get("_rooms", []) if name == c[1]]
+            if not got:
+                why.append(f"no room list taken at '{c[1]}' (the step was not reached)")
+            elif any(n != c[2] for n in got):
+                why.append(f"the room server lists {got} room(s) at '{c[1]}', expected {c[2]}")
+            continue
+        role = c[1]
+        lines = log_of(out, role).splitlines()
+        hit = lambda pat, ls: [l for l in ls if re.search(pat, l)]
+        if kind == "log" and not hit(c[2], lines):
+            why.append(f"{role}'s log never says /{c[2]}/")
+        elif kind == "nolog" and hit(c[2], lines):
+            why.append(f"{role}'s log says /{c[2]}/: {hit(c[2], lines)[0].strip()[:120]}")
+        elif kind == "after":   # c[3] after the first line like c[2]
+            at = [i for i, l in enumerate(lines) if re.search(c[2], l)]
+            if not at:
+                why.append(f"{role}'s log never says /{c[2]}/")
+            elif not hit(c[3], lines[at[0] + 1:]):
+                why.append(f"{role}: nothing like /{c[3]}/ after /{c[2]}/")
+        elif kind == "between":   # nothing like c[4] from the first c[2] to the next c[3]
+            at = [i for i, l in enumerate(lines) if re.search(c[2], l)]
+            if not at:
+                why.append(f"{role}'s log never says /{c[2]}/")
+                continue
+            end = next((i for i in range(at[0] + 1, len(lines)) if re.search(c[3], lines[i])), len(lines))
+            bad = hit(c[4], lines[at[0] + 1:end])
+            if bad:
+                why.append(f"{role}: {len(bad)} x /{c[4]}/ after /{c[2]}/, first: {bad[0].strip()[:100]}")
+    return why
+
+
+def all_logs(out):   # every process's okplay log, whatever its folder
+    return "".join(logs_of(x) for x in sorted(set(out["_dirs"].values()) | {out["_dir"]}))
 
 
 def logs_of(d):
@@ -187,9 +393,16 @@ def check(sc, mode, out):
     if m and int(m.group(1)) > 500:
         why.append(f"Host Game's re-listen took {m.group(1)} ms")
     if mode == "shim" and sc["host"] is not None:
-        text = logs_of(out["_dir"])
+        text = all_logs(out)
         for r, pid in out["_pids"].items():
-            if re.search(r"\[\s*%d\] .*(hosting room|this PC hosts)" % pid, text):
+            if not r.startswith("join") or r in sc.get("may_host", ()):
+                continue
+            # a joiner may look like a host for a moment (the game's calls for entering the TCP menu again are those of
+            # Host Game), but its room must come off the list when the game connects out
+            ls = [l for l in text.splitlines() if re.search(r"\[\s*%d\] " % pid, l)]
+            hosted = [i for i, l in enumerate(ls) if re.search("hosting room|this PC hosts", l)]
+            dropped = [i for i, l in enumerate(ls) if "comes off the list" in l]
+            if hosted and (not dropped or dropped[-1] < hosted[-1]):
                 why.append(f"{r} hosted a room")
         if sc["host"][0] == "host" and "this PC hosts" not in text:
             why.append("the host never hosted")
@@ -204,18 +417,21 @@ def check(sc, mode, out):
             if not m or int(m.group(2)) != 1 or int(m.group(1)) >= 1000:
                 why.append(f"accepthold: {r} {m.group(0) if m else 'did not connect'}")
     if kind == "probe" and mode == "shim":
-        text = logs_of(out["_dir"])
+        text = all_logs(out)
         if not text:
             why.append("no okplay log: the shim did not load")
         if "LAN Play (okplay.ini" in text or "for a Winsock game" in text:
             why.append("the probes made okplay decide the mode (a box would have come)")
-    if kind == "pw_wrong" and mode == "shim" and "turned away (wrong password)" not in logs_of(out["_dir"]):
+    if kind == "pw_wrong" and mode == "shim" and "turned away (wrong password)" not in all_logs(out):
         why.append("the host's log does not say it turned the joiner away")
+    if mode == "shim":
+        why += script_checks(sc, out)
     return why
 
 
 SHOW = ("connected after", "refused", "gave up", "WOULDBLOCK", "resumed", "partial", "after the joiner", "then EOF",
-        "select", "FIONREAD", "UDP", "failure", "accepted", "connection lost", "my address", "ends now", "Host Game", "at the menu")
+        "select", "FIONREAD", "UDP", "failure", "accepted", "connection lost", "my address", "ends now", "Host Game", "at the menu",
+        "EVENT step", "in the lobby", "left the lobby", "closed (", "player(s)", "ping answered")
 
 
 def main():
@@ -225,6 +441,8 @@ def main():
     ap.add_argument("--env", action="append", default=[], help="K=V for every tcpsim process (e.g. OKP_DROP_PCT=10)")
     ap.add_argument("--list", action="store_true")
     ap.add_argument("-v", action="store_true", help="print every process's output")
+    ap.add_argument("--host-dll", default="", help="the host runs this wsock32.dll (an older build, for old-with-new)")
+    ap.add_argument("--join-dll", default="", help="the joiners run this wsock32.dll")
     a = ap.parse_args()
     if a.list:
         print("\n".join(SCENARIOS))
@@ -232,11 +450,12 @@ def main():
     for kv in a.env:
         k, v = kv.split("=", 1)
         EXTRA_ENV[k] = v
+    DLLS["host"], DLLS["join"] = a.host_dll or None, a.join_dll or None
     names = [s for s in (a.only.split(",") if a.only else SCENARIOS) if s]
     modes = ["real", "shim"] if a.mode == "both" else [a.mode]
     standin = None
     if "shim" in modes and any(SCENARIOS[n].get("online") for n in names):
-        standin = subprocess.Popen([sys.executable, STANDIN, "--port", "8787"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        standin = subprocess.Popen([sys.executable, STANDIN, "--port", str(STANDIN_PORT)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         time.sleep(1.5)
     rows = []
     try:
@@ -247,8 +466,12 @@ def main():
                     continue
                 out = run_scenario(sc, m)
                 why = check(sc, m, out)
-                rows.append((n, m, not why))
-                print(f"{n:18} {m:5} {'ok' if not why else 'FAIL: ' + '; '.join(why)}", flush=True)
+                xf = sc.get("xfail")
+                rows.append((n, m, not why or bool(xf), bool(why and xf)))
+                tag = "ok" if not why else ("FAIL (known, needs " + xf + "): " if xf else "FAIL: ") + "; ".join(why)
+                print(f"{n:18} {m:5} {tag}", flush=True)
+                if out.get("_rooms"):
+                    print("    room server: " + ", ".join(f"{k} {v}" for k, v in out["_rooms"]))
                 for who, o in out.items():
                     if who.startswith("_"):
                         continue
@@ -265,7 +488,8 @@ def main():
         if standin:
             standin.kill()
     bad = [r for r in rows if not r[2]]
-    print(f"\n{len(rows) - len(bad)}/{len(rows)} ok")
+    known = [r[0] for r in rows if r[3]]
+    print(f"\n{len(rows) - len(bad)}/{len(rows)} ok" + (f" (counted ok but known to fail: {', '.join(known)})" if known else ""))
     return 1 if bad else 0
 
 
