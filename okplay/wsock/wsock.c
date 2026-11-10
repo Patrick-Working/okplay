@@ -199,7 +199,10 @@ static HANDLE okw_ev;                 /* manual-reset: set whenever a virtual so
 static volatile LONG okw_waiters;     /* threads waiting on okw_ev (select, blocking calls) */
 static uint64_t picked_host;          /* joiner: the room host a stream connect went to (its retries go there too) */
 static int join_auto;                 /* okplay.ini wsock_join=auto (OKP_WSOCK_JOIN): the only room of the game, no list */
-static DWORD pending_host_tick;       /* listen() on port 1030: hosting at this tick unless the game connects first */
+static uint16_t relisten_port;        /* the explicit port of the last listener the game closed, and when: listening */
+static DWORD relisten_tick;           /* there again within 2 s is NFS3's Host Game (see x_listen) */
+static struct { uint64_t peer; DWORD tick; } closed_peers[8];   /* players we had stream connections with (tcp_linger) */
+static int nclosed_peers;
 static char player_name[32];          /* okplay.ini name=, else the computer's name: in a TCP game's room name */
 
 /* Per-game profiles: which socket types are carried over okplay, and what makes a PC the host. */
@@ -986,13 +989,6 @@ static void tcp_tick(void)   /* okw_lock held */
             okp_log(1, "wsock: TCP connect to %016llx port %u: no answer in 20 s", (unsigned long long)c->peer, c->rport);
         }
     }
-    if (pending_host_tick && (int32_t)(now - pending_host_tick) >= 0) {
-        pending_host_tick = 0;
-        if (ctx && !ctx->is_host && !ctx->host_peer) {
-            okp_log(1, "wsock: the game has listened on port 1030 for 3 s without connecting - this PC hosts");
-            host_room();
-        }
-    }
     tcp_liveness(now);
     tcp_stats(now);
 }
@@ -1291,7 +1287,8 @@ static void end_session(void)   /* no lock held */
     advert_port = 0;
     browse_tick = inject_tick = 0;
     picked_host = 0;
-    pending_host_tick = 0;
+    relisten_port = 0;
+    nclosed_peers = 0;
     for (int i = 0; i < OKW_MAX_CONNS; i++) if (conns[i].used && !conns[i].err) { conns[i].err = WSAECONNABORTED; conns[i].rx_gen++; }
     wake();
     socks_gone = 0;
@@ -2619,10 +2616,7 @@ static int tcp_connect(SOCKET s, const struct sockaddr *a, int l)   /* a virtual
     else if (tcp_state(k) == T_SYN_SENT) e = WSAEALREADY;
     else if (tcp_state(k) == T_ESTAB) e = WSAEISCONN;
     else if (k->tstate == T_LISTEN || k->c) e = WSAEINVAL;
-    else if (pending_host_tick) {   /* (the original game's port 1030: it listened, but it is joining) */
-        pending_host_tick = 0;
-        okp_log(1, "wsock: the game connects - this PC joins, it does not host");
-    }
+    else if (relisten_port) relisten_port = 0;   /* the game connects: this PC joins (a listen after this doesn't host) */
     okw_tconn *o = e ? NULL : orphan_for(in->sin_addr.s_addr, port);
     if (o) {
         if (k->tstate == T_NEW || !k->explicit_port) k->port = o->lport;
@@ -2852,6 +2846,14 @@ static int tcp_shutdown(SOCKET s, int how)   /* a virtual TCP socket; no lock he
 
 static void tcp_close(okw_sock *k)   /* okw_lock held; a virtual TCP socket the game closes */
 {
+    if (k->tstate == T_LISTEN && k->explicit_port) { relisten_port = k->port; relisten_tick = GetTickCount(); }
+    if (k->c && k->c->state == T_ESTAB) {   /* (WSACleanup gives the lane to this player a moment to drain) */
+        int i = 0;
+        while (i < nclosed_peers && closed_peers[i].peer != k->c->peer) i++;
+        if (i == nclosed_peers) { if (nclosed_peers < 8) nclosed_peers++; else i = 0; }
+        closed_peers[i].peer = k->c->peer;
+        closed_peers[i].tick = GetTickCount();
+    }
     if (k->tstate == T_LISTEN) {
         for (int i = 0; i < k->nbacklog; i++) { tconn_abort(k->backlog[i], 4, WSAECONNABORTED); tconn_free(k->backlog[i]); }
         k->nbacklog = 0;
@@ -3505,21 +3507,27 @@ int WINAPI x_listen(SOCKET s, int b)
         k->tstate = T_LISTEN;
         k->backlog_max = b < 1 ? 1 : b > OKW_BACKLOG ? OKW_BACKLOG : b;
         port = k->port;
-        /* the host rule: listening on a port the game chose = hosting (a joiner's own listener is on port 0) */
-        host = game->host_rule == HOST_LISTEN && k->explicit_port && ctx && !ctx->host_peer;
-        /* TODO (needs a capture of the original 1998 exe, which binds 1030 on host and joiner alike): for now a listen
-         * on 1030 hosts only after 3 s without a connect from this game; the password is still asked here */
-        int delayed = host && port == 1030 && !ctx->is_host;
+        /* The host rule (seen in a capture of Need for Speed III 1.6.1): both sides listen on the game's port as soon
+         * as the player opens the TCP screen - that alone is "ready", not hosting. Host Game closes that listener,
+         * restarts Winsock and listens on the same port again within about 100 ms; a joiner keeps its listener and
+         * connects from another socket. So a listen on a port whose listener this game closed less than 2 s ago
+         * hosts. (Port 1030, the original 1998 exe's, follows the same rule: no capture of it yet - if its Host Game
+         * doesn't re-listen, it won't host, which fails visibly instead of listing every joiner.) */
+        int again = k->explicit_port && relisten_port == port && GetTickCount() - relisten_tick < 2000;
+        int listening = 0;
+        for (int i = 0; i < OKW_MAX_SOCKS; i++)
+            if (&socks[i] != k && socks[i].used && socks[i].kind == K_TCP && socks[i].tstate == T_LISTEN && socks[i].explicit_port) listening = 1;
+        host = game->host_rule == HOST_LISTEN && k->explicit_port && ctx && !ctx->host_peer && (again || (ctx->is_host && listening));
+        if (again) relisten_port = 0;
         okp_log(2, "wsock: TCP socket %u listens on port %u%s", (unsigned)s, port,
-                delayed ? " - the original game's port: hosting in 3 s unless it connects" : host ? " - this PC hosts" : "");
+                host ? " - this PC hosts (the game listens again: Host Game)" : k->explicit_port ? " - ready, not hosting" : "");
         if (host && ctx->is_host) { build_room_record(); host = 0; }
-        if (delayed) pending_host_tick = GetTickCount() + 3000;
     }
     LeaveCriticalSection(&okw_lock);
     if (host) {
         ask_host_password();
         EnterCriticalSection(&okw_lock);
-        if (!pending_host_tick) host_room();
+        host_room();
         LeaveCriticalSection(&okw_lock);
     }
     ui_show_pending();
@@ -3559,10 +3567,9 @@ static void tcp_linger(void)   /* no lock held */
         int n = 0;
         busy = 0;
         EnterCriticalSection(&okw_lock);
-        if (ctx) {
-            EnterCriticalSection(&ctx->lock);
-            for (int i = 0; i < OKP_MAX_PEERS; i++) if (ctx->peers[i].used) ids[n++] = ctx->peers[i].id;
-            LeaveCriticalSection(&ctx->lock);
+        if (ctx) {   /* only players this game has (or just had) stream connections with */
+            for (int i = 0; i < OKW_MAX_CONNS && n < OKP_MAX_PEERS; i++) if (conns[i].used && conns[i].state == T_ESTAB) ids[n++] = conns[i].peer;
+            for (int i = 0; i < nclosed_peers && n < OKP_MAX_PEERS; i++) if (t0 - closed_peers[i].tick < 5000) ids[n++] = closed_peers[i].peer;
             for (int i = 0; i < n; i++) {
                 okp_peer_info_t pi;
                 if (okp_peer_info(ctx, ids[i], &pi) && pi.have_path && (pi.unacked_bytes || pi.waiting_bytes)) busy = 1;
