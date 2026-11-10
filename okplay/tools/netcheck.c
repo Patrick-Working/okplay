@@ -6,14 +6,15 @@
  *     DirectPlay API, exactly as the game does, so a passing check means the game's path works too.
  *   - the Winsock edition (our wsock32.dll + okplay.ini, no dplayx.dll: Need for Speed III, Road
  *     Rash): "Winsock mode" - files, room server, UDP/STUN, this PC and the firewall are checked; the
- *     DirectPlay part and the two-PC test game do not apply and are skipped.
+ *     DirectPlay part and the test game do not apply and are skipped.
  *
  *   netcheck.exe                         the window
  *   netcheck.exe --cli check             the checks, printed (no window)
  *   netcheck.exe --cli host [--secs N]   host a test game for N seconds (default 120)
  *   netcheck.exe --cli join [--session TEXT] [--secs N]
  *                                        join the first test game (whose name contains TEXT)
- *   (host/join in Winsock mode: one line saying the test does not apply, "RESULT skipped", exit 3)
+ *   (host/join in a Winsock folder: they use netcheck-dp.dll, the drop-in under a name no game loads;
+ *    without that file: one line saying so, "RESULT skipped", exit 3)
  *   common options: --lan (LAN Play instead of Online Play), --name NAME, --dplayx DLL,
  *                   --transport udp|udp+reliable|reliable (old names udp+tcp, tcp still accepted):
  *                   the mode when hosting - the host decides for the whole game (okplay/src/okp.h)
@@ -476,7 +477,13 @@ static char g_wsock_ver[32];      /* the Winsock edition's okplay version ("" = 
 static char g_wsock_filever[64];  /* wsock32.dll's file version resource ("" = none) */
 static char g_dropin_ver[32];     /* the drop-in's okplay version, from dplayx.dll's resource */
 static char g_dplayx_filever[64]; /* dplayx.dll's file version (the drop-in reports DirectPlay's) */
-#define WSOCK_LINE "This game uses the Winsock edition: the two-PC DirectPlay test does not apply. " \
+/* The test game speaks through the drop-in. A Winsock edition folder has no dplayx.dll (and must not
+   get one: the game could load it), so the same DLL ships there under a name no game asks for. Both editions
+   carry their traffic through the same shared core, so the test still measures the player's real path. */
+#define TEST_DLL "netcheck-dp.dll"
+static int g_has_testdll;         /* TEST_DLL next to us */
+static int two_pc_ok(void) { return !g_wsock_mode || g_has_testdll; }
+#define WSOCK_LINE "The test game needs " TEST_DLL " next to Connection Check, and it is not here. " \
                    "The checks above cover the room server and your connection."
 
 /* one StringFileInfo value of a file's version resource ("" = none) */
@@ -594,6 +601,8 @@ static void detect_edition(void)
         file_version(path, g_wsock_filever, sizeof(g_wsock_filever));
     }
     g_wsock_mode = g_has_wsock && !g_has_dplayx;
+    _snprintf(path, sizeof(path), "%s" TEST_DLL, g_dir);
+    g_has_testdll = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
 }
 
 /* "dplayx.dll 5.3.1.904 (drop-in 0.8.3)" / "wsock32.dll (Winsock edition 0.2.0)": the DLL tested */
@@ -615,7 +624,7 @@ static HRESULT create_dp(void)
     typedef HRESULT (WINAPI *gco_t)(REFCLSID, REFIID, void **);
     if (dp) return DP_OK;
     if (g_dplayx_arg[0]) lstrcpynA(g_dllpath, g_dplayx_arg, sizeof(g_dllpath));
-    else _snprintf(g_dllpath, sizeof(g_dllpath), "%sdplayx.dll", g_dir);
+    else _snprintf(g_dllpath, sizeof(g_dllpath), "%s%s", g_dir, g_wsock_mode ? TEST_DLL : "dplayx.dll");
     if (GetFileAttributesA(g_dllpath) != INVALID_FILE_ATTRIBUTES) g_dll = LoadLibraryA(g_dllpath);
     if (g_dll) {
         gco_t gco = (gco_t)GetProcAddress(g_dll, "DllGetClassObject");
@@ -1172,7 +1181,7 @@ static int start_dp(void)
 
 static int do_host(DWORD secs)
 {
-    if (g_wsock_mode) { emit(K_INFO, "%s", WSOCK_LINE); return 1; }
+    if (!two_pc_ok()) { emit(K_INFO, "%s", WSOCK_LINE); return 1; }
     emit(K_HEAD, "Hosting a test game (%s, %s)", g_lan ? "LAN Play" : "Online Play", transport_labels[g_transport]);
     g_hosting = 1;
     reset_session_state();
@@ -1202,7 +1211,7 @@ static int do_host(DWORD secs)
 
 static int do_join(DWORD secs)
 {
-    if (g_wsock_mode) { emit(K_INFO, "%s", WSOCK_LINE); return 1; }
+    if (!two_pc_ok()) { emit(K_INFO, "%s", WSOCK_LINE); return 1; }
     emit(K_HEAD, "Joining a test game (%s; the host decides the transmit mode)", g_lan ? "LAN Play" : "Online Play");
     g_hosting = 0;
     g_host_mode = -1;
@@ -1381,7 +1390,8 @@ static void check_all(void)
         emit(K_OK, "wsock32.dll is Oldkid.net Online Play's Winsock edition, version %s",
              g_wsock_ver[0] ? g_wsock_ver : "unknown");
     if (g_wsock_mode)
-        emit(K_INFO, "no dplayx.dll here: this game uses the Winsock edition, so the DirectPlay checks are skipped");
+        emit(K_INFO, "no dplayx.dll here: this game uses the Winsock edition, so the DirectPlay checks are skipped%s",
+             g_has_testdll ? " (the test game works: " TEST_DLL " is here)" : "");
     else if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
         emit(K_FAIL, "there is no dplayx.dll next to this program - put netcheck.exe in the game folder, "
                      "next to the drop-in's dplayx.dll");
@@ -1466,7 +1476,7 @@ static void check_all(void)
             emit(ms > 3000 ? K_WARN : K_OK, "the server answers (%d ms)", ms);
             if (ip[0]) emit(K_INFO, "your public address, as the server sees it: %s", ip);
             emit(K_INFO, "%d game%s open right now", rooms, rooms == 1 ? "" : "s");
-            if (!g_wsock_mode) {   /* (Winsock mode: no test games) */
+            if (two_pc_ok()) {
                 char body[256], e2[256];
                 int st;
                 _snprintf(body, sizeof(body), "k=%s&a=list&test=1", g_key);
@@ -1980,8 +1990,8 @@ static void update_buttons(void)
 {
     int busy = g_busy != 0;
     EnableWindow(h_btn[0], !busy);
-    EnableWindow(h_btn[1], !busy && !g_wsock_mode);   /* no two-PC test in a Winsock folder */
-    EnableWindow(h_btn[2], !busy && !g_wsock_mode);
+    EnableWindow(h_btn[1], !busy && two_pc_ok());   /* (Winsock folder without the test DLL: no two-PC test) */
+    EnableWindow(h_btn[2], !busy && two_pc_ok());
     EnableWindow(h_btn[3], busy);
     EnableWindow(h_btn[4], busy);
     EnableWindow(h_name, !busy);
@@ -2150,8 +2160,8 @@ static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         h_btn[2] = mk("BUTTON", "3. Find test games", BS_PUSHBUTTON | WS_TABSTOP, 350, 44, 150, 30, w, ID_JOIN);
         h_btn[3] = mk("BUTTON", "Transmission test", BS_PUSHBUTTON | WS_TABSTOP, 510, 44, 130, 30, w, ID_XFER);
         h_btn[4] = mk("BUTTON", "Stop", BS_PUSHBUTTON | WS_TABSTOP, 650, 44, 80, 30, w, ID_STOP);
-        mk("STATIC", g_wsock_mode ? "This game uses the Winsock edition: click Check my connection. The two-PC test "
-                                    "game (Host / Find) does not apply to it."
+        mk("STATIC", !two_pc_ok() ? "This game uses the Winsock edition: click Check my connection. The two-PC test "
+                                    "game (Host / Find) needs " TEST_DLL " in this folder."
                      : "Check first. Then one player hosts a test game; the other clicks Find test games and "
                      "double-clicks it: you both see the ping and the transmission results.", 0, 10, 82, 900, 18, w, 0);
         h_listlabel = mk("STATIC", "Test games (double-click to join):", 0, 0, 0, 10, 10, w, 0);
@@ -2354,9 +2364,9 @@ int main(int argc, char **argv)
                          "[--transport udp|udp+reliable|reliable] [--dplayx DLL]");
             return 2;
         }
-        if (g_wsock_mode && j != JOB_CHECK) {   /* nothing to test: say so, and exit 3 */
+        if (!two_pc_ok() && j != JOB_CHECK) {   /* nothing to test: say so, and exit 3 */
             emit(K_INFO, "%s", WSOCK_LINE);
-            emit(K_INFO, "RESULT skipped (Winsock edition: use --cli check)");
+            emit(K_INFO, "RESULT skipped (no " TEST_DLL ": use --cli check)");
             return 3;
         }
         g_job_secs = secs ? secs : (j == JOB_HOST ? 120 : 40);
