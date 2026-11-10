@@ -1358,7 +1358,8 @@ static void check_firewall(void)
                 } while (++shown < 8 && FindNextFileA(h, &fd));
                 FindClose(h);
             }
-            if (!games) emit(K_INFO, "Windows Firewall is on; no game program found next to Connection Check to look up");
+            if (!games) emit(K_INFO, "Windows Firewall is on; there is no game program in this folder to look up. "
+                                  "Connection Check belongs in the game's own folder, next to the game's .exe.");
         }
     }
     if (apps) INetFwAuthorizedApplications_Release(apps);
@@ -1524,20 +1525,29 @@ static void check_all(void)
                            "(a firewall?). Online Play needs UDP.");
     else {
         int same = 1;
-        stun_res *first = NULL;
+        stun_res *first = NULL, *other = NULL;   /* other: an answer with a different public ADDRESS */
         for (int i = 0; i < nres; i++) {
             if (!res[i].ok) continue;
             if (!first) first = &res[i];
-            else if (res[i].port != first->port || res[i].ip.s_addr != first->ip.s_addr) same = 0;
+            else if (res[i].ip.s_addr != first->ip.s_addr) { same = 0; if (!other) other = &res[i]; }
+            else if (res[i].port != first->port) same = 0;
         }
         emit(K_OK, "UDP to the internet works");
         if (nok < 2) emit(K_INFO, "only one address server answered: can't tell how your router assigns ports");
         else if (same)
             emit(K_OK, "your router keeps the same public port for every destination: direct connections should work");
-        else
+        else if (other) {
+            /* a different address is not a router port rule: two ways out, or a provider's shared pool */
+            char a1[32];
+            lstrcpynA(a1, inet_ntoa(first->ip), sizeof(a1));
+            emit(K_WARN, "the address servers see this PC at two public addresses (%s and %s): it reaches the "
+                         "internet two ways - a second network, a VPN, or a provider that shares addresses. "
+                         "Others may be sent to the wrong one, so joining or hosting may fail. Turn off the "
+                         "second network or VPN and check again.", a1, inet_ntoa(other->ip));
+        } else
             emit(K_WARN, "your router gives each destination a different public port (\"symmetric NAT\"): "
                          "joining may fail unless the other player's router is friendlier. Try hosting instead.");
-        if (pub.s_addr && first && first->ip.s_addr != pub.s_addr)
+        if (pub.s_addr && first && !other && first->ip.s_addr != pub.s_addr)
             emit(K_WARN, "the room server and the address servers see different public addresses (%s): "
                          "two internet connections or a VPN?", inet_ntoa(first->ip));
     }
@@ -1970,8 +1980,8 @@ static void update_buttons(void)
 {
     int busy = g_busy != 0;
     EnableWindow(h_btn[0], !busy);
-    EnableWindow(h_btn[1], !busy);
-    EnableWindow(h_btn[2], !busy);
+    EnableWindow(h_btn[1], !busy && !g_wsock_mode);   /* no two-PC test in a Winsock folder */
+    EnableWindow(h_btn[2], !busy && !g_wsock_mode);
     EnableWindow(h_btn[3], busy);
     EnableWindow(h_btn[4], busy);
     EnableWindow(h_name, !busy);
