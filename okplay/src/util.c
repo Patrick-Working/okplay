@@ -37,8 +37,10 @@ static void prune_files(const char *pattern, int keep)
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(spec, &fd);
     if (h == INVALID_HANDLE_VALUE) return;
-    char names[256][64];
+    /* (on the heap: this runs on the game's thread while okplay loads, and a game's stack can be small) */
+    char (*names)[64] = (char (*)[64])malloc(256 * 64);
     int n = 0;
+    if (!names) { FindClose(h); return; }
     do {
         if (n < 256 && strlen(fd.cFileName) < 64) lstrcpynA(names[n++], fd.cFileName, 64);
     } while (FindNextFileA(h, &fd));
@@ -55,6 +57,7 @@ static void prune_files(const char *pattern, int keep)
         snprintf(p, sizeof(p), "%s%s", g_logdir, names[i]);
         DeleteFileA(p);
     }
+    free(names);
 }
 
 int okp_log_reused;   /* this process already had a log file: append, short header */
@@ -266,21 +269,24 @@ void okp_exe_build(char build[17], char *exe, int exesz)
         WCHAR w[MAX_PATH];
         HANDLE f;
         okp_sha256_ctx s;
-        uint8_t h[32], chunk[16384];
+        enum { CHUNK = 16384 };   /* (on the heap: a caller may be the game's own thread with a small stack) */
+        uint8_t h[32], *chunk = (uint8_t *)malloc(CHUNK);
         DWORD got;
         if (GetModuleFileNameA(NULL, path, sizeof(path))) {
             base = strrchr(path, '\\');
             MultiByteToWideChar(CP_ACP, 0, base ? base + 1 : path, -1, w, MAX_PATH);
             WideCharToMultiByte(CP_UTF8, 0, w, -1, cexe, sizeof(cexe), NULL, NULL);
-            f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+            f = chunk ? CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL)
+                      : INVALID_HANDLE_VALUE;
             if (f != INVALID_HANDLE_VALUE) {
                 okp_sha256_init(&s);
-                while (ReadFile(f, chunk, sizeof(chunk), &got, NULL) && got) okp_sha256_update(&s, chunk, got);
+                while (ReadFile(f, chunk, CHUNK, &got, NULL) && got) okp_sha256_update(&s, chunk, got);
                 CloseHandle(f);
                 okp_sha256_final(&s, h);
                 for (int i = 0; i < 8; i++) snprintf(cbuild + 2 * i, 3, "%02x", h[i]);
             }
         }
+        free(chunk);
         /* tests: pretend to be another build */
         if (GetEnvironmentVariableA("OKP_TEST_EXEBUILD", path, sizeof(path)) && strlen(path) == 16)
             lstrcpynA(cbuild, path, sizeof(cbuild));

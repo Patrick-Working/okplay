@@ -258,7 +258,9 @@ static BOOL WINAPI x_IsBadStringPtrW( LPCWSTR str, UINT_PTR max )
 }
 BIND( x_IsBadStringPtrW, "__imp__IsBadStringPtrW@8" );
 
-/* Windows 9x fails CreateThread when lpThreadId is NULL (documented); give it somewhere to write */
+/* Windows 9x fails CreateThread when lpThreadId is NULL (documented); give it somewhere to write.
+ * A stack size of 0 means "what the game's exe reserves", and some reserve very little (Need for Speed III
+ * 1998: 32,000 bytes - less than one of our room lists): our threads always get room of their own. */
 static HANDLE WINAPI x_CreateThread( LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LPTHREAD_START_ROUTINE start,
                                      LPVOID param, DWORD flags, LPDWORD id )
 {
@@ -266,6 +268,7 @@ static HANDLE WINAPI x_CreateThread( LPSECURITY_ATTRIBUTES sa, SIZE_T stack, LPT
     DWORD dummy, *tid = id ? id : &dummy;
     HANDLE h;
     if ( !fn ) fn = (void *)real( "kernel32.dll", "CreateThread" );   /* the system's, on every Windows */
+    if ( !stack ) stack = 256 * 1024;
     h = fn( sa, stack, start, param, flags, tid );
 #ifdef OKP_BUILTIN   /* the drop-in has okplay's log; the stand-alone TCP/IP provider (build_dpwsockx.sh) not */
     {

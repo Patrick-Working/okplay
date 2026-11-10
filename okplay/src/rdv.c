@@ -852,7 +852,9 @@ static void do_list(okp_ctx *c, rdv_conn *r)
     char *resp = rdv_post(r, body);
     char *rest = rdv_ok(c, resp);
     if (!rest) { free(resp); return; }
-    okp_room rooms[OKP_MAX_ROOMS];
+    /* (on the heap: the list is ~50 KB, and a game's exe may give its threads a far smaller stack) */
+    okp_room *rooms = (okp_room *)malloc(sizeof(okp_room) * OKP_MAX_ROOMS);
+    if (!rooms) { free(resp); return; }
     int n = parse_list(c, rest, rooms);
     free(resp);
 
@@ -860,6 +862,7 @@ static void do_list(okp_ctx *c, rdv_conn *r)
     memcpy(c->rooms, rooms, sizeof(rooms[0]) * n);
     c->nrooms = n;
     LeaveCriticalSection(&c->lock);
+    free(rooms);
     okp_log(2, "rdv: %d room(s) listed", n);
     okp_inject_rooms(c);
 }
@@ -868,16 +871,19 @@ int okp_rdv_knock(okp_ctx *c, uint32_t room)
 {
     rdv_conn r;
     if (!rdv_open(c, &r)) return 0;
-    char cands[1024], candse[1500], body[2048];
-    cands_field(c, cands, sizeof(cands));
-    okp_urlenc(cands, candse, sizeof(candse));
-    snprintf(body, sizeof(body), "k=%s&a=knock&room=%08x&peer=%016llx&cands=%s",
-             okp_cfg.key, room, (unsigned long long)c->self, candse);
-    char *resp = rdv_post(&r, body);
+    /* (this runs on the game's own thread when it joins, and a game's stack can be small: buffers on the heap) */
+    struct { char cands[1024], candse[1500], body[2048]; } *b = malloc(sizeof(*b));
+    if (!b) { rdv_close_conn(&r); return 0; }
+    cands_field(c, b->cands, sizeof(b->cands));
+    okp_urlenc(b->cands, b->candse, sizeof(b->candse));
+    snprintf(b->body, sizeof(b->body), "k=%s&a=knock&room=%08x&peer=%016llx&cands=%s",
+             okp_cfg.key, room, (unsigned long long)c->self, b->candse);
+    char *resp = rdv_post(&r, b->body);
     int ok = rdv_ok(c, resp) != NULL;
     free(resp);
     rdv_close_conn(&r);
-    okp_log(1, "rdv: knock room %08x cands=%s -> %s", room, cands, ok ? "ok" : "FAILED");
+    okp_log(1, "rdv: knock room %08x cands=%s -> %s", room, b->cands, ok ? "ok" : "FAILED");
+    free(b);
     return ok;
 }
 
