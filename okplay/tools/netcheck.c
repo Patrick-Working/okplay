@@ -1,15 +1,19 @@
-/* netcheck - "Connection Check" for the drop-in: lets a player see, before game night, whether
- * Online/LAN Play will work on this PC, and test a real game with a friend.
+/* netcheck - "Connection Check" for Oldkid.net Online Play: lets a player see, before game night,
+ * whether Online/LAN Play will work on this PC, and test a real game with a friend.
  *
- * Copy netcheck.exe next to the drop-in's dplayx.dll (the game folder). It drives that dplayx.dll
- * through the normal DirectPlay API, exactly as the game does, so a passing check means the game's
- * path works too.
+ * Copy netcheck.exe into the game folder. Two editions:
+ *   - the DirectPlay drop-in (dplayx.dll): netcheck drives that dplayx.dll through the normal
+ *     DirectPlay API, exactly as the game does, so a passing check means the game's path works too.
+ *   - the Winsock edition (our wsock32.dll + okplay.ini, no dplayx.dll: Need for Speed III, Road
+ *     Rash): "Winsock mode" - files, room server, UDP/STUN, this PC and the firewall are checked; the
+ *     DirectPlay part and the two-PC test game do not apply and are skipped.
  *
  *   netcheck.exe                         the window
  *   netcheck.exe --cli check             the checks, printed (no window)
  *   netcheck.exe --cli host [--secs N]   host a test game for N seconds (default 120)
  *   netcheck.exe --cli join [--session TEXT] [--secs N]
  *                                        join the first test game (whose name contains TEXT)
+ *   (host/join in Winsock mode: one line saying the test does not apply, "RESULT skipped", exit 3)
  *   common options: --lan (LAN Play instead of Online Play), --name NAME, --dplayx DLL,
  *                   --transport udp|udp+reliable|reliable (old names udp+tcp, tcp still accepted):
  *                   the mode when hosting - the host decides for the whole game (okplay/src/okp.h)
@@ -18,8 +22,9 @@
  * like the game's own list) and a double-click joins one. Test games carry NETCHECK_APP, which the
  * room server keeps apart from real games (okplay.php TEST_APP).
  *
- * Checks: the files (dplayx.dll is the drop-in, okplay.ini), DirectPlay lists the drop-in's
- * connections, the room server answers (time, public address, open rooms, newest version), UDP to
+ * Checks: the files (dplayx.dll is the drop-in or wsock32.dll is the Winsock edition, okplay.ini),
+ * DirectPlay lists the drop-in's connections, the room server answers (time, public address, open
+ * rooms, newest version of the edition found, compared with the one here), UDP to
  * the internet and the router's port behaviour (STUN), local addresses.
  * Host/join: the test game appears on the room server, join time, ping (now/avg/min/max), jitter,
  * loss, and a transmission test (game-like unguaranteed traffic, guaranteed messages, large
@@ -462,6 +467,148 @@ static void file_version(const char *path, char *out, int n)
     free(b);
 }
 
+/* ------------------------------------------------------------------ which edition is here */
+
+static int g_has_dplayx;          /* a dplayx.dll next to us (or --dplayx) */
+static int g_has_wsock;           /* our wsock32.dll next to us (the Winsock edition) */
+static int g_wsock_mode;          /* Winsock mode: our wsock32.dll and no dplayx.dll */
+static char g_wsock_ver[32];      /* the Winsock edition's okplay version ("" = not known) */
+static char g_wsock_filever[64];  /* wsock32.dll's file version resource ("" = none) */
+static char g_dropin_ver[32];     /* the drop-in's okplay version, from dplayx.dll's resource */
+static char g_dplayx_filever[64]; /* dplayx.dll's file version (the drop-in reports DirectPlay's) */
+#define WSOCK_LINE "This game uses the Winsock edition: the two-PC DirectPlay test does not apply. " \
+                   "The checks above cover the room server and your connection."
+
+/* one StringFileInfo value of a file's version resource ("" = none) */
+static void ver_string(const char *path, const char *name, char *out, int n)
+{
+    DWORD h, sz = GetFileVersionInfoSizeA(path, &h);
+    out[0] = 0;
+    if (!sz) return;
+    void *b = malloc(sz);
+    WORD *tr;
+    char *v, q[96];
+    UINT l;
+    if (b && GetFileVersionInfoA(path, 0, sz, b)) {
+        if (VerQueryValueA(b, "\\VarFileInfo\\Translation", (void **)&tr, &l) && l >= 4)
+            _snprintf(q, sizeof(q), "\\StringFileInfo\\%04x%04x\\%s", tr[0], tr[1], name);
+        else _snprintf(q, sizeof(q), "\\StringFileInfo\\040904b0\\%s", name);
+        q[sizeof(q) - 1] = 0;
+        if (VerQueryValueA(b, q, (void **)&v, &l) && l) lstrcpynA(out, v, n);
+    }
+    free(b);
+}
+
+/* the first "1.2.3"-like word right after `after` in s ("" if none) */
+static void version_after(const char *s, const char *after, char *out, int n)
+{
+    const char *p = ci_find(s, after);
+    int o = 0;
+    out[0] = 0;
+    if (!p) return;
+    p += strlen(after);
+    if (*p == 'v' || *p == 'V') p++;
+    if (!isdigit((unsigned char)*p)) return;
+    while ((isdigit((unsigned char)*p) || *p == '.') && o < n - 1) out[o++] = *p++;
+    while (o && out[o - 1] == '.') o--;
+    out[o] = 0;
+}
+
+/* "0.7.10" > "0.7.9" (as okplay/src/okbox.c okbox_version_cmp) */
+static int nc_vercmp(const char *a, const char *b)
+{
+    while (*a || *b) {
+        long x = strtol(a, (char **)&a, 10), y = strtol(b, (char **)&b, 10);
+        if (x != y) return x < y ? -1 : 1;
+        if (*a == '.') a++;
+        if (*b == '.') b++;
+        if ((*a && (*a < '0' || *a > '9')) || (*b && (*b < '0' || *b > '9'))) break;
+    }
+    return 0;
+}
+
+/* Is this wsock32.dll ours (okplay/wsock)? 1. its version resource names oldkid.net / Oldkid.net
+ * Online Play / okplay (today's builds have none; a later one will); 2. the text okplay/wsock/wsock.c
+ * logs at start, "wsock: okplay <version> ", is in the file (it also gives the version); 3. the
+ * okplay.ini beside it holds a wsock_* key. ver = its okplay version when found. */
+static int wsock_is_ours(const char *path, char *ver, int vn)
+{
+    static const char mark[] = "wsock: okplay ";
+    char co[128], pr[128];
+    int ours = 0;
+    ver[0] = 0;
+    ver_string(path, "CompanyName", co, sizeof(co));
+    ver_string(path, "ProductName", pr, sizeof(pr));
+    if (ci_find(co, "oldkid") || ci_find(pr, "oldkid") || ci_find(pr, "okplay")) ours = 1;
+    HANDLE f = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if (f != INVALID_HANDLE_VALUE) {
+        DWORD sz = GetFileSize(f, NULL), got = 0;
+        char *b = sz != INVALID_FILE_SIZE && sz < 16 * 1024 * 1024 ? (char *)malloc(sz + 1) : NULL;
+        if (b && ReadFile(f, b, sz, &got, NULL)) {
+            for (DWORD i = 0; i + sizeof(mark) < got; i++)
+                if (b[i] == 'w' && !memcmp(b + i, mark, sizeof(mark) - 1) && isdigit((unsigned char)b[i + sizeof(mark) - 1])) {
+                    b[got] = 0;
+                    version_after(b + i, mark, ver, vn);
+                    ours = 1;
+                    break;
+                }
+        }
+        free(b);
+        CloseHandle(f);
+    }
+    if (!ver[0] && ours) {   /* a resource but no text: its ProductVersion, then FileVersion */
+        version_after(pr, "okplay ", ver, vn);
+        if (!ver[0]) { ver_string(path, "ProductVersion", pr, sizeof(pr)); version_after(pr, "", ver, vn); }
+    }
+    if (!ours) {
+        char ini[MAX_PATH], sec[4096];
+        _snprintf(ini, sizeof(ini), "%sokplay.ini", g_dir);
+        DWORD n = GetPrivateProfileSectionA("okplay", sec, sizeof(sec), ini);
+        for (char *k = sec; n && k < sec + n && *k; k += strlen(k) + 1)
+            if (!_strnicmp(k, "wsock_", 6)) { ours = 1; break; }
+    }
+    return ours;
+}
+
+/* which edition this folder holds; called once at start, after the command line */
+static void detect_edition(void)
+{
+    char path[MAX_PATH], s[128];
+    if (g_dplayx_arg[0]) lstrcpynA(path, g_dplayx_arg, sizeof(path));
+    else _snprintf(path, sizeof(path), "%sdplayx.dll", g_dir);
+    g_has_dplayx = GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES;
+    if (g_has_dplayx) {
+        file_version(path, g_dplayx_filever, sizeof(g_dplayx_filever));
+        /* the drop-in's resource: Comments "... drop-in v0.8.3", FileDescription "... drop-in 0.8.3: ..."
+           (winedplay/shim/dplayx.rc); its FILEVERSION is DirectPlay's (5.3.1.904), not ours */
+        ver_string(path, "Comments", s, sizeof(s));
+        version_after(s, "drop-in ", g_dropin_ver, sizeof(g_dropin_ver));
+        if (!g_dropin_ver[0]) {
+            ver_string(path, "FileDescription", s, sizeof(s));
+            version_after(s, "drop-in ", g_dropin_ver, sizeof(g_dropin_ver));
+        }
+    }
+    _snprintf(path, sizeof(path), "%swsock32.dll", g_dir);
+    if (GetFileAttributesA(path) != INVALID_FILE_ATTRIBUTES && wsock_is_ours(path, g_wsock_ver, sizeof(g_wsock_ver))) {
+        g_has_wsock = 1;
+        file_version(path, g_wsock_filever, sizeof(g_wsock_filever));
+    }
+    g_wsock_mode = g_has_wsock && !g_has_dplayx;
+}
+
+/* "dplayx.dll 5.3.1.904 (drop-in 0.8.3)" / "wsock32.dll (Winsock edition 0.2.0)": the DLL tested */
+static void tested_dll(char *out, int n)
+{
+    if (g_wsock_mode)
+        _snprintf(out, n, "wsock32.dll%s%s (Winsock edition %s)", g_wsock_filever[0] ? " " : "", g_wsock_filever,
+                  g_wsock_ver[0] ? g_wsock_ver : "version unknown");
+    else if (g_has_dplayx)
+        _snprintf(out, n, "dplayx.dll %s (drop-in %s)", g_dplayx_filever[0] ? g_dplayx_filever : "no version",
+                  g_dropin_ver[0] ? g_dropin_ver : "version unknown");
+    else lstrcpynA(out, "none (no dplayx.dll next to Connection Check)", n);
+    out[n - 1] = 0;
+}
+
 /* the dplayx.dll next to us (or --dplayx); Windows' own only if there is none */
 static HRESULT create_dp(void)
 {
@@ -651,6 +798,20 @@ static rx_tally *tally_get(DPID from, DWORD run, DWORD phase)
     return t;
 }
 
+/* how this PC's test messages went: the test's mode (the host's, told in NC_HELLO, when joining),
+ * unless okplay.ini transport_force= / env OKP_TRANSPORT_FORCE overrides it (okplay/src/util.c) */
+static int send_transport(void)
+{
+    char v[32] = "", ini[MAX_PATH];
+    _snprintf(ini, sizeof(ini), "%sokplay.ini", g_dir);
+    GetPrivateProfileStringA("okplay", "transport_force", "", v, sizeof(v), ini);
+    GetEnvironmentVariableA("OKP_TRANSPORT_FORCE", v, sizeof(v));
+    if (!_stricmp(v, "reliable") || !_stricmp(v, "tcp") || !_stricmp(v, "all")) return 2;
+    if (!_stricmp(v, "udp+reliable") || !_stricmp(v, "udp+tcp") || !_stricmp(v, "directplay")) return 1;
+    if (!_stricmp(v, "udp") || !_stricmp(v, "fast")) return 0;
+    return !g_hosting && g_host_mode >= 0 ? g_host_mode : g_transport;
+}
+
 static void handle_app(DPID from, const void *msg, DWORD size)
 {
     const DWORD *type = (const DWORD *)msg;
@@ -725,9 +886,14 @@ static void handle_app(DPID from, const void *msg, DWORD size)
              phases[r->phase].what, who, (unsigned long)r->received, (unsigned long)r->total,
              (unsigned long)(r->total ? lost * 100 / r->total : 0), (unsigned long)r->ooo, (unsigned long)r->dup,
              (unsigned long)r->span_ms);
-        if (kind == K_FAIL)
-            emit(K_INFO, "Guaranteed messages must all arrive. This version of the drop-in sends them like "
-                         "ordinary ones, so a game that relies on them can miss a message on a lossy line.");
+        if (kind == K_FAIL && send_transport() == 0)
+            emit(K_INFO, "Guaranteed messages must all arrive. In the Fast (UDP) mode, Oldkid.net Online Play "
+                         "sends them like ordinary ones, so a game that relies on them can miss a message on a "
+                         "lossy line. The DirectPlay-style mode (the default) resends them.");
+        else if (kind == K_FAIL)
+            emit(K_INFO, "Guaranteed messages are resent until they arrive, so a loss here means the line between "
+                         "the two PCs broke or stalled for seconds. A firewall or router that drops UDP between "
+                         "them is the usual cause: allow the game in the firewall on both PCs.");
     }
 }
 
@@ -854,7 +1020,8 @@ static void session_loop(DWORD secs, int auto_xfer_at, int is_host)
                     LeaveCriticalSection(&g_cs);
                     emit(K_WARN, "%s joined but nothing comes back from them: a firewall on one of the two PCs is "
                                  "probably dropping the traffic - allow the game (and Connection Check) in Windows "
-                                 "Firewall, or answer Allow when Windows asks", who);
+                                 "Firewall, or answer Allow when Windows asks. The game needs UDP in and out "
+                                 "(LAN games are found on UDP port 47632).", who);
                     EnterCriticalSection(&g_cs);
                 }
                 peer_line(&peers[i], line, sizeof(line));
@@ -1005,6 +1172,7 @@ static int start_dp(void)
 
 static int do_host(DWORD secs)
 {
+    if (g_wsock_mode) { emit(K_INFO, "%s", WSOCK_LINE); return 1; }
     emit(K_HEAD, "Hosting a test game (%s, %s)", g_lan ? "LAN Play" : "Online Play", transport_labels[g_transport]);
     g_hosting = 1;
     reset_session_state();
@@ -1034,6 +1202,7 @@ static int do_host(DWORD secs)
 
 static int do_join(DWORD secs)
 {
+    if (g_wsock_mode) { emit(K_INFO, "%s", WSOCK_LINE); return 1; }
     emit(K_HEAD, "Joining a test game (%s; the host decides the transmit mode)", g_lan ? "LAN Play" : "Online Play");
     g_hosting = 0;
     g_host_mode = -1;
@@ -1157,11 +1326,12 @@ static void check_firewall(void)
         if (!on) emit(K_INFO, "Windows Firewall is off for this network");
         else if (noexc)
             emit(K_WARN, "Windows Firewall blocks ALL incoming connections on this network (\"block all incoming\"): "
-                         "others can't join a game you host - turn that option off in Windows Firewall");
+                         "others can't join a game you host - turn that option off in Windows Firewall "
+                         "(the game needs incoming UDP)");
         else {
             WIN32_FIND_DATAA fd;
             char spec[MAX_PATH];
-            int shown = 0;
+            int shown = 0, games = 0;   /* (shown counts netcheck.exe too) */
             INetFwProfile_get_AuthorizedApplications(prof, &apps);
             _snprintf(spec, sizeof(spec), "%s*.exe", g_dir);
             HANDLE h = FindFirstFileA(spec, &fd);
@@ -1182,11 +1352,13 @@ static void check_firewall(void)
                     bstr_free(b);
                     if (en) emit(K_OK, "%s is allowed through Windows Firewall", fd.cFileName);
                     else emit(K_INFO, "%s is not on Windows Firewall's allowed list yet: the first time it hosts, "
-                                      "Windows asks - choose Allow, or others can't join", fd.cFileName);
+                                      "Windows asks - choose Allow, or others can't join. It needs UDP in and out "
+                                      "(LAN games are found on UDP port 47632).", fd.cFileName);
+                    games++;
                 } while (++shown < 8 && FindNextFileA(h, &fd));
                 FindClose(h);
             }
-            if (!shown) emit(K_INFO, "Windows Firewall is on; no game program found next to Connection Check to look up");
+            if (!games) emit(K_INFO, "Windows Firewall is on; no game program found next to Connection Check to look up");
         }
     }
     if (apps) INetFwAuthorizedApplications_Release(apps);
@@ -1204,36 +1376,54 @@ static void check_all(void)
     char path[MAX_PATH];
     _snprintf(path, sizeof(path), "%sdplayx.dll", g_dir);
     if (g_dplayx_arg[0]) lstrcpynA(path, g_dplayx_arg, sizeof(path));
-    if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
+    if (g_has_wsock)
+        emit(K_OK, "wsock32.dll is Oldkid.net Online Play's Winsock edition, version %s",
+             g_wsock_ver[0] ? g_wsock_ver : "unknown");
+    if (g_wsock_mode)
+        emit(K_INFO, "no dplayx.dll here: this game uses the Winsock edition, so the DirectPlay checks are skipped");
+    else if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES)
         emit(K_FAIL, "there is no dplayx.dll next to this program - put netcheck.exe in the game folder, "
                      "next to the drop-in's dplayx.dll");
+    else if (g_has_wsock)
+        emit(K_INFO, "dplayx.dll is here too: the DirectPlay checks below test dplayx.dll");
     _snprintf(path, sizeof(path), "%sokplay.ini", g_dir);
+    char wmode[16] = "ask";
+    if (g_wsock_mode) GetPrivateProfileStringA("okplay", "wsock_mode", "ask", wmode, sizeof(wmode), path);
     if (GetFileAttributesA(path) == INVALID_FILE_ATTRIBUTES) emit(K_INFO, "no okplay.ini: the defaults are used");
+    else if (g_wsock_mode) emit(K_OK, "okplay.ini found (wsock_mode=%s)", wmode);
     else emit(K_OK, "okplay.ini found (mode=%s)", g_mode);
-    if (!_stricmp(g_mode, "windows"))
+    if (g_wsock_mode && (!_stricmp(wmode, "original") || !_stricmp(wmode, "windows")))
+        emit(K_WARN, "okplay.ini says wsock_mode=%s: the game uses its own TCP/IP, not Online/LAN Play", wmode);
+    if (!g_wsock_mode && !_stricmp(g_mode, "windows"))
         emit(K_WARN, "okplay.ini says mode=windows: the game uses only Windows' DirectPlay, not Online/LAN Play");
     char sys[MAX_PATH];
     GetSystemDirectoryA(sys, sizeof(sys));
     strcat(sys, "\\dplayx.dll");
-    emit(K_INFO, "Windows' own DirectPlay is %s", GetFileAttributesA(sys) != INVALID_FILE_ATTRIBUTES
-         ? "installed (the classic TCP/IP, IPX, modem and serial connections are available too)"
-         : "not installed (fine: Online and LAN Play don't need it)");
+    if (!g_wsock_mode)
+        emit(K_INFO, "Windows' own DirectPlay is %s", GetFileAttributesA(sys) != INVALID_FILE_ATTRIBUTES
+             ? "installed (the classic TCP/IP, IPX, modem and serial connections are available too)"
+             : "not installed (fine: Online and LAN Play don't need it)");
 
-    emit(K_HEAD, "DirectPlay");
-    HRESULT hr = create_dp();
-    if (FAILED(hr)) emit(K_FAIL, "DirectPlay could not be started (0x%08lx)", (unsigned long)hr);
-    else {
-        if (g_dllpath[0])
-            emit(g_is_dropin ? K_OK : K_FAIL, "dplayx.dll %s, version %s", g_is_dropin ? "is the drop-in" :
-                 "is NOT the drop-in (no Online/LAN Play in it)", g_dllver[0] ? g_dllver : "?");
-        else emit(K_WARN, "using Windows' own DirectPlay (no dplayx.dll next to this program)");
-        conn_online = conn_lan = conn_count = 0;
-        conn_names[0] = 0;
-        IDirectPlayX_EnumConnections(dp, NULL, conn_cb, NULL, DPCONNECTION_DIRECTPLAY);
-        emit(K_INFO, "the game's connection list: %s", conn_names[0] ? conn_names : "(empty)");
-        emit(conn_online ? K_OK : K_FAIL, "Online Play is %s", conn_online ? "listed" : "missing");
-        emit(conn_lan ? K_OK : K_FAIL, "LAN Play is %s", conn_lan ? "listed" : "missing");
-        release_dp();
+    if (!g_wsock_mode) {   /* (Winsock mode: no DirectPlay here to check - the Files section said so) */
+        emit(K_HEAD, "DirectPlay");
+        HRESULT hr = create_dp();
+        if (FAILED(hr)) emit(K_FAIL, "DirectPlay could not be started (0x%08lx)", (unsigned long)hr);
+        else {
+            if (g_dllpath[0] && g_is_dropin && g_dropin_ver[0])
+                emit(K_OK, "dplayx.dll is the drop-in, Oldkid.net Online Play %s (file version %s)", g_dropin_ver,
+                     g_dllver[0] ? g_dllver : "?");
+            else if (g_dllpath[0])
+                emit(g_is_dropin ? K_OK : K_FAIL, "dplayx.dll %s, version %s", g_is_dropin ? "is the drop-in" :
+                     "is NOT the drop-in (no Online/LAN Play in it)", g_dllver[0] ? g_dllver : "?");
+            else emit(K_WARN, "using Windows' own DirectPlay (no dplayx.dll next to this program)");
+            conn_online = conn_lan = conn_count = 0;
+            conn_names[0] = 0;
+            IDirectPlayX_EnumConnections(dp, NULL, conn_cb, NULL, DPCONNECTION_DIRECTPLAY);
+            emit(K_INFO, "the game's connection list: %s", conn_names[0] ? conn_names : "(empty)");
+            emit(conn_online ? K_OK : K_FAIL, "Online Play is %s", conn_online ? "listed" : "missing");
+            emit(conn_lan ? K_OK : K_FAIL, "LAN Play is %s", conn_lan ? "listed" : "missing");
+            release_dp();
+        }
     }
 
     emit(K_HEAD, "Room server");
@@ -1245,7 +1435,7 @@ static void check_all(void)
     if (!r) emit(K_FAIL, "%s", err);
     else {
         int rooms = 0;
-        char ip[64] = "", latest[32] = "", note[256] = "";
+        char ip[64] = "", latest[32] = "", note[256] = "", latest_ws[32] = "", note_ws[256] = "";
         char *whole = _strdup(r);   /* (strtok below cuts r into lines) */
         char *line = strtok(r, "\n");
         if (line && !strncmp(line, "ok ", 3)) {
@@ -1260,6 +1450,11 @@ static void check_all(void)
                 sscanf(line + 7, "%31s %255s", latest, n2);
                 if (strcmp(n2, "-")) urldec(n2, note, sizeof(note));
             }
+            if (!strncmp(line, "latest_wsock ", 13)) {   /* the Winsock edition's newest (okplay.php) */
+                char n2[256] = "";
+                sscanf(line + 13, "%31s %255s", latest_ws, n2);
+                if (strcmp(n2, "-")) urldec(n2, note_ws, sizeof(note_ws));
+            }
         }
         if (!answered) {
             emit(K_FAIL, "the server answered something unexpected: %.100s", r);
@@ -1270,7 +1465,7 @@ static void check_all(void)
             emit(ms > 3000 ? K_WARN : K_OK, "the server answers (%d ms)", ms);
             if (ip[0]) emit(K_INFO, "your public address, as the server sees it: %s", ip);
             emit(K_INFO, "%d game%s open right now", rooms, rooms == 1 ? "" : "s");
-            {
+            if (!g_wsock_mode) {   /* (Winsock mode: no test games) */
                 char body[256], e2[256];
                 int st;
                 _snprintf(body, sizeof(body), "k=%s&a=list&test=1", g_key);
@@ -1282,7 +1477,19 @@ static void check_all(void)
                 }
                 free(t);
             }
-            if (latest[0]) emit(K_INFO, "newest drop-in: %s%s%s", latest, note[0] ? " - " : "", note);
+            /* the newest version of each edition here, compared with this one when it is known */
+            for (int ed = 0; ed < 2; ed++) {
+                const char *nv = ed ? latest_ws : latest, *nn = ed ? note_ws : note;
+                const char *mine = ed ? g_wsock_ver : g_dropin_ver, *what = ed ? "Winsock edition" : "drop-in";
+                if (!nv[0] || (ed ? !g_has_wsock : g_wsock_mode)) continue;
+                if (!mine[0])
+                    emit(K_INFO, "newest Oldkid.net Online Play (%s): %s%s%s", what, nv, nn[0] ? " - " : "", nn);
+                else if (nc_vercmp(mine, nv) >= 0)
+                    emit(K_INFO, "Oldkid.net Online Play (%s) %s is up to date", what, mine);
+                else
+                    emit(K_WARN, "a newer version of Oldkid.net Online Play (%s) is out: %s (you have %s)%s%s", what,
+                         nv, mine, nn[0] ? " - " : "", nn);
+            }
             int times[3], n = 0;
             for (int i = 0; i < 3; i++) {
                 char *again = server_list(&times[i], err, sizeof(err));
@@ -1388,23 +1595,50 @@ static void start_job(int job)
 
 /* ------------------------------------------------------------------ report files */
 
-static void newest_log(char *out, int n)
+/* Where the logs go (okplay/src/util.c okp_log_init, try_logdir): next to the DLL, netplay-logs\ for
+ * the drop-in (OKP_BUILTIN) and logs\ for the Winsock edition; when the game folder is not writable,
+ * the same sub-folder under %LOCALAPPDATA%\okplay\ (not set on Windows 9x: then there is none).
+ * Fills up to 4 folders (with a trailing backslash), this folder's edition first; returns how many. */
+static int log_dirs(char dirs[4][MAX_PATH])
 {
-    char spec[MAX_PATH];
+    const char *sub[2] = {g_wsock_mode ? "logs" : "netplay-logs", g_wsock_mode ? "netplay-logs" : "logs"};
+    char base[MAX_PATH];
+    int n = 0;
+    for (int i = 0; i < 2; i++) _snprintf(dirs[n++], MAX_PATH, "%s%s\\", g_dir, sub[i]);
+    DWORD l = GetEnvironmentVariableA("LOCALAPPDATA", base, sizeof(base));
+    if (l && l < sizeof(base) - 10)
+        for (int i = 0; i < 2; i++) _snprintf(dirs[n++], MAX_PATH, "%s\\okplay\\%s\\", base, sub[i]);
+    for (int i = 0; i < n; i++) dirs[i][MAX_PATH - 1] = 0;
+    return n;
+}
+
+/* the newest okplay-*.log in any of them; dir = its folder (both "" when there is none) */
+static void newest_log_in(char *out, int n, char *dir, int dn)
+{
+    char dirs[4][MAX_PATH], spec[MAX_PATH];
     WIN32_FIND_DATAA fd;
     FILETIME best = {0, 0};
+    int nd = log_dirs(dirs);
     out[0] = 0;
-    _snprintf(spec, sizeof(spec), "%snetplay-logs\\okplay-*.log", g_dir);
-    HANDLE h = FindFirstFileA(spec, &fd);
-    if (h == INVALID_HANDLE_VALUE) return;
-    do {
-        if (CompareFileTime(&fd.ftLastWriteTime, &best) > 0) {
-            best = fd.ftLastWriteTime;
-            _snprintf(out, n, "%snetplay-logs\\%s", g_dir, fd.cFileName);
-        }
-    } while (FindNextFileA(h, &fd));
-    FindClose(h);
+    if (dir) dir[0] = 0;
+    for (int d = 0; d < nd; d++) {
+        _snprintf(spec, sizeof(spec), "%sokplay-*.log", dirs[d]);
+        spec[sizeof(spec) - 1] = 0;
+        HANDLE h = FindFirstFileA(spec, &fd);
+        if (h == INVALID_HANDLE_VALUE) continue;
+        do {
+            if (CompareFileTime(&fd.ftLastWriteTime, &best) > 0) {
+                best = fd.ftLastWriteTime;
+                _snprintf(out, n, "%s%s", dirs[d], fd.cFileName);
+                out[n - 1] = 0;
+                if (dir) lstrcpynA(dir, dirs[d], dn);
+            }
+        } while (FindNextFileA(h, &fd));
+        FindClose(h);
+    }
 }
+
+static void newest_log(char *out, int n) { newest_log_in(out, n, NULL, 0); }
 
 static int save_report(char *saved, int n)
 {
@@ -1416,6 +1650,11 @@ static int save_report(char *saved, int n)
     if (!f) return 0;
     fprintf(f, "Connection Check report, %04d-%02d-%02d %02d:%02d\r\n", st.wYear, st.wMonth, st.wDay, st.wHour,
             st.wMinute);
+    {
+        char t[200];
+        tested_dll(t, sizeof(t));
+        fprintf(f, "tested DLL: %s\r\n", t);
+    }
     EnterCriticalSection(&g_cs);
     if (g_report) fwrite(g_report, 1, g_report_len, f);
     LeaveCriticalSection(&g_cs);
@@ -1447,12 +1686,21 @@ static HFONT g_font, g_mono;
 
 /* ------------------------------------------------------------------ scrub (a copy of okplay/src/crash.c okp_scrub) */
 
+/* KEEP IN STEP with okplay/src/crash.c okp_scrub (path_start, okp_scrub): the same rules, line for
+ * line, only nc_put in place of snprintf. A change there is a change here. */
 static int nc_isdigit(char c) { return c >= '0' && c <= '9'; }
 static int nc_ishex(char c) { return nc_isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
+/* a path starts here: X:\ or \\server */
+static int nc_path_start(const char *p)
+{
+    return (((*p | 0x20) >= 'a' && (*p | 0x20) <= 'z') && p[1] == ':' && p[2] == '\\') || (p[0] == '\\' && p[1] == '\\');
+}
+
 /* one log line -> the same line without addresses and folders:
- *   C:\Users\Name\Games\AoE2\age2_x1.exe  ->  ...\age2_x1.exe   (a path ends at a double space, a quote,
- *                                            " (", " -", ", " or the end of the line)
+ *   C:\Users\Name\Games\AoE2\age2_x1.exe  ->  ...\age2_x1.exe   (all up to the path's last backslash goes - it
+ *                                            ends at a double quote, the next path or the end of the line; the
+ *                                            file name ends at a double space, a quote, " (", " -" or ", ")
  *   192.168.1.20 -> x.x.x.x  (four numbers up to 255; a version like v5.1.2600.0 stays)
  *   any word of hex digits with 2+ colons (IPv6, "[2001:db8::1]:2300") -> [v6]   (not a hh:mm:ss time) */
 static int nc_put(char *out, int o, int n, const char *s)   /* (no snprintf here: see send_thread) */
@@ -1467,14 +1715,20 @@ static void nc_scrub(const char *in, char *out, int n)
     const char *p = in;
     while (*p && o < n - 1) {
         /* a path: X:\ or \\server */
-        if ((((*p | 0x20) >= 'a' && (*p | 0x20) <= 'z') && p[1] == ':' && p[2] == '\\') || (p[0] == '\\' && p[1] == '\\')) {
-            const char *e = p, *last = NULL;
-            while (*e && *e != '"' && *e != '\'' && *e != '\r' && *e != '\n' &&
-                   !(e[0] == ' ' && (e[1] == ' ' || e[1] == '(' || e[1] == '-')) && !(e[0] == ',' && e[1] == ' ')) {
-                if (*e == '\\') last = e;
-                e++;
+        if (nc_path_start(p)) {
+            /* the folders end at the path's last backslash before the end of the line, a double quote or
+             * the next path (" D:\..."), not at ", ", " (" or an apostrophe: folder names may hold those
+             * ("C:\Users\Smith, John\Games\x.exe") and every folder must go, whatever it contains */
+            const char *lim = p + 2, *last = NULL;
+            while (*lim && *lim != '"' && *lim != '\r' && *lim != '\n' && !(lim[-1] == ' ' && nc_path_start(lim))) {
+                if (*lim == '\\') last = lim;
+                lim++;
             }
-            const char *keep = last ? last + 1 : e;
+            /* the last part (the file name) ends at the first separator after it */
+            const char *keep = last ? last + 1 : lim, *e = keep;
+            while (e < lim && *e != '\'' && !(e[0] == ' ' && (e[1] == ' ' || e[1] == '(' || e[1] == '-')) &&
+                   !(e[0] == ',' && e[1] == ' '))
+                e++;
             o = nc_put(out, o, n, "...\\");
             if (o >= n - 1) break;
             while (keep < e && o < n - 1) out[o++] = *keep++;
@@ -1563,6 +1817,8 @@ static char *build_send_body(void)
     char *out = (char *)malloc(cap), *src, line[1200], clean[1400];
     if (!out) return NULL;
     o += _snprintf(out, cap, "Connection Check report\n");
+    tested_dll(line, sizeof(line));   /* (file names and versions only: nothing to scrub) */
+    o += _snprintf(out + o, cap - o, "tested DLL: %s\n", line);
     EnterCriticalSection(&g_cs);
     src = g_report ? _strdup(g_report) : _strdup("");
     LeaveCriticalSection(&g_cs);
@@ -1585,7 +1841,7 @@ static char *build_send_body(void)
     for (int part = 0; part < 2; part++) {
         char *s = part == 0 ? src : tail, *e;
         if (!s) continue;
-        if (part == 1) o += _snprintf(out + o, cap - o, "\n== the add-on's last log lines ==\n");
+        if (part == 1) o += _snprintf(out + o, cap - o, "\n== the last lines of Oldkid.net Online Play's log ==\n");
         if (part == 1 && tail_cut) { e = strchr(s, '\n'); s = e ? e + 1 : s + strlen(s); }
         while (s && *s && o < cap - 1500) {
             e = strchr(s, '\n');
@@ -1668,7 +1924,8 @@ static void send_report_clicked(HWND w)
     if (!body) return;
     for (;;) {
         int r = MessageBoxA(w, "Send these results to oldkid.net so the problem can be looked at?\n\n"
-                               "They include the test results and the add-on's last log lines. Addresses, folders and "
+                               "They include the test results and the last lines of Oldkid.net Online Play's log. "
+                               "Addresses, folders and "
                                "player names are taken out.\n\n"
                                "Yes = send     No = show me first     Cancel = don't send",
                             "Connection Check - Send report", MB_YESNOCANCEL | MB_ICONQUESTION);
@@ -1883,7 +2140,9 @@ static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         h_btn[2] = mk("BUTTON", "3. Find test games", BS_PUSHBUTTON | WS_TABSTOP, 350, 44, 150, 30, w, ID_JOIN);
         h_btn[3] = mk("BUTTON", "Transmission test", BS_PUSHBUTTON | WS_TABSTOP, 510, 44, 130, 30, w, ID_XFER);
         h_btn[4] = mk("BUTTON", "Stop", BS_PUSHBUTTON | WS_TABSTOP, 650, 44, 80, 30, w, ID_STOP);
-        mk("STATIC", "Check first. Then one player hosts a test game; the other clicks Find test games and "
+        mk("STATIC", g_wsock_mode ? "This game uses the Winsock edition: click Check my connection. The two-PC test "
+                                    "game (Host / Find) does not apply to it."
+                     : "Check first. Then one player hosts a test game; the other clicks Find test games and "
                      "double-clicks it: you both see the ping and the transmission results.", 0, 10, 82, 900, 18, w, 0);
         h_listlabel = mk("STATIC", "Test games (double-click to join):", 0, 0, 0, 10, 10, w, 0);
         h_list = mk("LISTBOX", "", LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 0, 0, 10, 10, w, ID_LIST);
@@ -1992,9 +2251,20 @@ static LRESULT CALLBACK main_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         }
         case ID_SEND: send_report_clicked(w); break;
         case ID_LOGS: {
-            char d[MAX_PATH];
-            _snprintf(d, sizeof(d), "%snetplay-logs", g_dir);
-            if (GetFileAttributesA(d) == INVALID_FILE_ATTRIBUTES) lstrcpynA(d, g_dir, sizeof(d));
+            /* the folder of the newest log; else the first log folder that exists (only the sub-folder of
+               an edition that is here: a game may have a logs\ of its own); else this folder */
+            char d[MAX_PATH], lp[MAX_PATH], dirs[4][MAX_PATH];
+            newest_log_in(lp, sizeof(lp), d, sizeof(d));
+            if (!d[0]) {
+                int nd = log_dirs(dirs);
+                for (int i = 0; i < nd && !d[0]; i++) {
+                    if (i % 2 && !(g_has_wsock && g_has_dplayx)) continue;
+                    lstrcpynA(d, dirs[i], sizeof(d));
+                    d[strlen(d) - 1] = 0;   /* (no trailing backslash: Windows 9x) */
+                    if (GetFileAttributesA(d) == INVALID_FILE_ATTRIBUTES) d[0] = 0;
+                }
+            } else d[strlen(d) - 1] = 0;
+            if (!d[0]) lstrcpynA(d, g_dir, sizeof(d));
             ShellExecuteA(w, "open", d, NULL, NULL, SW_SHOWNORMAL);
             break;
         }
@@ -2057,6 +2327,7 @@ int main(int argc, char **argv)
         }
         else job = argv[i];
     }
+    detect_edition();
     WSADATA wd;
     WSAStartup(MAKEWORD(1, 1), &wd);
     /* 1 ms ping resolution and short sleeps (GetTickCount steps in 15.6 ms): the command line runs
@@ -2072,6 +2343,11 @@ int main(int argc, char **argv)
             emit(K_INFO, "usage: netcheck --cli check|host|join [--lan] [--name N] [--session TEXT] [--secs N] "
                          "[--transport udp|udp+reliable|reliable] [--dplayx DLL]");
             return 2;
+        }
+        if (g_wsock_mode && j != JOB_CHECK) {   /* nothing to test: say so, and exit 3 */
+            emit(K_INFO, "%s", WSOCK_LINE);
+            emit(K_INFO, "RESULT skipped (Winsock edition: use --cli check)");
+            return 3;
         }
         g_job_secs = secs ? secs : (j == JOB_HOST ? 120 : 40);
         CoInitialize(NULL);
