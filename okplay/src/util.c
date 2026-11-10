@@ -254,10 +254,13 @@ void okp_config_load(void)
     if (GetEnvironmentVariableA("OKP_TRACE", v, sizeof(v))) okp_cfg.trace = atoi(v);
 }
 
+#ifndef OKP_EXE_BUILD_WAIT_MS
+#define OKP_EXE_BUILD_WAIT_MS 30000   /* (13 s seen on a slow Windows 98 PC with the game busy) */
+#endif
 void okp_exe_build(char build[17], char *exe, int exesz)
 {
     static char cbuild[17], cexe[64];
-    static LONG done;
+    static volatile LONG done;   /* 0 = not started, 1 = a thread is hashing, 2 = cbuild/cexe are final */
     if (!InterlockedCompareExchange(&done, 1, 0)) {
         char path[MAX_PATH], *base;
         WCHAR w[MAX_PATH];
@@ -284,7 +287,31 @@ void okp_exe_build(char build[17], char *exe, int exesz)
         okp_log(2, "game build: %s %s", cexe, cbuild[0] ? cbuild : "(could not read the exe)");
         InterlockedExchange(&done, 2);
     }
-    while (done != 2) Sleep(1);
+    /* another thread is hashing (the early one): wait for it, but not for ever - it may have been ended
+     * (a thread killed, the DLL leaving) or be stuck reading the exe from a slow disc. Then the build is
+     * "not known" for this caller (""), as when the exe can't be read; a later caller gets the real one. */
+    DWORD t0 = GetTickCount();
+    while (InterlockedCompareExchange(&done, 2, 2) != 2) {
+        if (GetTickCount() - t0 >= OKP_EXE_BUILD_WAIT_MS) {
+            static volatile LONG said;
+            if (!InterlockedExchange(&said, 1))
+                okp_log(1, "game build: the exe was still being read after %d s - going on without it",
+                        OKP_EXE_BUILD_WAIT_MS / 1000);
+            build[0] = 0;
+            if (exe && exesz > 0) {
+                char path[MAX_PATH], *base;
+                WCHAR w[MAX_PATH];
+                exe[0] = 0;
+                if (GetModuleFileNameA(NULL, path, sizeof(path))) {
+                    base = strrchr(path, '\\');
+                    MultiByteToWideChar(CP_ACP, 0, base ? base + 1 : path, -1, w, MAX_PATH);
+                    WideCharToMultiByte(CP_UTF8, 0, w, -1, exe, exesz, NULL, NULL);
+                }
+            }
+            return;
+        }
+        Sleep(1);
+    }
     lstrcpynA(build, cbuild, 17);
     if (exe) lstrcpynA(exe, cexe, exesz);
 }

@@ -30,15 +30,27 @@ okp_peer *okp_peer_get(okp_ctx *c, uint64_t id, int create)
     }
     if (!create || id == 0 || id == c->self) return NULL;
     if (!freep) {
-        /* full: junk (e.g. forged knocks) must not lock real players out - reuse the quietest
-         * peer that has no DirectPlay players and isn't our host */
+        /* full: junk (e.g. forged knocks) must not lock real players out - reuse the quietest peer that
+         * has no DirectPlay players, no hold and isn't our host, one without a path first. A newcomer on
+         * a stranger's say-so (OKP_PEER_WEAK) never takes the slot of a peer with a live path: a flood of
+         * knocks or probes from new ids could otherwise throw out players who are still joining */
         okp_peer *victim = NULL;
         for (int i = 0; i < OKP_MAX_PEERS; i++) {
             okp_peer *p = &c->peers[i];
-            if (p->nplayers > 0 || p->id == c->host_peer) continue;
-            if (!victim || (int)(p->last_rx - victim->last_rx) < 0) victim = p;
+            if (p->nplayers > 0 || p->hold > 0 || p->id == c->host_peer) continue;
+            if (create == OKP_PEER_WEAK && p->have_path) continue;
+            if (!victim || (victim->have_path && !p->have_path) ||
+                (victim->have_path == p->have_path && (int)(p->last_rx - victim->last_rx) < 0))
+                victim = p;
         }
-        if (!victim) return NULL;
+        if (!victim) {
+            static LONG refused;
+            LONG k = InterlockedIncrement(&refused);
+            if (k == 1 || k % 1000 == 0)
+                okp_log(1, "peer table full: newcomer %016llx refused - every peer is connected, held or has players (#%ld)",
+                        (unsigned long long)id, k);
+            return NULL;
+        }
         okp_log(1, "peer table full: dropping idle peer %016llx for %016llx", (unsigned long long)victim->id,
                 (unsigned long long)id);
         okp_peer_free_bufs(victim);
@@ -144,6 +156,39 @@ void okp_peer_add_cands(okp_ctx *c, okp_peer *p, const SOCKADDR_IN6 *cands, int 
             p->cands[OKP_MAX_CANDS - 1] = cands[i];
         }
     }
+}
+
+void okp_peer_hold(okp_ctx *c, uint64_t peer, int on)
+{
+    EnterCriticalSection(&c->lock);
+    okp_peer *p = okp_peer_get(c, peer, 0);
+    if (p) {
+        if (on) p->hold++;
+        else if (p->hold > 0) p->hold--;
+        if (!on && p->hold == 0) p->keep_until = okp_now() + 5000;   /* (as when its last player leaves) */
+        okp_log(2, "peer %016llx: %s (holds %d)", (unsigned long long)peer, on ? "held" : "let go", p->hold);
+    }
+    LeaveCriticalSection(&c->lock);
+}
+
+okp_peer *okp_peer_announced(okp_ctx *c, uint64_t from, uint64_t peer, const SOCKADDR_IN6 *cands, int n)
+{
+    okp_peer *p = okp_peer_get(c, peer, OKP_PEER_CREATE);
+    if (!p) return NULL;
+    /* its own announcement, or one about a peer we never reached (the host's list for a joiner, the
+     * host's forward of a new player): take the addresses. A third machine naming addresses for a
+     * connected peer is not needed by anyone honest - and would let that machine pass as the peer */
+    if (from == peer || p->path_changes == 0) {
+        okp_peer_add_cands(c, p, cands, n);
+    } else {
+        static LONG said;
+        LONG k = InterlockedIncrement(&said);
+        if (k <= 3 || k % 1000 == 0)
+            okp_log(1, "peer %016llx: addresses for it from machine %016llx ignored - it is connected, only it may"
+                    " name its addresses (#%ld)", (unsigned long long)peer, (unsigned long long)from, k);
+    }
+    p->nplayers++;
+    return p;
 }
 
 static void pend_free(okp_peer *p)
@@ -925,8 +970,15 @@ typedef struct { uint8_t *data; int len; int own; } okp_ready;
  * then the whole message is queued for dplayx. */
 static void rel_deliver(okp_peer *p, uint8_t *data, int len, int frag, int own, okp_ready *ready, int *nready)
 {
+    /* an empty piece adds nothing (our senders never make one). It must not reach realloc: with size 0
+     * Microsoft's C library frees the block and returns NULL, which looked like "out of memory" and left
+     * p->reasm pointing at freed memory - freed again by the final piece (empty RFRAG, RFRAG, RDATA) */
+    if (frag && len <= 0) {
+        if (own) free(data);
+        return;
+    }
     if (frag || p->reasm_len > 0 || p->reasm_bad) {
-        if (!p->reasm_bad) {
+        if (!p->reasm_bad && len > 0) {
             if (p->reasm_len + len > OKP_MSG_MAX) {
                 okp_log(1, "peer %016llx: reassembled message over %d bytes - dropped", (unsigned long long)p->id,
                         OKP_MSG_MAX);
@@ -940,7 +992,10 @@ static void rel_deliver(okp_peer *p, uint8_t *data, int len, int frag, int own, 
                     memcpy(nb + p->reasm_len, data, len);
                     p->reasm = nb;
                     p->reasm_len += len;
-                } else {
+                } else {   /* (realloc left the old block alone) */
+                    free(p->reasm);
+                    p->reasm = NULL;
+                    p->reasm_len = 0;
                     p->reasm_bad = 1;
                 }
             }
@@ -1018,7 +1073,7 @@ static void handle_packet(okp_ctx *c, uint8_t *b, int n, SOCKADDR_IN6 *from)
     char s[80];
     EnterCriticalSection(&c->lock);
     /* only a probe introduces a peer; anything else from an id we don't know is noise */
-    okp_peer *p = okp_peer_get(c, w->from, w->type == OKP_T_PROBE);
+    okp_peer *p = okp_peer_get(c, w->from, w->type == OKP_T_PROBE ? OKP_PEER_WEAK : 0);
     if (!p) { LeaveCriticalSection(&c->lock); return; }
     /* the sender proves it is that peer by carrying the token we gave it */
     int trusted = w->token != 0 && w->token == p->my_token;
@@ -1295,7 +1350,7 @@ static void run_timers(okp_ctx *c)
             p->probe_start = now;
         }
 
-        int retained = p->nplayers > 0 || p->id == c->host_peer || (int)(p->keep_until - now) > 0;
+        int retained = p->nplayers > 0 || p->hold > 0 || p->id == c->host_peer || (int)(p->keep_until - now) > 0;
         if (!p->have_path && !retained) {
             okp_log(2, "peer %016llx: forgotten (no players left and no path)", (unsigned long long)p->id);
             okp_peer_free_bufs(p);
@@ -1305,13 +1360,13 @@ static void run_timers(okp_ctx *c)
 
         if (!p->have_path) {
             DWORD every = now - p->probe_start < PROBE_FAST_FOR_MS ? PROBE_EVERY_MS : PROBE_SLOW_MS;
-            int passive = p->nplayers == 0 && p->id != c->host_peer;
+            int passive = p->nplayers == 0 && p->hold == 0 && p->id != c->host_peer;
             if (passive && now - p->probe_start > 15000) every = 0xFFFFFFFF;   /* stop: never joined */
             if (p->ncands && every != 0xFFFFFFFF && now - p->last_probe >= every) {
                 for (int k = 0; k < p->ncands; k++) send_probe(c, p, &p->cands[k]);
                 p->last_probe = now;
             }
-            if (!p->ncands && now - p->last_rx > PEER_EXPIRE_MS) {
+            if (!p->ncands && !p->hold && now - p->last_rx > PEER_EXPIRE_MS) {
                 okp_log(2, "peer %016llx: expired", (unsigned long long)p->id);
                 okp_peer_free_bufs(p);
                 p->used = 0;

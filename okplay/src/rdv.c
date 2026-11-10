@@ -30,6 +30,7 @@ static struct {
     BOOL (WINAPI *CloseHandle)(HINTERNET);
     BOOL (WINAPI *SetTimeouts)(HINTERNET, int, int, int, int);
     BOOL (WINAPI *CrackUrl)(LPCWSTR, DWORD, DWORD, LPURL_COMPONENTS);
+    BOOL (WINAPI *SetOption)(HINTERNET, DWORD, LPVOID, DWORD);   /* optional (not one of the 11 above) */
 } wh;
 
 static int winhttp_load(void)
@@ -43,6 +44,7 @@ static int winhttp_load(void)
         int i;
         wh.ok = m != NULL;
         for (i = 0; m && i < 11; i++) if (!(f[i] = GetProcAddress(m, names[i]))) wh.ok = 0;
+        if (m) wh.SetOption = (BOOL (WINAPI *)(HINTERNET, DWORD, LPVOID, DWORD))GetProcAddress(m, "WinHttpSetOption");
         wh.tried = 1;
         if (!wh.ok) okp_log(1, "rdv: %s - plain HTTP to the server",
                             okp_sys.emulate9x ? "OKP_EMULATE_9X set" : "no WinHTTP on this Windows");
@@ -78,6 +80,47 @@ static int split_url(const char *url, char *host, int hostsz, uint16_t *port, ch
     return 1;
 }
 
+/* Windows 7 and 8.0 offer only SSL 3 and TLS 1.0 by default, which a TLS 1.2-only server refuses ("the secure
+ * connection failed"). There, ask for TLS 1.1 and 1.2 as well - on top of the defaults, so nothing that worked
+ * before stops working. Windows 8.1 and later already offer them (and 1.3 on 11, which an explicit list would
+ * take away): left alone, and so are XP and Vista (no TLS 1.1/1.2 there). If WinHTTP refuses the option, the
+ * system default stays, as before. Windows 9x has no WinHTTP and never gets here. */
+#ifndef WINHTTP_OPTION_SECURE_PROTOCOLS
+#define WINHTTP_OPTION_SECURE_PROTOCOLS 84
+#endif
+#define RDV_TLS_SSL3  0x00000020u   /* WINHTTP_FLAG_SECURE_PROTOCOL_* */
+#define RDV_TLS_1_0   0x00000080u
+#define RDV_TLS_1_1   0x00000200u
+#define RDV_TLS_1_2   0x00000800u
+static int windows_7_or_8_0(void)
+{
+    /* the real version: GetVersionEx says 6.2 on 8.1 and later to a program without a manifest */
+    typedef LONG (WINAPI *rtl_fn)(OSVERSIONINFOW *);
+    HMODULE nt = GetModuleHandleA("ntdll.dll");
+    rtl_fn rtl = nt ? (rtl_fn)GetProcAddress(nt, "RtlGetVersion") : NULL;
+    OSVERSIONINFOW v;
+    memset(&v, 0, sizeof(v));
+    v.dwOSVersionInfoSize = sizeof(v);
+    if (!rtl || rtl(&v) != 0) return 0;   /* not known: leave the default alone */
+    /* Windows 7 (6.1) and 8.0 (6.2) only: XP and Vista have no TLS 1.1/1.2 to ask for, so their default is
+     * never touched (asking could only make a connection that works today fail) */
+    return v.dwMajorVersion == 6 && (v.dwMinorVersion == 1 || v.dwMinorVersion == 2);
+}
+
+static void rdv_tls(HINTERNET session)
+{
+    static int said;
+    if (!wh.SetOption || !windows_7_or_8_0()) return;
+    DWORD want = RDV_TLS_SSL3 | RDV_TLS_1_0 | RDV_TLS_1_1 | RDV_TLS_1_2;
+    BOOL ok = wh.SetOption(session, WINHTTP_OPTION_SECURE_PROTOCOLS, &want, sizeof(want));
+    if (!said) {   /* (the rendezvous threads may race here: at worst it is said twice) */
+        said = 1;
+        if (ok) okp_log(1, "rdv: asked WinHTTP for TLS 1.1 and 1.2 too (Windows 7 / 8.0)");
+        else okp_log(1, "rdv: this WinHTTP has no TLS 1.1/1.2 setting (error %lu) - Windows' default protocols",
+                     (unsigned long)GetLastError());
+    }
+}
+
 static int rdv_open(okp_ctx *c, rdv_conn *r)
 {
     WCHAR url[512], host[256];
@@ -108,6 +151,7 @@ static int rdv_open(okp_ctx *c, rdv_conn *r)
     r->session = wh.Open(L"okplay/" OKP_VERSION_STR, WINHTTP_ACCESS_TYPE_DEFAULT_PROXY,
                          WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
     if (!r->session) return 0;
+    if (r->secure) rdv_tls(r->session);
     wh.SetTimeouts(r->session, 3000, 3000, 3000, 5000);
     r->connect = wh.Connect(r->session, host, uc.nPort, 0);
     r->ok = r->connect != NULL;
@@ -493,7 +537,7 @@ static void parse_knocks(okp_ctx *c, char *rest)
         SOCKADDR_IN6 cl[OKP_MAX_CANDS];
         int n = okp_cands_from_str(kcands, cl, OKP_MAX_CANDS);
         EnterCriticalSection(&c->lock);
-        okp_peer *p = okp_peer_get(c, pid, 1);
+        okp_peer *p = okp_peer_get(c, pid, OKP_PEER_WEAK);   /* (never in place of a connected peer) */
         if (p) {
             /* only a peer we have never connected to takes its addresses from a knock: a knock in the
              * name of an established peer (its id is known to everyone in the game) would aim our probes

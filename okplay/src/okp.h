@@ -203,6 +203,7 @@ typedef struct {
     uint32_t rx_badtoken, rx_untrusted_probe;
 
     int nplayers;                  /* DirectPlay players living on this peer */
+    int hold;                      /* okp_peer_hold count: kept without DirectPlay players (wsock) */
     DWORD keep_until;              /* retain without players until this tick */
     DWORD last_nopath_log;
 } okp_peer;
@@ -438,7 +439,23 @@ void okp_gather_cands(okp_ctx *c);
 void okp_stun_resolve(okp_ctx *c);   /* rdv thread: looks the STUN servers up once */
 int  okp_cands_to_str(const SOCKADDR_IN6 *cands, int n, char *out, int outsz);
 int  okp_cands_from_str(const char *s, SOCKADDR_IN6 *cands, int max);
+/* create: 0 = find only; OKP_PEER_CREATE (1) = make it if missing - when the table is full it reuses the
+ * quietest peer that has no players, isn't held and isn't our host (one without a path first);
+ * OKP_PEER_WEAK = made by a stranger's say-so (a first probe, a room-server knock line): it never takes
+ * the slot of a peer with a live path, players or a hold - a full table refuses it (NULL) instead */
+#define OKP_PEER_CREATE 1
+#define OKP_PEER_WEAK   2
 okp_peer *okp_peer_get(okp_ctx *c, uint64_t id, int create);   /* lock held */
+/* Keep a peer although DirectPlay knows no player on it - for a user of the lane without DirectPlay players
+ * (okplay wsock: while it has a stream connection or is in the UDP game). Counted: every on=1 needs its
+ * on=0. A held peer is never chosen to make room for a newcomer, and when its path dies it goes back to
+ * probing its addresses instead of being forgotten. No such peer: nothing happens. Takes c->lock. */
+void okp_peer_hold(okp_ctx *c, uint64_t peer, int on);
+/* A remote player was announced (DirectPlay CreatePlayer) with okplay player data naming `peer` and its
+ * addresses; `from` = the machine the announcement came from (0 = not known). Counts the player and takes
+ * the addresses - from a third machine only while `peer` was never connected (a joiner learns the others
+ * from the host's list), so no member can aim a connected player's traffic at itself. Lock held. */
+okp_peer *okp_peer_announced(okp_ctx *c, uint64_t from, uint64_t peer, const SOCKADDR_IN6 *cands, int n);
 void okp_peer_add_cands(okp_ctx *c, okp_peer *p, const SOCKADDR_IN6 *cands, int n); /* lock held; drops unusable addresses */
 int  okp_cand_ok(const okp_ctx *c, const SOCKADDR_IN6 *a);
 int  okp_pdata_parse(const void *buf, DWORD sz, uint64_t *peer, SOCKADDR_IN6 *out, int max);

@@ -18,6 +18,7 @@
 #endif
 
 #define LAN_MAGIC "OKLN"
+#define OKP_LAN_DRAIN_MAX 64   /* datagrams per okp_lan_readable call */
 #define LAN_OFFER_CANDS 6
 
 static SOCKET udp4(uint16_t port, int reuse)
@@ -294,7 +295,10 @@ void okp_lan_readable(okp_ctx *c, SOCKET s)
 {
     uint8_t buf[2048];
     int got_offer = 0;
-    for (;;) {
+    /* a batch at most, like the main socket's drain (net.c net_main): a LAN flood - each DISCOVER is
+     * answered - must not keep the network thread (at high priority) from its timers and the game */
+    DWORD t0 = okp_now();
+    for (int k = 0; k < OKP_LAN_DRAIN_MAX && okp_now() - t0 < 15; k++) {
         SOCKADDR_IN from;
         int fl = sizeof(from);
         int n = recvfrom(s, (char *)buf, sizeof(buf), 0, (SOCKADDR *)&from, &fl);

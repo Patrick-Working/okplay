@@ -292,9 +292,11 @@ static HRESULT OKP_CreatePlayer_impl(LPDPSP_CREATEPLAYERDATA d)
         n = okp_pdata_parse(buf, sz, &peer, cl, OKP_PDATA_CANDS);
     if (n >= 0) {
         if (peer != c->self) {
+            /* which machine announced it: the header of the message that made dplayx create the player */
+            const okp_sphdr *h = (const okp_sphdr *)d->lpSPMessageHeader;
+            uint64_t from = h && h->magic == OKP_HDR_MAGIC ? h->peer : 0;
             EnterCriticalSection(&c->lock);
-            okp_peer *p = okp_peer_get(c, peer, 1);
-            if (p) { okp_peer_add_cands(c, p, cl, n); p->nplayers++; }
+            okp_peer_announced(c, from, peer, cl, n);
             LeaveCriticalSection(&c->lock);
         }
         okp_log(1, "CreatePlayer remote %lu flags 0x%lx peer %016llx (%d cands)", (unsigned long)d->idPlayer,

@@ -3,7 +3,7 @@
 #
 #   tests/run_local.sh [quick|pair|mesh3|loss|v6|lan|lanmesh|lanneg|online|all|full|
 #                       burst|mesh8|lanmesh8|loss30|migrate|dropout|hostcrash|features|rejoin|aoe2names|
-#                       twohosts|lantwohosts|password|lanpassword|pwretry|lanpwretry|pwnames|classic|mixed98|serverbox|
+#                       twohosts|lantwohosts|password|lanpassword|pwretry|lanpwretry|pwnames|classic|mixed98|serverbox|core|
 #                       rogue [deletehost|iamhost|sessiondesc]]
 #
 # Every dptest loads the FRESH build through the IPX provider slot (bin\dpwsockx.dll,
@@ -320,6 +320,14 @@ rejoin() { # leave a game and host/join the next with the same DirectPlay object
     check "$p" ${p}_host ${p}_join
 }
 
+core() { # the transport core's regression tests (tests/core_test.c): built here from the current sources, no network
+    local exe=../bin/core_test.exe
+    ( . ../../env.sh; need_mingw32
+      gcc -O1 -g -fno-omit-frame-pointer -Wall -Wno-unused-function -Wno-unused-but-set-variable -Wno-unused-parameter           -Wno-cast-function-type -Wno-format-truncation -D_WIN32_WINNT=0x0601 -I../include -I../src -o $exe core_test.c           ../src/crash.c ../src/compat.c -lws2_32 -liphlpapi -lwinhttp -lbcrypt -lversion ) || { echo "FAIL core (build)"; fails=$((fails+1)); return; }
+    if $exe > "$OUT/core.txt" 2>&1; then echo "PASS core"; else grep "FAIL\|double" "$OUT/core.txt" | sed 's/^/  /'; echo "FAIL core"; fails=$((fails+1)); fi
+    grep -o "[0-9]* checks, [0-9]* failed" "$OUT/core.txt" | sed 's/^/  /'
+}
+
 my_id() { grep -o "my_player id=[0-9]*" "$OUT/$1.txt" | head -1 | cut -d= -f2; }
 left_seen() { grep -q "EVENT player_left id=$2\b" "$OUT/$1.txt"; }
 
@@ -557,16 +565,18 @@ case $sc in
     classic) classic ;;
     mixed98) mixed98 ;;
     serverbox) serverbox ;;
+    core)    core ;;
     rogue)   OKP_TEST_AS=online rogue "${2:-deletehost}" ;;
     # quick (~4 min, every change): one scenario per layer - server, LAN, host hand-over, the 98 paths,
     # the classic pass-through, AoE2's names, the server box. full is for release candidates.
-    quick)   OKP_TEST_AS=online pair pair
+    quick)   core
+             OKP_TEST_AS=online pair pair
              (export OKP_TEST_AS=lan OKP_SERVER=http://127.0.0.1:9/nothing OKP_STUN=; pair lan; exit $fails) || fails=$?
              OKP_TEST_AS=online migrate migrate
              OKP_TEST_AS=online aoe2names aoe2names
              classic; mixed98; serverbox ;;
     all)     online; lan; lanneg ;;
-    full)    online; lan; lanneg
+    full)    core; online; lan; lanneg
              OKP_TEST_AS=online mesh8 mesh8
              (export OKP_TEST_AS=lan OKP_SERVER=http://127.0.0.1:9/nothing OKP_STUN=; mesh8 lanmesh8; exit $fails) || fails=$?
              OKP_TEST_AS=online OKP_DROP_PCT=30 pair loss30

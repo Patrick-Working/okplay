@@ -340,9 +340,16 @@ static void ini_get(const char *key, const char *def, char *out, int n)
 static int is_digit(char c) { return c >= '0' && c <= '9'; }
 static int is_hex(char c) { return is_digit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
 
+/* a path starts here: X:\ or \\server */
+static int path_start(const char *p)
+{
+    return (((*p | 0x20) >= 'a' && (*p | 0x20) <= 'z') && p[1] == ':' && p[2] == '\\') || (p[0] == '\\' && p[1] == '\\');
+}
+
 /* one log line -> the same line without addresses and folders:
- *   C:\Users\Name\Games\AoE2\age2_x1.exe  ->  ...\age2_x1.exe   (a path ends at a double space, a quote,
- *                                            " (", " -", ", " or the end of the line)
+ *   C:\Users\Name\Games\AoE2\age2_x1.exe  ->  ...\age2_x1.exe   (all up to the path's last backslash goes - it
+ *                                            ends at a double quote, the next path or the end of the line; the
+ *                                            file name ends at a double space, a quote, " (", " -" or ", ")
  *   192.168.1.20 -> x.x.x.x  (four numbers up to 255; a version like v5.1.2600.0 stays)
  *   any word of hex digits with 2+ colons (IPv6, "[2001:db8::1]:2300") -> [v6]   (not a hh:mm:ss time) */
 void okp_scrub(const char *in, char *out, int n)
@@ -351,14 +358,20 @@ void okp_scrub(const char *in, char *out, int n)
     const char *p = in;
     while (*p && o < n - 1) {
         /* a path: X:\ or \\server */
-        if ((((*p | 0x20) >= 'a' && (*p | 0x20) <= 'z') && p[1] == ':' && p[2] == '\\') || (p[0] == '\\' && p[1] == '\\')) {
-            const char *e = p, *last = NULL;
-            while (*e && *e != '"' && *e != '\'' && *e != '\r' && *e != '\n' &&
-                   !(e[0] == ' ' && (e[1] == ' ' || e[1] == '(' || e[1] == '-')) && !(e[0] == ',' && e[1] == ' ')) {
-                if (*e == '\\') last = e;
-                e++;
+        if (path_start(p)) {
+            /* the folders end at the path's last backslash before the end of the line, a double quote or
+             * the next path (" D:\..."), not at ", ", " (" or an apostrophe: folder names may hold those
+             * ("C:\Users\Smith, John\Games\x.exe") and every folder must go, whatever it contains */
+            const char *lim = p + 2, *last = NULL;
+            while (*lim && *lim != '"' && *lim != '\r' && *lim != '\n' && !(lim[-1] == ' ' && path_start(lim))) {
+                if (*lim == '\\') last = lim;
+                lim++;
             }
-            const char *keep = last ? last + 1 : e;
+            /* the last part (the file name) ends at the first separator after it */
+            const char *keep = last ? last + 1 : lim, *e = keep;
+            while (e < lim && *e != '\'' && !(e[0] == ' ' && (e[1] == ' ' || e[1] == '(' || e[1] == '-')) &&
+                   !(e[0] == ',' && e[1] == ' '))
+                e++;
             o += snprintf(out + o, n - o, "...\\");
             if (o >= n - 1) break;
             while (keep < e && o < n - 1) out[o++] = *keep++;
