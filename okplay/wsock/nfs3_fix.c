@@ -185,5 +185,6 @@ int nfs3_player_name(char *out, int n)
         out[i] = (char)c;
     }
     out[i] = 0;
+    if (!strcmp(out, "gamename")) return 0;   /* the game's own placeholder until a name is set: no name yet */
     return i > 0;
 }

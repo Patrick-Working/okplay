@@ -415,6 +415,7 @@ static int is_authed(uint64_t peer)   /* okw_lock held */
 static volatile LONG ui_pending;   /* (the notices, below) */
 static volatile LONG ui_wrongpw;   /* a TCP game's late "wrong password": shown through run_box like the other notices */
 static volatile LONG ui_full;      /* a TCP game's host said its game is full (REFUSE reason 4): "That game is full." */
+static volatile LONG ui_noanswer;  /* a TCP join came up and the host's game never sent a byte before our game gave up: "No answer from the host." */
 
 static DWORD WINAPI wrong_password_box(LPVOID arg)
 {
@@ -2091,7 +2092,7 @@ static void ui_show_pending(void)
         okw_box b;
         memset(&b, 0, sizeof(b));
         EnterCriticalSection(&ui_lock);
-        b.kind = ui_update.on ? 4 : ui_unreach.on ? 5 : ui_nonet.on ? 6 : ui_crash.on ? 7 : ui_conn.on ? 8 : ui_wrongpw ? 3 : ui_full ? 12 : 0;
+        b.kind = ui_update.on ? 4 : ui_unreach.on ? 5 : ui_nonet.on ? 6 : ui_crash.on ? 7 : ui_conn.on ? 8 : ui_wrongpw ? 3 : ui_full ? 12 : ui_noanswer ? 11 : 0;
         if (!b.kind) InterlockedExchange(&ui_pending, 0);
         LeaveCriticalSection(&ui_lock);
         if (!b.kind) break;
@@ -2102,6 +2103,7 @@ static void ui_show_pending(void)
         else if (b.kind == 6) ui_nonet.on = 0;
         else if (b.kind == 3) InterlockedExchange(&ui_wrongpw, 0);
         else if (b.kind == 12) InterlockedExchange(&ui_full, 0);
+        else if (b.kind == 11) InterlockedExchange(&ui_noanswer, 0);
         else if (b.kind == 7) { ui_crash.on = 0; ui_crash.answer = r; SetEvent(ui_crash.done); }
         else { ui_conn.on = 0; ui_conn.answer = r; SetEvent(ui_conn.done); }
         LeaveCriticalSection(&ui_lock);
@@ -3395,6 +3397,15 @@ static void tcp_close(okw_sock *k)   /* okw_lock held; a virtual TCP socket the 
         okp_log(2, "wsock: TCP connection %08x: the game closed it while connecting - kept 3 s for its next attempt", (unsigned)c->id);
         c = NULL;
     }
+    if (c && c->initiator && !c->err && c->state == T_ESTAB && !c->rx_next) {
+        /* shared TCP rule: the join came up, the host's game never sent a byte (a race is running, or its game hangs)
+         * and our game gave up: without a word the player would only find the game back at its menu */
+        okp_log(1, "wsock: notice to the player: No answer from the host. The game may have started or closed.");
+        if (!(okbox_test_answers() && getenv("OKP_TEST_JOIN_PASSWORD"))) {   /* (shown by ui_show_pending) */
+            InterlockedExchange(&ui_noanswer, 1);
+            InterlockedExchange(&ui_pending, 1);
+        }
+    }
     if (c) {
         if (c->state == T_SYN_SENT) tconn_abort(c, 5, WSAECONNABORTED);
         else if (c->state == T_ESTAB) {
@@ -3704,7 +3715,7 @@ int WINAPI x_closesocket(SOCKET s)
     int r = closesocket(s);
     /* "That game is full.": a game that drops back to a menu after the refusal makes no further network call there,
      * so the notice is shown as the game closes the refused socket (no lock held; ui_show_pending's own guards apply) */
-    if (tk && ui_full) ui_show_pending();
+    if (tk && (ui_full || ui_noanswer)) ui_show_pending();
     return r;
 }
 

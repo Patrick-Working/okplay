@@ -70,9 +70,18 @@ of the stand-in.
 
 ## Open
 
-- Play over the internet is not tested yet. Three players (Client-Server) and a join to a full Peer-to-Peer game
-  were tested on three Windows 98 PCs with the Modern Patch (2026-11-10).
-- The game type values and the player-name place are confirmed on the Modern Patch only; the 1998 CD build uses
-  the same places relative to its own network state (not yet seen on the real 1998 game).
+- Play over the internet is not tested yet. On three Windows 98 PCs (2026-11-10) these were tested through the
+  room server: three players Client-Server (Modern Patch); a Peer-to-Peer game hosted by the 1998 OEM build
+  (listed "1/2", a third player is told "That game is full."); a race between two 1998 OEM builds; a Modern Patch
+  player joining a 1998 OEM host (the different-version box, then "Join anyway": lobby and race worked).
+- A join to a game whose race is running: the host's game accepts the connection and sends nothing; the joining
+  game gives up after about 4 s. okplay then says "No answer from the host. The game may have started or closed."
+  (shared TCP rule in `wsock.c`: a join that came up, got no byte and was closed by the game). Tested on the
+  PCs above; no `tcp_run.py` scenario yet.
+- Room name: the game's name place holds its placeholder `gamename` until the first player joins; okplay then
+  uses the computer name (or `name=` in okplay.ini) and renames the room once the player name is there.
 - The Join box buffer of the 1998 OEM build is not known: no pre-fill there (type `oldkid.net` or `okplay`).
-- Mixed 1998 / Modern Patch games: untested (the game itself decides whether they are compatible).
+- The 1998 OEM build must be started in its own folder (its data paths are relative): started elsewhere it says
+  "Need For Speed 3 files are corrupted; please re-install." - with or without okplay.
+- Test note: copying files from a PC or capturing its screen while its race runs stalls that PC for seconds
+  (okplay logs "pause" warnings then). Fetch logs after the race.
