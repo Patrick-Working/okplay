@@ -2,8 +2,14 @@
  * stream sockets without the game. Plain Winsock 1.1 (wsock32), Windows 95 and later.
  *
  *   tcpsim host [--port 9803] [--players N] [--frames F] [--hz 30] [--secs S] [--edge NAME]
- *               [--claim-delay MS] [--die-at FRAME --die soft|hard]
+ *               [--claim-delay MS] [--die-at FRAME --die soft|hard] [--menu-ms MS]
  *   tcpsim join ADDR[:PORT] [--orig] [--frames F] [--hz 30] [--secs S] [--edge NAME] [--expect-loss MS]
+ *               [--menu-port P] [--menu-ms MS]
+ * As the game (a capture of Need for Speed III 1.6.1): both sides listen on the game's port as soon as the TCP screen
+ *   opens (the "menu"); Host Game stops the comms thread, closes that listener, restarts Winsock (WSACleanup +
+ *   WSAStartup), makes a probe socket and listens again on the same port; a joiner keeps its menu listener and
+ *   connects from new bind(0) sockets. --menu-ms: time at the menu (500 ms). --menu-port: the joiner's menu
+ *   listener (9803; --orig 1030; on one PC with Windows' own TCP both can't have 9803, so tests give 0 there).
  * --claim-delay: the host leaves each accepted socket unclaimed that long (the game parks it, up to 4 s, and doesn't
  *   poll its listen socket meanwhile). --die-at: the host process ends at that frame without closing anything (soft:
  *   ExitProcess, hard: TerminateProcess). --expect-loss: the joiner expects its connection to break mid-race, within MS
@@ -79,6 +85,7 @@ static volatile LONG failed;
 static unsigned n_wouldblock, n_partial, n_partial_peek, n_dead, n_busy_retries;
 static int claim_delay, die_at = -1, die_hard, expect_loss, lost_err;
 static unsigned n_accepted;
+static int menu_ms = 500, menu_port = -1;
 static DWORD parked_at, t_lost;
 
 /* game state (under comms) */
@@ -409,6 +416,7 @@ static DWORD WINAPI comms_thread(LPVOID arg)
 static void start_comms(void)
 {
     DWORD id;
+    InterlockedExchange(&stop_flag, 0);
     HANDLE t = CreateThread(NULL, 0, comms_thread, NULL, 0, &id);
     SetThreadPriority(t, THREAD_PRIORITY_HIGHEST);
     CloseHandle(t);
@@ -458,15 +466,37 @@ static void stats(void)
 
 /* ------------------------------------------------------------------ host / join */
 
+/* the menu: the game's port listened on; then Host Game: closed, Winsock restarted, a probe, listened on again */
+static SOCKET menu_then_host(unsigned short port, int comms)
+{
+    SOCKET l = tcp_bound(port);
+    if (l == INVALID_SOCKET || listen(l, 5)) { printf("EVENT menu listen on %u failed (%d)\n", port, WSAGetLastError()); return INVALID_SOCKET; }
+    printf("EVENT at the menu, listening on port %u\n", port);
+    if (comms) { lsock = l; start_comms(); }
+    Sleep(menu_ms);
+    DWORD t0 = now_ms();
+    if (comms) stop_comms();
+    closesocket(l);
+    WSACleanup();
+    WSADATA w;
+    WSAStartup(0x0101, &w);
+    closesocket(socket(AF_INET, SOCK_STREAM, 0));
+    l = tcp_bound(port);
+    if (l == INVALID_SOCKET || listen(l, 5)) { printf("EVENT Host Game: listen on %u failed (%d)\n", port, WSAGetLastError()); return INVALID_SOCKET; }
+    struct sockaddr_in a;
+    int al = sizeof(a);
+    getsockname(l, (struct sockaddr *)&a, &al);
+    printf("EVENT Host Game: listening again on port %u after %lu ms\n", ntohs(a.sin_port), (unsigned long)(now_ms() - t0));
+    return l;
+}
+
 static int run_host(unsigned short port)
 {
     DWORD t0 = now_ms(), tick = 0;
     SOCKET probe = socket(AF_INET, SOCK_STREAM, 0);   /* the game's network probe */
     closesocket(probe);
-    lsock = tcp_bound(port);
-    if (lsock == INVALID_SOCKET) { printf("RESULT fail bind\n"); return 1; }
-    if (listen(lsock, 5)) { printf("RESULT fail listen %d\n", WSAGetLastError()); return 1; }
-    printf("EVENT listening on port %u\n", port);
+    lsock = menu_then_host(port, 1);
+    if (lsock == INVALID_SOCKET) { printf("RESULT fail listen\n"); return 1; }
     {   /* the game shows its own address (through okplay: its stand-in) */
         char me[256];
         struct hostent *h;
@@ -622,13 +652,15 @@ static int run_join(const char *addr, int orig)
     int ml = sizeof(me), attempts;
     char how[64];
     DWORD t0 = now_ms(), tick = 0;
-    /* service init first: a listen socket of its own */
-    lsock = tcp_bound(orig ? 1030 : 0);
+    /* the menu: the game's port listened on (kept: the comms thread polls it) */
+    lsock = tcp_bound((unsigned short)(menu_port >= 0 ? menu_port : orig ? 1030 : 9803));
     if (lsock == INVALID_SOCKET) { printf("RESULT fail bind\n"); return 1; }
     getsockname(lsock, (struct sockaddr *)&me, &ml);
     if (listen(lsock, 5)) { printf("RESULT fail listen %d\n", WSAGetLastError()); return 1; }
-    printf("EVENT own listen socket on port %u\n", ntohs(me.sin_port));
+    printf("EVENT at the menu, listening on port %u\n", ntohs(me.sin_port));
     start_comms();
+    Sleep(menu_ms);
+    t0 = now_ms();
     if (!parse_addr(addr, &to, 9803)) { printf("RESULT fail address %s does not resolve\n", addr); return 1; }
     conn *c = &conns[0];
     memset(c, 0, sizeof(*c));
@@ -761,11 +793,11 @@ static SOCKET edge_connect(const struct sockaddr_in *to, DWORD abort_ms, char *h
 
 static int edge_host(const char *edge, unsigned short port)
 {
-    SOCKET l = tcp_bound(port), s;
+    SOCKET l = menu_then_host(port, 0), s;
     unsigned char *b;
     int ok = 0;
     char why[160] = "";
-    if (l == INVALID_SOCKET || listen(l, 5)) { printf("RESULT fail listen\n"); return 1; }
+    if (l == INVALID_SOCKET) { printf("RESULT fail listen\n"); return 1; }
     printf("EVENT listening on port %u (edge %s)\n", port, edge);
     if (!strcmp(edge, "refuse")) {   /* only here so a joiner through okplay finds a room; nobody connects. Two listen
                                         * sockets (port, port+2): okplay sends a connect to a port nobody listens on to the
@@ -866,6 +898,10 @@ static int edge_join(const char *edge, const char *addr)
     int attempts, ok = 0;
     DWORD t0 = now_ms();
     if (!parse_addr(addr, &to, 9803)) { printf("RESULT fail address\n"); return 1; }
+    SOCKET menu = tcp_bound((unsigned short)(menu_port >= 0 ? menu_port : 9803));   /* the menu listener, kept */
+    if (menu != INVALID_SOCKET) listen(menu, 5);
+    Sleep(menu_ms);
+    t0 = now_ms();
     if (!strcmp(edge, "refuse")) to.sin_port = htons((unsigned short)(ntohs(to.sin_port) + 1));
     SOCKET s = edge_connect(&to, !strcmp(edge, "refuse") ? 10000 : 20000, how, &attempts);
     printf("EVENT %s after %lu ms (%d attempts)\n", how, (unsigned long)(now_ms() - t0), attempts);
@@ -1086,6 +1122,8 @@ int main(int argc, char **argv)
         else if (!strcmp(argv[i], "--die-at") && i + 1 < argc) die_at = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--die") && i + 1 < argc) die_hard = !strcmp(argv[++i], "hard");
         else if (!strcmp(argv[i], "--expect-loss") && i + 1 < argc) expect_loss = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--menu-ms") && i + 1 < argc) menu_ms = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--menu-port") && i + 1 < argc) menu_port = atoi(argv[++i]);
     }
     if (nplayers < 2 || nplayers > MAXP || frames < 1 || hz < 1) return 2;
     max_frames = frames > 100000 ? frames : 100000;   /* a joiner takes the host's frame count */

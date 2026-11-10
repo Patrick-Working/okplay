@@ -34,8 +34,10 @@ def H(*a, players=2, frames=None, port=9803):
     return ["host", "--port", str(port), "--players", str(players)] + (["--frames", str(frames)] if frames else []) + list(a)
 
 
-def J(addr="{lo}:9803", *a):
-    return ["join", addr] + list(a)
+def J(addr="{lo}:9803", *a, menu=True):
+    # the joiner's menu listener: the game's port through okplay (ports are per process), any port on Windows' own TCP
+    # (two processes on one PC can't both listen on 9803)
+    return ["join", addr] + (["--menu-port", "{menuport}"] if menu else []) + list(a)
 
 
 # name: host args, joiner args (one list per joiner), what each side must print per mode, extra settings and checks
@@ -57,7 +59,8 @@ SCENARIOS = {
     "byname":     dict(host=H(), joins=[J("okplay:9803")], expect_real={"join1": r"^RESULT fail address", "host": ANY}, kill_host=True),
     "adopt":      dict(host=H(), joins=[J()], env_join={"OKP_TEST_SYN_DELAY_MS": "3000"}, check="adopt"),
     "accepthold": dict(host=H("--claim-delay", "3000", players=3), joins=[J(), J()], check="accepthold"),
-    "origports":  dict(host=H(), joins=[J("{lo}:1030", "--orig")], modes=("shim",)),
+    "origports":  dict(host=H(), joins=[J("{lo}:1030", "--orig", menu=False)], modes=("shim",)),
+    "menuwait":   dict(host=H(), joins=[J("{lo}:9803", "--menu-ms", "4000")], check="menuwait"),
     # C.7: passwords and builds (okplay only)
     "pw_ok":      dict(host=H(), joins=[J()], env_host={"OKP_TEST_HOST_PASSWORD": "secret"},
                        env_join={"OKP_TEST_JOIN_PASSWORD": "secret"}, modes=("shim",)),
@@ -139,7 +142,7 @@ def run_scenario(sc, mode):
         env_host.update(sc.get("env_host", {}))
         env_join.update(sc.get("env_join", {}))
     exe = os.path.join(d, "tcpsim.exe")
-    subst = {"lo": "127.0.0.1", "lanip": lan_ip()}
+    subst = {"lo": "127.0.0.1", "lanip": lan_ip(), "menuport": "9803" if mode == "shim" else "0"}
     host = None
     joins = []
     if sc["host"] is not None:
@@ -151,6 +154,7 @@ def run_scenario(sc, mode):
     for i, ja in enumerate(sc["joins"]):
         joins.append(Proc(f"join{i + 1}", [exe] + [x.format(**subst) for x in ja], d, env_join))
     out = {p.name: p.finish(150) for p in joins}
+    out["_pids"] = {p.name: p.p.pid for p in joins}
     if host:
         if sc.get("kill_host"):
             time.sleep(1)
@@ -179,6 +183,16 @@ def check(sc, mode, out):
         if pat != ANY and not re.search(pat, line):
             why.append(f"{role}: {line}")
     kind = sc.get("check")
+    m = re.search(r"Host Game: listening again on port \d+ after (\d+) ms", out.get("host", ""))
+    if m and int(m.group(1)) > 500:
+        why.append(f"Host Game's re-listen took {m.group(1)} ms")
+    if mode == "shim" and sc["host"] is not None:
+        text = logs_of(out["_dir"])
+        for r, pid in out["_pids"].items():
+            if re.search(r"\[\s*%d\] .*(hosting room|this PC hosts)" % pid, text):
+                why.append(f"{r} hosted a room")
+        if sc["host"][0] == "host" and "this PC hosts" not in text:
+            why.append("the host never hosted")
     if kind == "adopt" and mode == "shim":
         m = re.search(r"\((\d+) attempts\)", out.get("join1", ""))
         n = re.search(r"accepted (\d+) connection", out.get("host", ""))
@@ -201,7 +215,7 @@ def check(sc, mode, out):
 
 
 SHOW = ("connected after", "refused", "gave up", "WOULDBLOCK", "resumed", "partial", "after the joiner", "then EOF",
-        "select", "FIONREAD", "UDP", "failure", "accepted", "connection lost", "my address", "ends now")
+        "select", "FIONREAD", "UDP", "failure", "accepted", "connection lost", "my address", "ends now", "Host Game", "at the menu")
 
 
 def main():
