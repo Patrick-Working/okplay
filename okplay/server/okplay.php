@@ -2,6 +2,7 @@
 /*
  * Oldkid.net Online Play - rendezvous for the okplay DirectPlay provider.
  * ----------------------------------------------------------------------
+ * Script version: 2026-11-09 (change this line with every upload).
  * Single file, flat-JSON store, no database. Deploy next to the old lobby:
  *     https://oldkid.net/aoe2net/okplay.php   (PHP must be able to write here)
  *
@@ -42,6 +43,11 @@
  * Limits: MAX_ROOMS in all and MAX_ROOMS_PER_IP per client address (one script can't fill the
  * list for everyone); MAX_KNOCKS joiners waiting per room, a repeat knock from the same joiner
  * replacing its earlier one (a flood of knocks can't rewrite the store on every request).
+ * Since 2026-11 (tests/server_abuse_test.py): addresses count per network (IPv4 address or IPv6 /64);
+ * per network at most MAX_KNOCKS_PER_NET joiners waiting on one room and KNOCK_RATE knocks a minute; a knock
+ * keeps at most MAX_CANDS addresses; browser mailboxes hold at most SIG_MAX_ROOM bytes per room and
+ * SIG_MAX_TOTAL in all; free text with bad UTF-8 is repaired (U+FFFD), and a store whose JSON can't be
+ * made is never written (the old content stays).
  *
  * Browser games (okweb.js, docs/WEB_NETPLAY.md): a host announces with wire=100 (Windows drop-ins skip
  * rooms of another wire), then joiners connect over WebRTC; this server only passes the first offer/
@@ -71,6 +77,15 @@ const KNOCK_TTL = 20;
 const MAX_ROOMS = 200;
 const MAX_ROOMS_PER_IP = 4;
 const MAX_KNOCKS = 16;
+// abuse limits (2026-11): far above what honest players reach. Addresses are counted per network:
+// an IPv4 address, or an IPv6 /64 (one home or phone gets a whole /64).
+const MAX_KNOCKS_PER_NET = 8;     // joiners from one network waiting on one room (the host collects every ~1 s)
+const KNOCK_RATE      = 240;      // accepted knocks per network per KNOCK_WINDOW (a joiner knocks every 3 s)
+const KNOCK_WINDOW    = 60;
+const KNOCK_RATE_KEYS = 4096;     // networks remembered at once (the oldest are forgotten first)
+const MAX_CANDS       = 8;        // addresses in one knock (OKP_MAX_CANDS in the client: it never sends more)
+const NAME_MAX_BYTES  = 127;      // the client keeps a room name in 128 bytes (and reads its list line with %511s)
+const EXE_MAX_BYTES   = 63;       // the client keeps the exe name in 64 bytes
 // browser rooms (okweb.js, docs/WEB_NETPLAY.md section 2): wire 100 - Windows drop-ins skip other wires
 const WEB_WIRE       = 100;
 const SIG_MAX_DATA   = 16384;   // one signaling message (SDP or ICE candidates as JSON)
@@ -78,6 +93,8 @@ const SIG_MAX_BOX    = 64;      // messages waiting per recipient
 const SIG_MAX_JOIN   = 32;      // joiners being connected at once per room
 const SIG_JOINER_TTL = 60;      // a joiner token dies this long after its last poll
 const SIG_MSG_TTL    = 60;      // an unread message is dropped after this long
+const SIG_MAX_ROOM   = 262144;  // bytes waiting in all of one room's mailboxes (an offer or answer is a few KB)
+const SIG_MAX_TOTAL  = 4194304; // bytes waiting in all rooms' mailboxes (they live in the room store)
 // the relay for browser players whose routers won't let them connect directly (okweb.js falls back
 // to it): a mailbox per room, one file each, outside the room store so a waiting rpoll never holds
 // the rooms lock
@@ -138,6 +155,54 @@ function field($k, $max = 4096) {
 // (\z, not $: $ also matches before a trailing newline, which then ends up in the stored value)
 function clean($v, $re) { return preg_match($re, $v) ? $v : ''; }
 
+// Free text is stored as JSON, and json_encode fails on a single bad byte: invalid UTF-8 becomes U+FFFD
+// on the way in (no mbstring needed). Valid text comes back unchanged.
+function utf8_clean($s) {
+    if (preg_match('//u', $s)) return $s;
+    $out = preg_replace_callback('/[\x00-\x7F]+|[\xC2-\xDF][\x80-\xBF]|\xE0[\xA0-\xBF][\x80-\xBF]'
+        . '|[\xE1-\xEC\xEE\xEF][\x80-\xBF]{2}|\xED[\x80-\x9F][\x80-\xBF]|\xF0[\x90-\xBF][\x80-\xBF]{2}'
+        . '|[\xF1-\xF3][\x80-\xBF]{3}|\xF4[\x80-\x8F][\x80-\xBF]{2}|(.)/s',
+        function ($m) { return isset($m[1]) ? "\xEF\xBF\xBD" : $m[0]; }, $s);
+    return is_string($out) ? $out : '';
+}
+// at most $chars characters and $bytes bytes, cut between characters ($s: valid UTF-8, see utf8_clean)
+function utf8_cut($s, $chars, $bytes = PHP_INT_MAX) {
+    $s = preg_match('/^.{0,' . (int)$chars . '}/us', $s, $m) ? $m[0] : '';
+    while (strlen($s) > $bytes) $s = preg_replace('/.\z/us', '', $s);
+    return $s;
+}
+// a free-text field: raw bytes read (up to 4 bytes a character), bad bytes replaced, then cut
+function text_field($k, $chars, $bytes = PHP_INT_MAX) {
+    return utf8_cut(utf8_clean(field($k, $chars * 4)), $chars, $bytes);
+}
+// the network an address counts under for the limits: IPv4 as it is, IPv6 by its /64
+function net_key($ip) {
+    if (strpos($ip, ':') === false) return $ip;
+    $b = @inet_pton($ip);
+    if ($b === false || strlen($b) !== 16) return $ip;
+    if (substr($b, 0, 12) === "\0\0\0\0\0\0\0\0\0\0\xff\xff") return inet_ntop(substr($b, 12));   // IPv4-mapped
+    return bin2hex(substr($b, 0, 8)) . '/64';
+}
+// the first MAX_CANDS addresses of a cands field ("a:p,[v6]:p,...")
+function cap_cands($cands) {
+    $l = explode(',', $cands);
+    return count($l) > MAX_CANDS ? implode(',', array_slice($l, 0, MAX_CANDS)) : $cands;
+}
+// JSON for a store file, or false (then the file must be left as it is)
+function store_json($v) {
+    $j = json_encode($v, JSON_HEX_TAG | JSON_HEX_AMP);
+    return is_string($j) ? GUARD . $j : false;
+}
+// replace a locked file's content - only once the new content exists: a failed encode keeps the old file
+function locked_rewrite($fh, $text) {
+    if ($text === false) { error_log('okplay: store not written (json_encode failed)'); return false; }
+    rewind($fh);
+    ftruncate($fh, 0);
+    $ok = fwrite($fh, $text) === strlen($text);
+    fflush($fh);
+    return $ok;
+}
+
 // ---- usage stats (see the header). $fn($s, $day, $who) changes the day's counts and returns
 // true if anything changed; $who is the caller's daily address hash. Never fails the request.
 function guarded_read($fh) {
@@ -151,10 +216,7 @@ function guarded_read($fh) {
 }
 
 function guarded_write($fh, $v) {
-    rewind($fh);
-    ftruncate($fh, 0);
-    fwrite($fh, GUARD . json_encode($v, JSON_HEX_TAG | JSON_HEX_AMP));
-    fflush($fh);
+    locked_rewrite($fh, store_json($v));
 }
 
 function stats_update($fn) {
@@ -243,10 +305,8 @@ function relay_read($fh) {   // -> ['tok' => key or '', 'q' => [[from, data]], '
 }
 function relay_done($fh, $box = null) {   // ($box: write it back first)
     if ($box !== null) {
-        rewind($fh);
-        ftruncate($fh, 0);
-        fwrite($fh, GUARD . json_encode($box));
-        fflush($fh);
+        $j = json_encode($box);
+        locked_rewrite($fh, is_string($j) ? GUARD . $j : false);
     }
     flock($fh, LOCK_UN);
     fclose($fh);
@@ -346,7 +406,7 @@ function handle_report() {
     $kind = field('kind', 8);
     if (!array_key_exists($kind, REPORT_MAX)) reply(400, "error unknown report kind\n");
     $ver  = clean(field('ver', 16), '/^[0-9.]{1,16}\z/');
-    $body = field('body', REPORT_MAX[$kind]);
+    $body = utf8_clean(field('body', REPORT_MAX[$kind]));   // (bad bytes: U+FFFD, or the line would be stored blank)
     $body = preg_replace('/[\x00-\x08\x0b-\x1f\x7f]/', '', $body) ?? '';
     if (trim($body) === '') reply(400, "error empty report\n");
     $allowed = false;
@@ -374,7 +434,9 @@ function handle_report() {
     $file = REPORTS_DIR . '/' . gmdate('Y-m-d') . '.php';
     $ref  = gmdate('md') . '-' . bin2hex(random_bytes(3));   // what a player can quote ("report 1017-a3f09c")
     $line = json_encode(['t' => time(), 'ref' => $ref, 'kind' => $kind, 'ver' => $ver, 'who' => $who, 'body' => $body],
-                        JSON_HEX_TAG | JSON_HEX_AMP) . "\n";
+                        JSON_HEX_TAG | JSON_HEX_AMP);
+    if (!is_string($line)) reply(500, "error report not stored\n");   // (never a blank line answered "ok")
+    $line .= "\n";
     $fh = @fopen($file, 'c+');
     if (!$fh) reply(500, "error reports not writable\n");
     flock($fh, LOCK_EX);
@@ -408,10 +470,17 @@ if (strncmp($raw, '<?php', 5) === 0) {   // the guard line
 $rooms = json_decode($raw ?: '[]', true);
 if (!is_array($rooms)) $rooms = [];
 if (is_file(OLD_STORE)) @unlink(OLD_STORE);
+// the knock counters ride along in the store under a key no room id can have (8 hex digits)
+$rate = isset($rooms['_rate']) && is_array($rooms['_rate']) ? $rooms['_rate'] : [];
+unset($rooms['_rate']);
+foreach ($rate as $nk => $w) {
+    if (!is_array($w) || $now - ($w['s'] ?? 0) >= KNOCK_WINDOW) unset($rate[$nk]);
+}
 
 foreach ($rooms as $id => $r) {
     if ($now - ($r['updated'] ?? 0) > TTL) unset($rooms[$id]);
 }
+$netk = net_key($ip);
 
 $dirty = false;
 $out   = '';
@@ -433,7 +502,7 @@ case 'announce':
     if (!isset($rooms[$room])) {
         if (count($rooms) >= MAX_ROOMS) { $code = 503; $out = "error full\n"; break; }
         $mine = 0;
-        foreach ($rooms as $r) if (($r['ip'] ?? '') === $ip) $mine++;
+        foreach ($rooms as $r) if (net_key($r['ip'] ?? '') === $netk) $mine++;
         if ($mine >= MAX_ROOMS_PER_IP) { $code = 429; $out = "error too many games from this address\n"; break; }
     }
     $is_new = !isset($rooms[$room]);
@@ -441,8 +510,7 @@ case 'announce':
     $r['peer']    = $peer;
     $r['cands']   = $cands;
     $r['enum']    = clean(field('enum', 2048), '/^[A-Za-z0-9+\/=]*\z/');
-    $r['name']    = function_exists('mb_substr') ? mb_substr(field('name', 256), 0, 64, 'UTF-8')
-                                                 : substr(field('name', 256), 0, 64);
+    $r['name']    = text_field('name', 64, NAME_MAX_BYTES);
     $r['players'] = (int)field('players', 8);
     $r['maxp']    = (int)field('maxp', 8);
     $r['flags']   = (int)field('flags', 12);
@@ -450,15 +518,15 @@ case 'announce':
     $r['wire']    = (int)field('wire', 4);
     $r['app']     = clean(field('app', 32), '/^[0-9a-f]{32}\z/');
     // 0.8.1+: the game's own name and exe version (shown on the web page only)
-    $game = preg_replace('/[\x00-\x1f\x7f]/u', '', field('game', 256)) ?? '';
-    $r['game']    = function_exists('mb_substr') ? mb_substr($game, 0, 64, 'UTF-8') : substr($game, 0, 64);
+    $game = preg_replace('/[\x00-\x1f\x7f]/u', '', utf8_clean(field('game', 256))) ?? '';
+    $r['game']    = utf8_cut($game, 64);
     $r['gamever'] = clean(field('gamever', 24), '/^[0-9A-Za-z .,_-]{0,24}\z/');
     // 0.8.1+: what the room is doing, judged by the host (lobby / playing / between games)
     $r['state']   = clean(field('state', 8), '/^(lobby|playing|between)\z/');
     // 0.8.1+: the host's game exe - a fingerprint (joiners on another build are warned) and its file name
     $r['build']   = clean(field('build', 16), '/^[0-9a-f]{16}\z/');
-    $exe = preg_replace('/[\x00-\x1f\x7f\s]/u', '', field('exe', 128)) ?? '';
-    $r['exe']     = function_exists('mb_substr') ? mb_substr($exe, 0, 48, 'UTF-8') : substr($exe, 0, 48);
+    $exe = preg_replace('/[\x00-\x1f\x7f\s]/u', '', utf8_clean(field('exe', 128))) ?? '';
+    $r['exe']     = utf8_cut($exe, 48, EXE_MAX_BYTES);
     if ($r['wire'] === 0 && strpos($r['ver'], '0.1') === 0) $r['wire'] = 1;   // 0.1 hosts predate the field
     $r['updated'] = $now;
     $r['ip']      = $ip;   // for MAX_ROOMS_PER_IP only; never sent to anyone
@@ -467,6 +535,12 @@ case 'announce':
         if ($now - $k['t'] <= KNOCK_TTL) $out .= "knock {$k['peer']} {$k['cands']}\n";
     }
     $r['knocks'] = [];
+    if (isset($r['sig'])) {   // browser rooms: unread mail and silent joiners go here too (as in signal/poll)
+        foreach ($r['sig']['j'] as $jp => $j)
+            if ($now - $j['t'] > SIG_JOINER_TTL) { unset($r['sig']['j'][$jp]); unset($r['sig']['box'][$jp]); }
+        foreach ($r['sig']['box'] as $to => $msgs)
+            $r['sig']['box'][$to] = array_values(array_filter($msgs, function ($m) use ($now) { return $now - $m['t'] <= SIG_MSG_TTL; }));
+    }
     $rooms[$room] = $r;
     $dirty = true;
     if ($is_new) $events[] = ['host', $r['app'] === TEST_APP, $r['ver'],
@@ -513,14 +587,29 @@ case 'list':
 
 case 'knock':
     if ($room === '' || $peer === '' || !isset($rooms[$room])) { $code = 404; $out = "error no such room\n"; break; }
+    $w = $rate[$netk] ?? ['s' => $now, 'n' => 0];
+    if ($w['n'] >= KNOCK_RATE) { $code = 429; $out = "error too many knocks from this address, knock again\n"; break; }
     $pending = [];
+    $from_net = 0;
     foreach ($rooms[$room]['knocks'] as $k) {
         // expired ones go; a repeat from the same joiner (it knocks again every 3 s) replaces its earlier one
-        if ($now - $k['t'] <= KNOCK_TTL && $k['peer'] !== $peer) $pending[] = $k;
+        if ($now - $k['t'] <= KNOCK_TTL && $k['peer'] !== $peer) {
+            $pending[] = $k;
+            if (($k['net'] ?? '') === $netk) $from_net++;
+        }
     }
-    if (count($pending) >= MAX_KNOCKS) { $code = 429; $out = "error too many joiners waiting, knock again\n"; break; }
-    $pending[] = ['peer' => $peer, 'cands' => $cands, 't' => $now];
+    // (one network can't fill a room's waiting list for everyone else)
+    if (count($pending) >= MAX_KNOCKS || $from_net >= MAX_KNOCKS_PER_NET) {
+        $code = 429; $out = "error too many joiners waiting, knock again\n"; break;
+    }
+    $pending[] = ['peer' => $peer, 'cands' => cap_cands($cands), 't' => $now, 'net' => $netk];   // (net: never sent)
     $rooms[$room]['knocks'] = $pending;
+    $w['n']++;
+    $rate[$netk] = $w;
+    if (count($rate) > KNOCK_RATE_KEYS) {   // a flood from many networks: forget the oldest counters
+        uasort($rate, function ($x, $y) { return $x['s'] <=> $y['s']; });
+        $rate = array_slice($rate, count($rate) - KNOCK_RATE_KEYS, null, true);
+    }
     $out = "ok $ip\n" . latest_line();
     $dirty = true;
     // stats: one join attempt per joiner and room (it knocks every 3 s until it gets through)
@@ -554,7 +643,11 @@ case 'poll':
         if (!isset($sig['j'][$peer]) && count($sig['j']) >= SIG_MAX_JOIN) {
             $code = 429; $out = json_encode(['ok' => false, 'error' => 'too many joiners connecting, try again']); break;
         }
-        $jt = isset($sig['j'][$peer]) ? $sig['j'][$peer]['tok'] : bin2hex(random_bytes(8));
+        // always a new token: a second sjoin under a known joiner's id (the host's welcome tells every
+        // player the others' ids) must not hand over that joiner's token or its mail. okweb makes a new id
+        // for every join and calls sjoin once with it, so an honest joiner never meets this.
+        $jt = bin2hex(random_bytes(8));
+        if (isset($sig['j'][$peer])) unset($sig['box'][$peer]);
         $sig['j'][$peer] = ['tok' => $jt, 't' => $now];
         $rooms[$room]['sig'] = $sig;
         $dirty = true;
@@ -578,7 +671,20 @@ case 'poll':
         $to_ok = $is_host ? isset($sig['j'][$to]) : $to === $r['peer'];
         if (!$to_ok) { $code = 403; $out = json_encode(['ok' => false, 'error' => 'no such recipient']); break; }
         if ($raw_len === 0 || $raw_len > SIG_MAX_DATA) { $code = 413; $out = json_encode(['ok' => false, 'error' => 'empty or too big']); break; }
-        if (count($sig['box'][$to] ?? []) >= SIG_MAX_BOX) { $code = 429; $out = json_encode(['ok' => false, 'error' => 'recipient mailbox full']); break; }
+        if (!preg_match('//u', $data)) { $code = 400; $out = json_encode(['ok' => false, 'error' => 'data is not UTF-8']); break; }
+        // the room's mailboxes, and all rooms' together, stay small (the store is read on every request)
+        $room_bytes = 0;
+        foreach ($sig['box'] as $msgs) foreach ($msgs as $m) $room_bytes += strlen($m['data']);
+        $all_bytes = $room_bytes;
+        foreach ($rooms as $id => $other) {
+            if ($id === $room) continue;
+            foreach ($other['sig']['box'] ?? [] as $msgs)
+                foreach ($msgs as $m) $all_bytes += strlen($m['data']);   // (what the store holds)
+        }
+        if (count($sig['box'][$to] ?? []) >= SIG_MAX_BOX || $room_bytes + strlen($data) > SIG_MAX_ROOM
+            || $all_bytes + strlen($data) > SIG_MAX_TOTAL) {
+            $code = 429; $out = json_encode(['ok' => false, 'error' => 'recipient mailbox full']); break;
+        }
         $sig['box'][$to][] = ['from' => $peer, 'data' => $data, 't' => $now];
         $rooms[$room]['sig'] = $sig;
         $dirty = true;
@@ -609,10 +715,15 @@ default:
 }
 
 if ($dirty) {
-    rewind($fh);
-    ftruncate($fh, 0);
-    fwrite($fh, GUARD . json_encode($rooms, JSON_HEX_TAG | JSON_HEX_AMP));
-    fflush($fh);
+    if ($rate) $rooms['_rate'] = $rate;
+    // encode first: if that fails the old store stays, and this request fails instead of every room vanishing
+    // (the lock is on the store file itself, so it is rewritten in place - a rename would swap the file
+    // under requests waiting for the lock)
+    if (!locked_rewrite($fh, store_json($rooms))) {
+        $code = 500;
+        $out  = $json ? json_encode(['ok' => false, 'error' => 'store not written']) : "error store not writable\n";
+        $events = [];
+    }
 }
 flock($fh, LOCK_UN);
 fclose($fh);

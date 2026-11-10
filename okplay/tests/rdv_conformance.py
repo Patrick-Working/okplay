@@ -182,12 +182,17 @@ s, t = post(a="announce", room=room2, peer=peer, tok=tok, cands=cands, enum=enum
 mine_knocks = [l for l in t.splitlines() if l.startswith(f"knock {joiner} ")]
 check("a repeat knock from the same joiner replaces the earlier one",
       len(mine_knocks) == 1 and mine_knocks[0].endswith(" 5.6.7.8:6001"), t)
-codes = [post(a="knock", room=room2, peer="%016x" % random.getrandbits(64), cands="-")[0] for _ in range(16)]
+# (2026-11: at most 8 joiners from one network wait on one room - 16 in all, from several networks; this
+# test comes from one address, so it sees the per-network cap: 8, then 429 - the announce above took the earlier ones)
+codes = [post(a="knock", room=room2, peer="%016x" % random.getrandbits(64), cands="-")[0] for _ in range(8)]
 s, t = post(a="knock", room=room2, peer="%016x" % random.getrandbits(64), cands="-")
-check("at most 16 joiners wait per room (the 17th gets 429)", codes == [200] * 16 and s == 429, (codes, s, t))
+check("at most 8 joiners from one address wait per room (the 9th gets 429)", codes == [200] * 8 and s == 429,
+      (codes, s, t))
 s, t = post(a="announce", room=room2, peer=peer, tok=tok, cands=cands, enum=enum_b64, name="knocks",
             players=1, maxp=8, flags=0, ver="9.9.9", wire=2)
-check("the host still collects all 16", sum(1 for l in t.splitlines() if l.startswith("knock ")) == 16, t)
+check("the host still collects all 8", sum(1 for l in t.splitlines() if l.startswith("knock ")) == 8, t)
+codes = [post(a="knock", room=room2, peer="%016x" % random.getrandbits(64), cands="-")[0] for _ in range(8)]
+check("once the host collected them, 8 more may knock", codes == [200] * 8, codes)
 post(a="close", room=room2, tok=tok)
 
 print(f"{'CONFORMANT' if fails == 0 else 'NOT CONFORMANT'}: {fails} failure(s) against {URL}")

@@ -13,6 +13,7 @@ POST form fields, plain-text line replies:
 okplay.php's usage stats (okstats.php) are not mirrored: nothing in the DLL reads them.
 """
 import argparse
+import ipaddress
 import json
 import os
 import re
@@ -26,6 +27,10 @@ KNOCK_TTL = 20    # seconds a knock waits for the host to pick it up
 MAX_ROOMS = 200
 MAX_ROOMS_PER_IP = 4   # as okplay.php: one address can't fill the list
 MAX_KNOCKS = 16        # joiners waiting per room; a repeat from the same joiner replaces its earlier one
+# abuse limits, as okplay.php (2026-11): per network (IPv4 address or IPv6 /64)
+MAX_KNOCKS_PER_NET, KNOCK_RATE, KNOCK_WINDOW, MAX_CANDS = 8, 240, 60, 8
+NAME_MAX_BYTES, EXE_MAX_BYTES = 127, 63
+knock_rate = {}   # network -> [window start, knocks]
 TEST_APP = "0e7c4b6193a24f0b8d356a1f2c9b7e58"   # Connection Check's test games (okplay.php TEST_APP)
 RE_APP = re.compile(r"[0-9a-f]{32}")
 RE_GAMEVER = re.compile(r"[0-9A-Za-z .,_-]{0,24}")
@@ -70,12 +75,32 @@ def latest_line():   # (as okplay.php: the drop-in's line, then okplay wsock's)
     return f"latest {LATEST_VERSION} {note}\nlatest_wsock {LATEST_WSOCK_VERSION} {wnote}\n"
 
 
+def net_key(ip):   # as okplay.php: IPv4 as it is, IPv6 by its /64
+    try:
+        a = ipaddress.ip_address(ip)
+    except ValueError:
+        return ip
+    if a.version == 6:
+        if a.ipv4_mapped:
+            return str(a.ipv4_mapped)
+        return a.packed[:8].hex() + "/64"
+    return ip
+
+
+def cut(s, chars, nbytes=1 << 30):   # as okplay.php utf8_cut: characters, then whole characters to fit nbytes
+    s = s[:chars]
+    while len(s.encode("utf-8", "replace")) > nbytes:
+        s = s[:-1]
+    return s
+
+
 def prune(now):
     for rid in [r for r, v in rooms.items() if now - v["updated"] > TTL]:
         del rooms[rid]
 
 
 WEB_WIRE, SIG_MAX_DATA, SIG_MAX_BOX, SIG_MAX_JOIN, SIG_JOINER_TTL, SIG_MSG_TTL = 100, 16384, 64, 32, 60, 60
+SIG_MAX_ROOM, SIG_MAX_TOTAL = 262144, 4194304   # bytes waiting in one room's mailboxes / in all rooms'
 
 
 def signaling(a, f, now):   # (lock held) -> (code, JSON text); same rules as okplay.php
@@ -96,7 +121,9 @@ def signaling(a, f, now):   # (lock held) -> (code, JSON text); same rules as ok
             return err(400, "the host cannot join")
         if peer not in sig["j"] and len(sig["j"]) >= SIG_MAX_JOIN:
             return err(429, "too many joiners connecting, try again")
-        jt = sig["j"][peer]["tok"] if peer in sig["j"] else os.urandom(8).hex()
+        jt = os.urandom(8).hex()   # always new: a known joiner's token and mail are never handed out again
+        if peer in sig["j"]:
+            sig["box"].pop(peer, None)
         sig["j"][peer] = {"tok": jt, "t": now}
         return 200, json.dumps({"ok": True, "tok": jt})
     is_host = peer == r["peer"]
@@ -110,7 +137,11 @@ def signaling(a, f, now):   # (lock held) -> (code, JSON text); same rules as ok
             return err(403, "no such recipient")
         if not data or len(data) > SIG_MAX_DATA:
             return err(413, "empty or too big")
-        if len(sig["box"].get(to, [])) >= SIG_MAX_BOX:
+        room_bytes = sum(len(m["data"]) for msgs in sig["box"].values() for m in msgs)
+        all_bytes = sum(len(m["data"]) for v in rooms.values() for msgs in v.get("sig", {}).get("box", {}).values()
+                        for m in msgs)
+        if (len(sig["box"].get(to, [])) >= SIG_MAX_BOX or room_bytes + len(data) > SIG_MAX_ROOM
+                or all_bytes + len(data) > SIG_MAX_TOTAL):
             return err(429, "recipient mailbox full")
         sig["box"].setdefault(to, []).append({"from": peer, "data": data, "t": now})
         return 200, json.dumps({"ok": True})
@@ -217,25 +248,25 @@ def handle(f, ip):
             if not r:
                 if len(rooms) >= MAX_ROOMS:
                     return 503, "error full\n"
-                if sum(1 for v in rooms.values() if v.get("ip") == ip) >= MAX_ROOMS_PER_IP:
+                if sum(1 for v in rooms.values() if net_key(v.get("ip", "")) == net_key(ip)) >= MAX_ROOMS_PER_IP:
                     return 429, "error too many games from this address\n"
                 r = rooms[rid] = {"tok": tok, "knocks": [], "created": now}
             r.update(peer=f.get("peer", ""), cands=f.get("cands", "") or "-", enum=f.get("enum", ""),
-                     name=f.get("name", "") or "-", players=f.get("players", "0"),
+                     name=cut(f.get("name", ""), 64, NAME_MAX_BYTES) or "-", players=f.get("players", "0"),
                      maxp=f.get("maxp", "0"), flags=f.get("flags", "0"), ver=f.get("ver", ""),
                      updated=now, ip=ip, app=f.get("app", "") if RE_APP.fullmatch(f.get("app", "")) else "",
                      game=re.sub(r"[\x00-\x1f\x7f]", "", f.get("game", ""))[:64],
                      gamever=f.get("gamever", "") if RE_GAMEVER.fullmatch(f.get("gamever", "")) else "",
                      state=f.get("state", "") if f.get("state", "") in ("lobby", "playing", "between") else "",
                      build=f.get("build", "") if re.fullmatch(r"[0-9a-f]{16}", f.get("build", "")) else "",
-                     exe=re.sub(r"[\x00-\x1f\x7f\s]", "", f.get("exe", ""))[:48])
+                     exe=cut(re.sub(r"[\x00-\x1f\x7f\s]", "", f.get("exe", "")), 48, EXE_MAX_BYTES))
             wire = int(f.get("wire", "0") or 0)
             if wire == 0 and r["ver"].startswith("0.1"):
                 wire = 1   # 0.1 hosts predate the field
             r["wire"] = wire
             knocks = [k for k in r["knocks"] if now - k[2] <= KNOCK_TTL]
             r["knocks"] = []
-            return 200, f"ok {ip}\n" + latest_line() + "".join(f"knock {p} {c}\n" for p, c, _ in knocks)
+            return 200, f"ok {ip}\n" + latest_line() + "".join(f"knock {k[0]} {k[1]}\n" for k in knocks)
         if public:
             pub = [{"name": r["name"], "players": int(r["players"]), "maxp": int(r["maxp"]),
                     "started": state_of(r) == "playing", "state": state_of(r),
@@ -270,10 +301,20 @@ def handle(f, ip):
             peer = f.get("peer", "")
             if not r or not RE_PEER.fullmatch(peer):
                 return 404, "error no such room\n"
+            nk = net_key(ip)
+            w = knock_rate.get(nk)
+            if not w or now - w[0] >= KNOCK_WINDOW:
+                w = knock_rate[nk] = [now, 0]
+            if w[1] >= KNOCK_RATE:
+                return 429, "error too many knocks from this address, knock again\n"
             pending = [k for k in r["knocks"] if now - k[2] <= KNOCK_TTL and k[0] != peer]
-            if len(pending) >= MAX_KNOCKS:
+            if len(pending) >= MAX_KNOCKS or sum(1 for k in pending if k[3] == nk) >= MAX_KNOCKS_PER_NET:
                 return 429, "error too many joiners waiting, knock again\n"
-            r["knocks"] = pending + [(peer, f.get("cands", "") or "-", now)]
+            cands = ",".join((f.get("cands", "") or "-").split(",")[:MAX_CANDS])
+            r["knocks"] = pending + [(peer, cands, now, nk)]
+            w[1] += 1
+            for old in [k for k, v in knock_rate.items() if now - v[0] >= KNOCK_WINDOW]:
+                del knock_rate[old]
             return 200, f"ok {ip}\n" + latest_line()
         if a == "close":
             r = rooms.get(f.get("room", ""))
