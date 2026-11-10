@@ -12,6 +12,12 @@
  *   listener stays open until the next menu entry. Peer-to-Peer and Client-Server hosting show the same two values.
  * So at a listen on the game's port: state 3 and server flag set = Host Game; anything else = ready, not hosting.
  *
+ * How many players the hosted game takes: right after the network game state the game keeps a DWORD "game type",
+ * the host's choice in Host Game: 0 = Peer-to-Peer (2 players), 1 = Client-Server (up to 8), 2 = the game's old
+ * internet service (not used with okplay). Learned by studying the game (nothing of it is copied here); the values
+ * are still to be confirmed on the real game (the log shows the raw value at every listen and incoming connection).
+ * nfs3_max_players gives 2 or 8 for those, 0 ("not known": okplay's own default) for anything else. Read only.
+ *
  * The Join box ("Enter domain name or IP address"): the game keeps the address typed last in a text buffer of its
  * own (29 characters; the 1.6.x builds save it with the player's settings) and fills the box from it when it opens.
  * With okplay running (Online or LAN Play) the buffer is set to "oldkid.net", which wsock.c takes as "okplay's room
@@ -29,7 +35,7 @@
 
 typedef struct {
     const char *build, *name;
-    uint32_t net;      /* DWORD: the network game state */
+    uint32_t net;      /* DWORD: the network game state; the DWORD after it (net + 4): the game type */
     uint32_t server;   /* WORD: this PC is the server */
     uint32_t join;     /* char[30]: the Join box's address, typed last (0 = not pinned down for this build) */
 } nfs3_build;
@@ -45,7 +51,7 @@ static const nfs3_build builds[] = {
  * doesn't change while it runs). readable: both addresses were found readable once (set at the first good check,
  * never cleared: they are the exe's own data). */
 static const nfs3_build *volatile B;
-static volatile LONG readable;
+static volatile LONG readable, type_readable;
 static int prefill_on = 1;   /* okplay.ini nfs3_join_prefill (read once, at load) */
 #define PREFILL "oldkid.net"
 
@@ -110,6 +116,20 @@ int nfs3_hosting(int *net, int *server)
     return n == 3 && s != 0;
 }
 
+int nfs3_max_players(int *type)
+{
+    const nfs3_build *b = B;
+    if (type) *type = -1;
+    if (!b) return 0;
+    if (!type_readable) {
+        if (!can_read(b->net + 4, 4)) return 0;
+        InterlockedExchange(&type_readable, 1);
+    }
+    DWORD t = *(volatile DWORD *)(uintptr_t)(b->net + 4);
+    if (type) *type = (int)t;
+    return t == 0 ? 2 : t == 1 ? 8 : 0;
+}
+
 static int can_write(uint32_t a, unsigned n)   /* 1 = [a, a+n) is committed, writable memory */
 {
     MEMORY_BASIC_INFORMATION mi;
@@ -143,4 +163,27 @@ void nfs3_join_prefill(int okplay_on)
         memcpy(buf, kept, strlen(kept) + 1);   /* the game's own TCP/IP: never toward the real oldkid.net */
         okp_log(1, "nfs3: the original TCP/IP - okplay's \"" PREFILL "\" taken out of the Join box");
     }
+}
+
+/* The player's own name in the game (Player 1 Name), as the game holds it for a network game: up to 10 characters and
+ * a 0 at net - 0xCB (the first entry of the game's name list). Read only; 1 = a name was read. */
+int nfs3_player_name(char *out, int n)
+{
+    static volatile LONG name_readable;
+    const nfs3_build *b = B;
+    if (!b || n < 2) return 0;
+    if (!name_readable) {
+        if (!can_read(b->net - 0xCB, 11)) return 0;
+        InterlockedExchange(&name_readable, 1);
+    }
+    const volatile unsigned char *p = (const volatile unsigned char *)(uintptr_t)(b->net - 0xCB);
+    int i = 0;
+    for (; i < 10 && i < n - 1; i++) {
+        unsigned char c = p[i];
+        if (!c) break;
+        if (c < 0x20 || c == 0x7f) return 0;   /* not a name */
+        out[i] = (char)c;
+    }
+    out[i] = 0;
+    return i > 0;
 }

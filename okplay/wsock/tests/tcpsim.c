@@ -53,7 +53,8 @@
  * with OKP_TEST_EXEBUILD set to such a build) at that build's addresses, set as the game sets them: Host Game sets
  * net = 3 and server = 1 before it restarts the service and listens; a join sets server = 0 and net = 3 before it
  * connects; entering the TCP menu leaves them; leaving a lobby, a failed join and leaving network play reset them
- * (net 0, server 1). The exe must sit at 0x400000 (build.sh links tcpsim without ASLR); a large zeroed block makes
+ * (net 0, server 1). TCPSIM_GAMETYPE: the game type the game keeps after the network state (0 Peer-to-Peer,
+ * 1 Client-Server; default 1). The exe must sit at 0x400000 (build.sh links tcpsim without ASLR); a large zeroed block makes
  * its image reach those addresses, as the game's does. */
 #define WIN32_LEAN_AND_MEAN
 #include <winsock.h>
@@ -127,6 +128,12 @@ static int gs_init(void)   /* 0 = TCPSIM_GAMESTATE asked for, but the addresses 
     gs_srv = (volatile WORD *)(UINT_PTR)srv;
     gs_join = (char *)(UINT_PTR)join;
     GetEnvironmentVariableA("TCPSIM_JOINTEXT", gs_join, 30);   /* what the game remembered from its last run (empty without) */
+    {   /* the game type after the network state (net + 4): TCPSIM_GAMETYPE, else 1 (Client-Server, up to 8 players) */
+        char t[16] = "1";
+        GetEnvironmentVariableA("TCPSIM_GAMETYPE", t, sizeof(t));
+        *(volatile DWORD *)(UINT_PTR)(net + 4) = (DWORD)atoi(t);
+        printf("EVENT game type %d\n", atoi(t));
+    }
     gs_set(0, 1);   /* (the game's reset at start) */
     return 1;
 }

@@ -213,11 +213,21 @@ static DWORD relisten_tick;           /* there again within 2 s is NFS3's Host G
  *   Set: host_game_over from tcp_close (known builds, Online Play, nobody left in the room).
  *   Cleared: send_owed_close (x_listen before a new room, tcp_unhost_for_connect before a join); x_WSACleanup (it
  *   withdrew that room itself); host_room (a room is hosted: whatever was owed is past); end_session. */
-static int gs_net = -1, gs_srv = -1;
+static int gs_net = -1, gs_srv = -1, gs_type = -1;   /* (gs_type: the game type, game->max_players; -1 = not read) */
 static uint32_t close_owed;
 static struct { uint64_t peer; DWORD tick; } closed_peers[8];   /* players we had stream connections with (tcp_linger) */
 static int nclosed_peers;
+static int player_name_set;           /* okplay.ini has a name= of the player's own */
 static char player_name[32];          /* okplay.ini name=, else the computer's name: in a TCP game's room name */
+/* The player limit of a hosted TCP game (room_max_players):
+ * max_players_ini: okplay.ini wsock_max_players (2..64; 0 = not set). Read once, at load.
+ * rec_curp, rec_maxp: the players and the limit the room record says now (-1 = none built). Set: build_room_record.
+ *   Cleared: end_session. room_record_follow rebuilds the record when either would change.
+ * full_told: joiner: the host whose "the game is full" the player was told (once per host). Set: tcp_rx (REFUSE
+ *   reason 4). Cleared: a connection to that host comes up (ACCEPT); end_session. */
+static int max_players_ini;
+static int rec_curp = -1, rec_maxp = -1;
+static uint64_t full_told;
 
 /* Per-game profiles: which socket types are carried over okplay, and what makes a PC the host. */
 #define OKW_UDP 1
@@ -232,11 +242,16 @@ typedef struct {
     int (*fix_init)(const char *ini);         /* DllMain: the game's own file (rr_fix.c, nfs3_fix.c), NULL = none */
     int (*says_hosts)(int *net, int *server); /* does the game say it hosts? 1 yes, 0 no, -1 not known (x_listen) */
     void (*at_listen)(int okplay_on);         /* the game listens (x_listen): 1 = through okplay, 0 = its own TCP/IP */
+    int (*max_players)(int *type);            /* how many players the game being hosted takes, host included; 0 = not
+                                               * known (room_max_players); type: the game's own value, for the log */
+    int (*player_name)(char *out, int n);     /* the player's name in the game itself (the room is "<name>'s game");
+                                               * 1 = read, 0 = not known. NULL = the game has none we can read */
 } okw_game;
 static const okw_game okw_profiles[] = {
-    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL },   /* Road Rash: CD, Steam/GOG */
+    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL, NULL, NULL },   /* Road Rash: CD, Steam/GOG */
     /* Need for Speed III (the 1998 CD's NFS3.EXE, Modern Patch, portable): TCP only (its IPX sockets pass through) */
-    { "nfs3", "nfs3.exe", "Need for Speed III", OKW_TCP, HOST_LISTEN, nfs3_init, nfs3_hosting, nfs3_join_prefill },
+    { "nfs3", "nfs3.exe", "Need for Speed III", OKW_TCP, HOST_LISTEN, nfs3_init, nfs3_hosting, nfs3_join_prefill,
+      nfs3_max_players, nfs3_player_name },
 };
 static const okw_game *game = &okw_profiles[0];
 
@@ -399,6 +414,7 @@ static int is_authed(uint64_t peer)   /* okw_lock held */
 
 static volatile LONG ui_pending;   /* (the notices, below) */
 static volatile LONG ui_wrongpw;   /* a TCP game's late "wrong password": shown through run_box like the other notices */
+static volatile LONG ui_full;      /* a TCP game's host said its game is full (REFUSE reason 4): "That game is full." */
 
 static DWORD WINAPI wrong_password_box(LPVOID arg)
 {
@@ -711,7 +727,8 @@ static void release_due(void)   /* okw_lock held: packets whose test delay is ov
  * so per peer they arrive whole and in send order: FIN after the last DATA, a RST after any data before it.
  *   1 SYN     joiner -> host  u16 sport, u16 dport, u32 window, u8 caps   open a connection to the host's port
  *   2 ACCEPT  host -> joiner  u16 lport, u32 window   in the host's backlog (TCP: the handshake is done before accept())
- *   3 REFUSE  host -> joiner  u8 reason: 1 nothing listening, 2 backlog full, 3 not let in (password)
+ *   3 REFUSE  host -> joiner  u8 reason: 1 nothing listening, 2 backlog full, 3 not let in (password),
+ *                             4 the game is full (newer hosts; every reason is "connection refused" for the game)
  *   4 DATA    both            stream bytes at `off` (at most OKW_TDATA_MAX: never cut into pieces)
  *   5 WND     both            the game has read up to `off`: the sender may go to off + window
  *   6 FIN     both            no more bytes after `off`
@@ -827,12 +844,74 @@ static void ring_peek(const okw_tconn *c, uint8_t *out, uint32_t n)
 static int is_authed(uint64_t peer);
 static void build_room_record(void);
 
+/* The players in this PC's room: each player (okplay peer) that holds a live incoming stream connection, accepted by
+ * the game or still in a listener's backlog, counted once - a joiner that closes and connects again at once (NFS3
+ * does) must never count twice. A connection that was reset, or whose player sent its FIN, does not count. */
+static int room_conn(const okw_tconn *c)
+{
+    return c->used && !c->initiator && c->state == T_ESTAB && !c->err && !c->fin_rx;
+}
+
+static int peer_in_room(uint64_t peer)   /* okw_lock held: that player holds a connection that counts */
+{
+    for (int i = 0; i < OKW_MAX_CONNS; i++) if (room_conn(&conns[i]) && conns[i].peer == peer) return 1;
+    return 0;
+}
+
+static int tcp_room_players(void)   /* okw_lock held: players connected to this PC's room (accepted or not yet), each once */
+{
+    int n = 0;
+    for (int i = 0; i < OKW_MAX_CONNS; i++) {
+        int seen = 0;
+        if (!room_conn(&conns[i])) continue;
+        for (int j = 0; j < i && !seen; j++) if (room_conn(&conns[j]) && conns[j].peer == conns[i].peer) seen = 1;
+        if (!seen) n++;
+    }
+    return n;
+}
+
+/* How many players the hosted game takes, this PC included: okplay.ini wsock_max_players (2..64) first, else what the
+ * game itself says (game->max_players, on the builds its own file knows), else 8. okw_lock held (the hook only reads). */
+static int room_max_players(void)
+{
+    int n;
+    if (max_players_ini) return max_players_ini;
+    n = game->max_players ? game->max_players(NULL) : 0;
+    return n >= 2 ? n : 8;
+}
+
+/* The room record follows the room: rebuilt when the players it says or the limit would change - a player left (its
+ * connection was closed, reset or got its FIN), or the game set its own limit after it listened. The room server gets
+ * the new record with rdv.c's next announce (every announce_ms: 1 s; 3 s over plain HTTP), LAN Play with its next
+ * offer. Called from tcp_rx (every frame), okw_tick (every game call) and tcp_close. okw_lock held. */
+static char rec_who[32];   /* the player name the record carries (room_who) */
+
+/* Whose room it is, for a TCP game's room name: okplay.ini name= when the player set one, else the name the player has
+ * in the game itself (game->player_name), else the computer's name. okw_lock held (the hook only reads). */
+static void room_who(char *out, int n)
+{
+    out[0] = 0;
+    if (player_name_set) lstrcpynA(out, player_name, n);
+    else if (!game->player_name || !game->player_name(out, n) || !out[0]) lstrcpynA(out, player_name, n);
+}
+
+static void room_record_follow(void)
+{
+    char who[32];
+    if (!ctx || !ctx->is_host || !(game->kinds & OKW_TCP)) return;
+    room_who(who, sizeof(who));
+    if (1 + tcp_room_players() != rec_curp || room_max_players() != rec_maxp || strcmp(who, rec_who)) build_room_record();
+}
+
+static int room_counts(uint64_t host, int *curp, int *maxp);
+
 /* a SYN: a listener on that port takes it into its backlog (the game's accept() comes later) */
 static void tcp_syn(uint64_t from, const okw_thdr *h, const uint8_t *b, int bl)   /* okw_lock held */
 {
     uint16_t sport, dport;
     uint32_t win;
     uint8_t why = 0;
+    int players = 0, maxp = 0;
     okw_sock *L = NULL;
     okw_tconn *c = NULL;
     if (bl < 9 || !(h->flags & 1)) return;
@@ -857,12 +936,25 @@ static void tcp_syn(uint64_t from, const okw_thdr *h, const uint8_t *b, int bl) 
             }
         }
         if (!L) why = 1;
-        else if (L->nbacklog >= L->backlog_max) why = 2;
+        else if (ctx->is_host && L->explicit_port) {   /* the room's own listener: the game's player limit */
+            int type = -1;
+            players = 1 + tcp_room_players();
+            maxp = room_max_players();
+            if (game->max_players) game->max_players(&type);
+            okp_log(2, "wsock: TCP connection from %016llx: %d of %d players in the room (game type %d)%s",
+                    (unsigned long long)from, players, maxp, type, peer_in_room(from) ? " - this player is one of them" : "");
+            if (players >= maxp && !peer_in_room(from)) why = 4;
+        }
+        if (!why && L->nbacklog >= L->backlog_max) why = 2;
     }
     if (!why && !(c = tconn_new())) why = 2;
     if (why) {
-        okp_log(1, "wsock: TCP connection from %016llx to port %u refused (%s)", (unsigned long long)from, dport,
-                why == 1 ? "nothing listens there" : why == 2 ? "backlog full" : "not let in: no password yet");
+        if (why == 4)
+            okp_log(1, "wsock: TCP connection from %016llx to port %u refused (the game is full: %d of %d players)",
+                    (unsigned long long)from, dport, players, maxp);
+        else
+            okp_log(1, "wsock: TCP connection from %016llx to port %u refused (%s)", (unsigned long long)from, dport,
+                    why == 1 ? "nothing listens there" : why == 2 ? "backlog full" : "not let in: no password yet");
         tframe(from, h->conn, 0, TF_REFUSE, 0, &why, 1);
         return;
     }
@@ -915,6 +1007,7 @@ static void tcp_rx(uint64_t from, const uint8_t *d, int len)   /* okw_lock held,
             c->snd_limit = c->snd_wnd;
             c->state = T_ESTAB;
             c->t_state = GetTickCount();
+            if (full_told == from) full_told = 0;   /* (full again later: told again) */
             okp_log(2, "wsock: TCP connection %08x to %016llx port %u is up", (unsigned)c->id, (unsigned long long)from, c->rport);
             wake();
         }
@@ -926,6 +1019,21 @@ static void tcp_rx(uint64_t from, const uint8_t *d, int len)   /* okw_lock held,
             c->rst_rx = 1;
             tconn_unhold(c);
             okp_log(1, "wsock: TCP connect to %016llx port %u refused (reason %d)", (unsigned long long)from, c->rport, bl ? b[0] : 0);
+            if (bl && b[0] == 4) {   /* the game is full: the game sees "connection refused" as for every reason */
+                int cur, mx;
+                if (room_counts(from, &cur, &mx))
+                    okp_log(1, "wsock: the host says its game is full (%d of %d)", cur, mx);
+                else
+                    okp_log(1, "wsock: the host says its game is full");
+                if (full_told != from) {   /* once per host: the game's own connect loop is refused again every second */
+                    full_told = from;
+                    okp_log(1, "wsock: notice to the player: That game is full.");
+                    if (!(okbox_test_answers() && getenv("OKP_TEST_JOIN_PASSWORD"))) {   /* (shown by ui_show_pending) */
+                        InterlockedExchange(&ui_full, 1);
+                        InterlockedExchange(&ui_pending, 1);
+                    }
+                }
+            }
             wake();
         }
         break;
@@ -971,6 +1079,7 @@ static void tcp_rx(uint64_t from, const uint8_t *d, int len)   /* okw_lock held,
         wake();
         break;
     }
+    room_record_follow();   /* (a FIN, a reset: a player may have left the room) */
 }
 
 static void send_syn(okw_tconn *c);
@@ -1182,7 +1291,7 @@ static void build_room_record(void)   /* okw_lock held */
     memcpy(b + 4, &cmd, 2);
     memcpy(b + 6, &ver, 2);
     uint8_t *sd = b + 8;
-    uint32_t sdsize = 80, maxp = 8, curp = 1;
+    uint32_t sdsize = 80, maxp = (uint32_t)room_max_players(), curp = 1;
     memcpy(sd, &sdsize, 4);
     memcpy(sd + 8, &ctx->room, 4);                 /* guidInstance (enough to tell rooms apart) */
     memcpy(sd + 24, &OKW_APPGUID, 16);             /* guidApplication */
@@ -1196,8 +1305,11 @@ static void build_room_record(void)   /* okw_lock held */
         if (!name[0]) lstrcpynA(name, game->name, sizeof(name));
     }
     if (game->kinds & OKW_TCP) {
-        if (player_name[0]) snprintf(name, sizeof(name), "%s - %s", game->name, player_name);
-        for (int i = 0; i < OKW_MAX_CONNS; i++) if (conns[i].used && !conns[i].initiator && conns[i].state == T_ESTAB && !conns[i].err) curp++;
+        room_who(rec_who, sizeof(rec_who));
+        if (rec_who[0]) snprintf(name, sizeof(name), "%s - %s's game", game->name, rec_who);
+        curp += (uint32_t)tcp_room_players();
+        rec_curp = (int)curp;
+        rec_maxp = (int)maxp;
     }
     memcpy(sd + 40, &maxp, 4);
     memcpy(sd + 44, &curp, 4);
@@ -1356,6 +1468,8 @@ static void end_session(void)   /* no lock held */
     picked_host = 0;
     relisten_port = 0;
     nclosed_peers = 0;
+    rec_curp = rec_maxp = -1;
+    full_told = 0;
     for (int i = 0; i < OKW_MAX_CONNS; i++) if (conns[i].used && !conns[i].err) { conns[i].err = WSAECONNABORTED; conns[i].rx_gen++; }
     wake();
     socks_gone = 0;
@@ -1522,14 +1636,6 @@ static int tcp_outbound(void)   /* okw_lock held: a connect of ours that is goin
     return 0;
 }
 
-static int tcp_room_players(void)   /* okw_lock held: players connected to this PC's room (accepted or not yet) */
-{
-    int n = 0;
-    for (int i = 0; i < OKW_MAX_CONNS; i++)
-        if (conns[i].used && !conns[i].initiator && conns[i].state == T_ESTAB && !conns[i].err && !conns[i].fin_rx) n++;
-    return n;
-}
-
 /* drop: also forget the host as a peer, with what waits in its queue (a password): only for a join that never got
  * a connection - a connection just closed still has its last frames (the FIN) to deliver */
 static void tcp_join_undo(uint64_t host, const char *why, int drop)   /* okw_lock held */
@@ -1684,6 +1790,7 @@ static void okw_tick(void)   /* okw_lock held */
 {
     if (!started && mode_choice >= 2) start_okplay();   /* (re)started in the mode the player picked */
     tcp_tick();
+    room_record_follow();
     link_reports();
     release_due();
     race_reports();
@@ -1811,6 +1918,7 @@ typedef struct { int kind; GUID g; WCHAR w[64]; INT_PTR r; void *p; } okw_box;
 struct okw_listbox_s;
 static INT_PTR lb_run_any(void *L);
 static const WCHAR no_answer_text[] = L"No answer from the host. The game may have started or closed.";   /* (notice_no_answer) */
+static const WCHAR full_text[] = L"That game is full.";   /* (ui_full: the host refused with reason 4) */
 
 /* Notices from okplay's core - a newer version, the room server out of reach, TCP/IP not working, a crash
  * report or connection reports waiting (the DirectPlay drop-in has the same boxes and shows them at once on
@@ -1890,13 +1998,13 @@ static INT_PTR run_box(okw_box *b)
     else if (b->kind == 7) b->r = okbox_ask_crash_report(ui_crash.path);
     else if (b->kind == 8) b->r = okbox_ask_conn_reports();
     else if (b->kind == 10) b->r = lb_run_any(b->p);   /* a TCP game's room list / "Connecting..." */
-    else if (b->kind == 11) {   /* "No answer from the host" (notice_no_answer) */
+    else if (b->kind == 11 || b->kind == 12) {   /* "No answer from the host" (notice_no_answer), "That game is full." */
         struct pw_dialog d;
         WCHAR title[96];
         memset(&d, 0, sizeof(d));
         okbox_brand(title, 96);
         d.title = title;
-        d.text = no_answer_text;
+        d.text = b->kind == 11 ? no_answer_text : full_text;
         d.ok = L"OK";
         b->r = (okbox_show(&d), 1);
     }
@@ -1983,7 +2091,7 @@ static void ui_show_pending(void)
         okw_box b;
         memset(&b, 0, sizeof(b));
         EnterCriticalSection(&ui_lock);
-        b.kind = ui_update.on ? 4 : ui_unreach.on ? 5 : ui_nonet.on ? 6 : ui_crash.on ? 7 : ui_conn.on ? 8 : ui_wrongpw ? 3 : 0;
+        b.kind = ui_update.on ? 4 : ui_unreach.on ? 5 : ui_nonet.on ? 6 : ui_crash.on ? 7 : ui_conn.on ? 8 : ui_wrongpw ? 3 : ui_full ? 12 : 0;
         if (!b.kind) InterlockedExchange(&ui_pending, 0);
         LeaveCriticalSection(&ui_lock);
         if (!b.kind) break;
@@ -1993,6 +2101,7 @@ static void ui_show_pending(void)
         else if (b.kind == 5) ui_unreach.on = 0;
         else if (b.kind == 6) ui_nonet.on = 0;
         else if (b.kind == 3) InterlockedExchange(&ui_wrongpw, 0);
+        else if (b.kind == 12) InterlockedExchange(&ui_full, 0);
         else if (b.kind == 7) { ui_crash.on = 0; ui_crash.answer = r; SetEvent(ui_crash.done); }
         else { ui_conn.on = 0; ui_conn.answer = r; SetEvent(ui_conn.done); }
         LeaveCriticalSection(&ui_lock);
@@ -2553,6 +2662,17 @@ static void room_read(const okp_room *rm, okw_roominfo *ri)
     lstrcpynA(ri->exe, rm->exe, sizeof(ri->exe));
 }
 
+static int room_of(uint64_t host, okw_roominfo *ri);
+
+static int room_counts(uint64_t host, int *curp, int *maxp)   /* okw_lock held: the players a listed room says it has */
+{
+    okw_roominfo ri;
+    if (!room_of(host, &ri) || ri.maxp <= 0) return 0;
+    *curp = ri.curp;
+    *maxp = ri.maxp;
+    return 1;
+}
+
 static int room_of(uint64_t host, okw_roominfo *ri)   /* okw_lock held */
 {
     int found = 0;
@@ -2619,6 +2739,7 @@ typedef struct {
     char pick[64];
     uint64_t hosts[32];
     uint32_t shown[32];            /* what each line says (lb_sig): a changed player count redraws the list too */
+    char full[32];                 /* the line says "full": Join stays in the list and says so (the host refuses too) */
     int nhosts;
 } okw_listbox;
 
@@ -2630,7 +2751,7 @@ static int test_ui(char *pick, int n)   /* 1 = tests answer okplay's TCP join bo
     return 1;
 }
 
-static uint32_t lb_sig(const okw_roominfo *r)   /* a room's line in the list, as a number */
+static uint32_t lb_sig(const okw_roominfo *r)   /* a room's line in the list, as a number (" - full" comes from curp/maxp) */
 {
     uint32_t h = 2166136261u;
     for (const char *p = r->name; *p; p++) h = (h ^ (uint8_t)*p) * 16777619u;
@@ -2660,10 +2781,12 @@ static void lb_refresh(HWND dlg, okw_listbox *L)
     SendMessageA(lb, LB_RESETCONTENT, 0, 0);
     for (int i = 0; i < n; i++) {
         char line[128];
-        snprintf(line, sizeof(line), "%s   (%d/%d players)%s", ri[i].name, ri[i].curp, ri[i].maxp, ri[i].locked ? "   [password]" : "");
+        snprintf(line, sizeof(line), "%s   (%d/%d players)%s%s", ri[i].name, ri[i].curp, ri[i].maxp,
+                 ri[i].maxp > 0 && ri[i].curp >= ri[i].maxp ? " - full" : "", ri[i].locked ? "   [password]" : "");
         SendMessageA(lb, LB_ADDSTRING, 0, (LPARAM)line);
         L->hosts[i] = ri[i].host;
         L->shown[i] = lb_sig(&ri[i]);
+        L->full[i] = ri[i].maxp > 0 && ri[i].curp >= ri[i].maxp;
         if (ri[i].host == keep) sel = i;
     }
     L->nhosts = n;
@@ -2731,7 +2854,9 @@ static INT_PTR CALLBACK lb_proc(HWND dlg, UINT m, WPARAM wp, LPARAM lp)
         if (LOWORD(wp) == IDCANCEL) { EndDialog(dlg, IDCANCEL); break; }
         if (L && L->mode == LB_LIST && (LOWORD(wp) == IDOK || (LOWORD(wp) == 101 && HIWORD(wp) == LBN_DBLCLK))) {
             int cur = (int)SendDlgItemMessageA(dlg, 101, LB_GETCURSEL, 0, 0);
-            if (cur >= 0 && cur < L->nhosts) { L->host = L->hosts[cur]; EndDialog(dlg, IDOK); }
+            if (cur >= 0 && cur < L->nhosts && L->full[cur])   /* (the text goes back with the list's next change) */
+                SetDlgItemTextA(dlg, 100, "That game is full. Pick another, or wait for a place.");
+            else if (cur >= 0 && cur < L->nhosts) { L->host = L->hosts[cur]; EndDialog(dlg, IDOK); }
         }
         break;
     case WM_DESTROY:
@@ -3282,6 +3407,7 @@ static void tcp_close(okw_sock *k)   /* okw_lock held; a virtual TCP socket the 
         k->c = NULL;
         tcp_conn_gone(peer);
     }
+    room_record_follow();   /* (a player's connection closed by the host's game: one fewer in the room) */
     wake();   /* (a select or accept waiting on it in another thread) */
 }
 
@@ -3423,10 +3549,13 @@ static void game_state_watch(void)
     for (int i = 0; i < OKW_MAX_SOCKS && !open; i++)
         if (socks[i].used && socks[i].kind == K_TCP && socks[i].tstate == T_LISTEN && socks[i].explicit_port) open = 1;
     if (!open || (said = game->says_hosts(&net, &srv)) < 0) { left_tick = 0; return; }
-    if (net != gs_net || srv != gs_srv) {
+    int type = -1;
+    if (game->max_players) game->max_players(&type);
+    if (net != gs_net || srv != gs_srv || type != gs_type) {
         gs_net = net;
         gs_srv = srv;
-        okp_log(2, "wsock: game state now: net %d, server %d", net, srv);
+        gs_type = type;
+        okp_log(2, "wsock: game state now: net %d, server %d, game type %d", net, srv, type);
     }
     if (said || !ctx || !ctx->is_host || game->host_rule != HOST_LISTEN || tcp_room_players()) { left_tick = 0; return; }
     if (!left_tick) { left_tick = GetTickCount() | 1; return; }
@@ -3572,7 +3701,11 @@ int WINAPI x_closesocket(SOCKET s)
         if (!open) { socks_gone_tick = GetTickCount(); socks_gone = 1; }
     }
     LeaveCriticalSection(&okw_lock);
-    return closesocket(s);
+    int r = closesocket(s);
+    /* "That game is full.": a game that drops back to a menu after the refusal makes no further network call there,
+     * so the notice is shown as the game closes the refused socket (no lock held; ui_show_pending's own guards apply) */
+    if (tk && ui_full) ui_show_pending();
+    return r;
 }
 
 int WINAPI x_bind(SOCKET s, const struct sockaddr *a, int l)
@@ -3987,11 +4120,14 @@ int WINAPI x_listen(SOCKET s, int b)
         if (again && ctx) relisten_port = 0;
         if (host && ctx->host_peer) tcp_join_undo(ctx->host_peer, "the game hosts", 0);
         if (said >= 0) {
+            int gtype = -1;
+            if (game->max_players) game->max_players(&gtype);
             gs_net = gnet;
             gs_srv = gsrv;
-            okp_log(2, "wsock: TCP socket %u listens on port %u - game state: net %d, server %d - %s", (unsigned)s, port,
-                    gnet, gsrv, host ? "Host Game: this PC hosts" : said ? "Host Game, but okplay is not running here or "
-                    "a connect of the game's is going on - not hosting" : "ready, not hosting");
+            gs_type = gtype;
+            okp_log(2, "wsock: TCP socket %u listens on port %u - game state: net %d, server %d - %s (game type %d)", (unsigned)s,
+                    port, gnet, gsrv, host ? "Host Game: this PC hosts" : said ? "Host Game, but okplay is not running here or "
+                    "a connect of the game's is going on - not hosting" : "ready, not hosting", gtype);
         } else
             okp_log(2, "wsock: TCP socket %u listens on port %u%s%s", (unsigned)s, port,
                     host ? " - this PC hosts (the game listens again: Host Game)" : k->explicit_port ? " - ready, not hosting" : "",
@@ -4243,6 +4379,12 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
             if (game->fix_init) game->fix_init(ini);   /* rr_fix.c: Road Rash's netcode fixes; nfs3_fix.c: NFS3's game state */
             int win = GetPrivateProfileIntA("okplay", "wsock_tcp_window", 65536, ini);
             tcp_window = win < 4096 ? 4096 : win > (1 << 20) ? (1 << 20) : (uint32_t)win;
+            {   /* wsock_max_players: the players a hosted room takes, host included (2..64; else the game's own word, or 8) */
+                int mp = GetPrivateProfileIntA("okplay", "wsock_max_players", 0, ini);
+                max_players_ini = mp >= 2 && mp <= 64 ? mp : 0;
+                if (max_players_ini) okp_log(1, "wsock: okplay.ini wsock_max_players=%d - a hosted room takes that many players", max_players_ini);
+                else if (mp) okp_log(1, "wsock: okplay.ini wsock_max_players=%d is not 2..64 - not used", mp);
+            }
             {
                 char v[16] = "";
                 GetPrivateProfileStringA("okplay", "wsock_join", "", v, sizeof(v), ini);
@@ -4250,6 +4392,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
                 join_auto = !_stricmp(v, "auto");
                 DWORD nl = sizeof(player_name);
                 GetPrivateProfileStringA("okplay", "name", "", player_name, sizeof(player_name), ini);
+                player_name_set = player_name[0] != 0;
                 if (!player_name[0] && !GetComputerNameA(player_name, &nl)) player_name[0] = 0;
             }
             okp_log(2, "wsock: game profile %s (%s%s%s)", game->id, game->kinds & OKW_UDP ? "UDP" : "",

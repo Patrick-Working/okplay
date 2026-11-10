@@ -26,7 +26,8 @@ two PCs: Modern Patch against Modern Patch and 1998 against 1998, host and join,
 - **Which listen is Host Game**: the socket calls can't tell, the game's own state can. Two values of the game
   are read (never written): a "network game state" and a "this PC is the server" flag. Host Game sets both before
   it listens; a menu entry sets neither; a joiner clears the server flag. Unknown builds fall back to the
-  listen-again rule. Peer-to-Peer and Client-Server hosting look the same here.
+  listen-again rule. Peer-to-Peer and Client-Server hosting set the same two values; a third value tells them
+  apart (below).
 - **Rooms**: a room is listed when Host Game is seen, and comes off the list when the game closes its listener,
   when the host leaves its lobby (the state goes back while the listener stays open - taken off after 1.5 s with
   nobody connected), or when the game exits. Hosting again lists a new room.
@@ -36,6 +37,23 @@ two PCs: Modern Patch against Modern Patch and 1998 against 1998, host and join,
   Ok opens okplay's room list instead of looking the name up; the list refreshes by itself (every 1.5 s) and
   shows players and a password marker. A typed address of a LAN host that okplay knows still connects directly.
   With the game's original TCP/IP the text is taken out again, so the game never connects to the real site.
+- **Player limit**: shared by every TCP game of the shim - a room takes a set number of players, host included;
+  okplay counts players, not connections (a joiner that reconnects counts once); when the room is full a new
+  player is refused by okplay before the game sees the connection (reason 4, "the game is full": the joiner's game
+  gets "connection refused", as with every refusal; a newer joiner also logs it and shows "That game is full."
+  once); the room list shows "(2/2 players) - full"; the count in the list goes down again when a player leaves.
+  okplay.ini `wsock_max_players=N` (2-64) sets the limit for any game; otherwise the game's own word, else 8.
+  NFS3 only: the game's own word is the game type the host picked, read (never written) next to the network game
+  state - Peer-to-Peer = 2 players, Client-Server = 8 (0 = Peer-to-Peer, 1 = Client-Server; seen on the real game,
+  Modern Patch 1.6.1, 2026-11-10; the log shows the raw value as "game type N" at every listen and every incoming
+  connection). Unknown builds, or another value: 8.
+- **Full room in the list** (shared): Join on a line marked "full" stays in the list and says "That game is full.
+  Pick another, or wait for a place."; the list refreshes itself, and Join works as soon as a place is free. The
+  host's refusal stays as the backstop (two players pressing Join at once, an older build, a list a second old);
+  the notice "That game is full." is then shown as the game closes the refused connection.
+- **Room name** (shared rule, per-game source): "<game> - <player>'s game". The player is okplay.ini `name=` when
+  set, else the name the player has in the game itself (per-game hook `player_name`; NFS3: Player 1 Name, read
+  only), else the computer's name.
 - **Online / LAN / Original**: the same box as in every okplay game (`wsock_mode=ask|online|lan|original`),
   shown when Host Game or Join Game is chosen.
 - **Windows 9x**: the 1998 exe gives its threads a 32,000-byte stack; okplay's own threads ask for their own
@@ -44,14 +62,17 @@ two PCs: Modern Patch against Modern Patch and 1998 against 1998, host and join,
 ## Tests
 
 `python okplay/wsock/tests/tcp_run.py --mode shim` runs `tcpsim.exe` (a stand-in for the game's socket
-patterns, including the two state values at the game's addresses) against the shim: 55 scenarios - hosting,
-joining, menu re-entry, lobby leave, role swap, passwords, the Join box, Original mode, stream timing.
+patterns, including the game's state values at its addresses) against the shim: 59 scenarios - hosting,
+joining, menu re-entry, lobby leave, role swap, passwords, the Join box, Original mode, stream timing, the player
+limit.
 `TCP_RUN_PHP_SERVER=<released okplay.php>` runs the online scenarios against a released room server instead
 of the stand-in.
 
 ## Open
 
-- Three and more players, and play over the internet, are not tested yet.
-- A Peer-to-Peer room shows "1/8 players" (the two host modes can't be told apart yet).
+- Play over the internet is not tested yet. Three players (Client-Server) and a join to a full Peer-to-Peer game
+  were tested on three Windows 98 PCs with the Modern Patch (2026-11-10).
+- The game type values and the player-name place are confirmed on the Modern Patch only; the 1998 CD build uses
+  the same places relative to its own network state (not yet seen on the real 1998 game).
 - The Join box buffer of the 1998 OEM build is not known: no pre-fill there (type `oldkid.net` or `okplay`).
 - Mixed 1998 / Modern Patch games: untested (the game itself decides whether they are compatible).

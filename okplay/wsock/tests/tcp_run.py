@@ -51,6 +51,7 @@ BUILDS = {"modern": ("240a083a78ac3b83", "modern"), "oem": ("b390be67925b2ad0", 
 KNOWN = {"all": None}   # --build: every scenario as that build
 PW_ASKED = r"password: (none - an open game|this game needs a password|not asking)"   # one host password question
 NOTICE_NO_ANSWER = "No answer from the host"   # (the notice's sentence, as okplay logs it)
+FULL_REFUSED = r"refused \(the game is full: 2 of 2 players\)"   # the host's log when a room of 2 is full
 
 
 def J(addr="{lo}:9803", *a, menu=True):
@@ -274,6 +275,37 @@ SCENARIOS = {
                        joins=[S("menu", "join:" + LO, "wait:6000", "leave"),
                               S("menu", "join:" + LO, "wait:500", "leave", "back", "menu", "wait:1500", "join:" + LO, "wait:500", "leave")],
                        modes=("shim",)),
+    # 14. the player limit (okplay.ini wsock_max_players=2): host + one joiner fill the room; a second joiner is refused
+    #     by okplay before the host's game sees it, and gets "connection refused" at once
+    "full":       dict(host=S("menu", "host", "lobby:1", "await:j2tried", "left:1"),
+                       joins=[S("menu", "join:" + LO, "ping", "say:in1", "await:j2tried", "ping", "leave"),
+                              S("menu", "await:in1", "wait:500", "joinfail:" + LO, "say:j2tried")],
+                       ini={"wsock_max_players": "2"}, modes=("shim",),
+                       checks=[("log", "host", FULL_REFUSED), ("outcount", "host", "EVENT accepted a connection", 1),
+                               ("log", "join2", "the host says its game is full"), ("log", "join2", r"refused \(reason 4\)"),
+                               ("outlt", "join2", r"EVENT refused.* after (\d+) ms", 5000)]),
+    # 14b. ... the first joiner leaves: the room has space again, the second joiner gets in; the room server's list says
+    #      2/2 while full and 1/2 after the leave
+    "full_frees_online": dict(host=S("menu", "host", "lobby:1", "await:j2tried", "left:1", "lobby:2", "left:2"),
+                              joins=[S("menu", "wait:3000", "join:" + LO, "ping", "say:in1", "await:j2tried", "wait:3000",
+                                       "say:rooms_full", "leave", "wait:4000", "say:rooms_after", "say:j1left"),
+                                     S("menu", "await:in1", "wait:500", "joinfail:" + LO, "say:j2tried", "await:j1left",
+                                       "join:" + LO, "ping", "leave")],
+                              ini={"wsock_max_players": "2"}, modes=("shim",), online=True,
+                              checks=[("log", "host", FULL_REFUSED), ("outcount", "host", "EVENT accepted a connection", 2),
+                                      ("players", "rooms_full", "2/2"), ("players", "rooms_after", "1/2")]),
+    # 14c. ... a full room: its joiner closes and connects again at once - the same player, never refused
+    "full_same_peer": dict(host=S("menu", "host", "lobby:2", "left:2"),
+                           joins=[S("menu", "join:" + LO, "ping", "leave", "join:" + LO, "ping", "leave")],
+                           ini={"wsock_max_players": "2"}, modes=("shim",),
+                           checks=[("nolog", "host", "the game is full"), ("outcount", "host", "EVENT accepted a connection", 2)]),
+    # 14d. a known build hosting Peer-to-Peer (the game's own type 0, no okplay.ini setting): 2 players, the third refused
+    "full_p2p_known": dict(host=S("menu", "host", "lobby:1", "await:j2tried", "left:1"),
+                           joins=[S("menu", "join:" + LO, "ping", "say:in1", "await:j2tried", "leave"),
+                                  S("menu", "await:in1", "wait:500", "joinfail:" + LO, "say:j2tried")],
+                           env_host={"TCPSIM_GAMETYPE": "0"}, known="modern", modes=("shim",),
+                           checks=[("log", "host", FULL_REFUSED), ("log", "host", r"Host Game: this PC hosts \(game type 0\)"),
+                                   ("outcount", "host", "EVENT accepted a connection", 1)]),
 }
 
 
@@ -347,13 +379,14 @@ class Freezer:
             time.sleep(0.05)
 
 
-def standin_rooms():
+def standin_rooms():   # (number of rooms, "players/maxp" of each)
     import urllib.request, json
     try:
         with urllib.request.urlopen(f"http://127.0.0.1:{STANDIN_PORT}/okplay.php?a=list&fmt=json", timeout=5) as r:
-            return len(json.loads(r.read().decode())["rooms"])
+            rooms = json.loads(r.read().decode())["rooms"]
+            return len(rooms), ",".join(f"{x['players']}/{x['maxp']}" for x in rooms)
     except Exception as e:
-        return f"? ({e})"
+        return f"? ({e})", ""
 
 
 class Sampler:
@@ -370,7 +403,7 @@ class Sampler:
                     m = re.match(r"EVENT say (rooms\S*)", l)
                     if m and (p.name, i) not in seen:
                         seen.add((p.name, i))
-                        self.samples.append((m.group(1), standin_rooms()))
+                        self.samples.append((m.group(1),) + standin_rooms())
             time.sleep(0.05)
 
 
@@ -457,13 +490,28 @@ def script_checks(sc, out):   # what the okplay logs must (not) say, per scenari
     for c in sc.get("checks", []):
         kind = c[0]
         if kind == "rooms":   # the room server's list at each "say <name>": c[2] rooms
-            got = [n for name, n in out.get("_rooms", []) if name == c[1]]
+            got = [n for name, n, _ in out.get("_rooms", []) if name == c[1]]
             if not got:
                 why.append(f"no room list taken at '{c[1]}' (the step was not reached)")
             elif any(n != c[2] for n in got):
                 why.append(f"the room server lists {got} room(s) at '{c[1]}', expected {c[2]}")
             continue
+        if kind == "players":   # the room server's list at "say <name>": one room, its players/maxp c[2]
+            got = [pm for name, _, pm in out.get("_rooms", []) if name == c[1]]
+            if not got:
+                why.append(f"no room list taken at '{c[1]}' (the step was not reached)")
+            elif any(pm != c[2] for pm in got):
+                why.append(f"the room server says {got} at '{c[1]}', expected {c[2]}")
+            continue
         role = c[1]
+        if kind in ("outcount", "outlt"):   # the process's own output: c[3] lines like c[2] / c[2]'s group 1 below c[3]
+            outl = out.get(role, "").splitlines()
+            got = [l for l in outl if re.search(c[2], l)]
+            if kind == "outcount" and len(got) != c[3]:
+                why.append(f"{role} printed /{c[2]}/ {len(got)} time(s), expected {c[3]}")
+            if kind == "outlt" and (not got or int(re.search(c[2], got[-1]).group(1)) >= c[3]):
+                why.append(f"{role}: {got[-1].strip() if got else 'nothing like /' + c[2] + '/'} (want below {c[3]})")
+            continue
         lines = log_of(out, role).splitlines()
         hit = lambda pat, ls: [l for l in ls if re.search(pat, l)]
         if kind == "log" and not hit(c[2], lines):
@@ -608,7 +656,7 @@ def main():
                 tag = "ok" if not why else ("FAIL (known, needs " + xf + "): " if xf else "FAIL: ") + "; ".join(why)
                 print(f"{n:18} {m:5} {tag}", flush=True)
                 if out.get("_rooms"):
-                    print("    room server: " + ", ".join(f"{k} {v}" for k, v in out["_rooms"]))
+                    print("    room server: " + ", ".join(f"{k} {v}" + (f" ({pm})" if pm else "") for k, v, pm in out["_rooms"]))
                 for who, o in out.items():
                     if who.startswith("_"):
                         continue
