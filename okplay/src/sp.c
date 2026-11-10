@@ -555,6 +555,7 @@ static void okp_attach(HINSTANCE hinst)
     WSADATA w;
     WSAStartup(MAKEWORD(2, 2), &w);
     okp_log_init(hinst);
+    okp_exe_build_early();
 }
 
 #ifdef OKP_BUILTIN

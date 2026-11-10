@@ -1345,9 +1345,14 @@ static void run_timers(okp_ctx *c)
                 }
                 DWORD rto = base;
                 for (int t = 2; t < r->tries && rto < 1000; t++) rto = rto * 3 / 2;
-                if (r->tries == 1) rto = 40;
+                /* the quick duplicate is for the rare join-time message; under a stream (Winsock TCP:
+                 * dozens a second) it would double the traffic and swamp a slow PC */
+                if (r->tries == 1 && p->nrtx <= 8) rto = 40;
                 if (rto > 1000) rto = 1000;
-                if (p->have_path && (r->tries == 0 || now - r->last >= rto)) {
+                /* resend only the oldest few still waiting (k: older ones kept so far). Each message is
+                 * acked on its own, so the rest have most likely arrived; resending a whole full window
+                 * every timeout swamped a slow PC with duplicates (Winsock TCP on Win98) */
+                if (p->have_path && (r->tries == 0 || (k < 8 && now - r->last >= rto))) {
                     peer_send(c, p, &p->path, r->pkt, r->len);
                     if (r->tries > 0) p->r_retrans++;
                     r->tries++;
@@ -1393,8 +1398,11 @@ static DWORD WINAPI net_main(LPVOID arg)
         if (r > 0 && lq != INVALID_SOCKET && FD_ISSET(lq, &rs)) okp_lan_readable(c, lq);
         if (r > 0 && ll != INVALID_SOCKET && FD_ISSET(ll, &rs)) okp_lan_readable(c, ll);
         if (r > 0 && FD_ISSET(c->sock, &rs)) {
-            /* socket is non-blocking: drain until WSAEWOULDBLOCK */
-            for (;;) {
+            /* socket is non-blocking: drain until WSAEWOULDBLOCK, but stop after a batch so the timers
+             * below still run. A peer resending a full window can keep the socket busy for good on a slow
+             * PC, and then nothing here resent or released queued messages (seen on Win98: 68 s). */
+            DWORD drain_t0 = okp_now();
+            for (int drained = 0; drained < 64 && okp_now() - drain_t0 < 15; drained++) {
                 SOCKADDR_IN6 from;
                 int n = okp_recvfrom6(c->sock, c->v4only, buf, OKP_MAX_PKT + 64, &from);
                 if (n < 0) {
@@ -1482,6 +1490,15 @@ int okp_net_start(okp_ctx *c)
 
     c->running = 1;
     c->net_thread = CreateThread(NULL, 0, net_main, c, 0, NULL);
+    if (c->net_thread) {
+        /* it mostly sleeps in select(), so above the game it costs nothing yet gets the CPU as soon as
+         * packets arrive. A CPU-bound game (software rendering on Win98) starved it for seconds, the
+         * socket's small buffer overflowed and messages were lost */
+        SetThreadPriority(c->net_thread, THREAD_PRIORITY_HIGHEST);
+        okp_log(2, "network thread priority %d (the starting thread: %d, process class %lx)",
+                GetThreadPriority(c->net_thread), GetThreadPriority(GetCurrentThread()),
+                (unsigned long)GetPriorityClass(GetCurrentProcess()));
+    }
     return c->net_thread != NULL;
 }
 

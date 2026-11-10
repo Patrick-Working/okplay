@@ -3294,7 +3294,12 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
 int WINAPI x_send(SOCKET s, const char *b, int len, int f)
 {
     if (!okw_on) return send(s, b, len, f);
-    if (tcp_entry(s, 1)) return tcp_send(s, b, len, f);   /* (no box waits here: the game's comms thread) */
+    if (tcp_entry(s, 1)) {   /* (no box waits here: the game's comms thread) */
+        static LONG told;
+        if (!InterlockedExchange(&told, 1))
+            okp_log(2, "wsock: the game sends TCP from a thread at priority %d", GetThreadPriority(GetCurrentThread()));
+        return tcp_send(s, b, len, f);
+    }
     wait_for_box();
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
@@ -3737,6 +3742,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
         WSAStartup(MAKEWORD(2, 2), &w);
         okp_log_init(inst);
         okp_crash_install(inst);   /* a crash leaves okplay-crash-*.dmp in logs\ */
+        okp_exe_build_early();
 #ifdef OKW_LAB
         rr_lab_init();
 #endif

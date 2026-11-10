@@ -312,6 +312,16 @@ void okp_lan_readable(okp_ctx *c, SOCKET s)
         if (w->type == OKP_T_LAN_DISCOVER && s == c->lan_listen && blen >= 4 && memcmp(body, LAN_MAGIC, 4) == 0 &&
             lan_source(&from)) {
             if (c->is_host && c->session_open && !c->closing && c->enum_len > 0) send_offer(c, &from, w->from);
+            else {   /* (once a second at most: why a joiner on this network sees no room yet) */
+                static DWORD said;
+                DWORD now = okp_now();
+                if (now - said >= 1000) {
+                    said = now;
+                    okp_log(3, "LAN: discovery from %u.%u.%u.%u not answered (host %d, open %d, closing %d, record %d B)",
+                            ((uint8_t *)&from.sin_addr)[0], ((uint8_t *)&from.sin_addr)[1], ((uint8_t *)&from.sin_addr)[2],
+                            ((uint8_t *)&from.sin_addr)[3], c->is_host, c->session_open, c->closing, c->enum_len);
+                }
+            }
         } else if (w->type == OKP_T_LAN_OFFER && s == c->lan_q && w->to == c->self) {
             take_offer(c, w, body, blen, &from);
             got_offer = 1;

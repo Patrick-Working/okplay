@@ -289,6 +289,24 @@ void okp_exe_build(char build[17], char *exe, int exesz)
     if (exe) lstrcpynA(exe, cexe, exesz);
 }
 
+/* Hashing the exe takes seconds on a slow Win98 PC with the game busy (13 s seen), and joining waits for
+ * it: start it when okplay loads, so it is ready long before anyone joins. Safe inside DllMain (the
+ * thread runs once the loader is done). */
+static DWORD WINAPI exe_build_thread(LPVOID a)
+{
+    char b[17];
+    (void)a;
+    okp_exe_build(b, NULL, 0);
+    return 0;
+}
+
+void okp_exe_build_early(void)
+{
+    DWORD id;   /* (Windows 9x needs somewhere to write the id) */
+    HANDLE t = CreateThread(NULL, 0, exe_build_thread, NULL, 0, &id);
+    if (t) CloseHandle(t);
+}
+
 int okp_drop_after_ms(void) { return okp_cfg.drop_after_ms ? okp_cfg.drop_after_ms : OKP_DROP_AFTER_DEFAULT_MS; }
 
 uint64_t okp_rand64(void)

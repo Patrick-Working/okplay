@@ -324,6 +324,7 @@ int okp_drop_after_ms(void);
 /* The game's build: the first 16 hex digits of the SHA-256 of its exe, and the exe's file name
  * (UTF-8). Rooms carry the host's; a joiner on a different build is warned (build_check=). */
 void okp_exe_build(char build[17], char *exe, int exesz);
+void okp_exe_build_early(void);   /* start the hash in the background when okplay loads */
 /* the host build of the room whose session is `instance` (as dplayx joins it): 1 = known */
 int okp_room_build(IDirectPlaySP *isp, const GUID *instance, char build[17], char *exe, int exesz);
 /* Transport: which sends ride the reliable lane. A HOST setting: the host's choice travels in its
