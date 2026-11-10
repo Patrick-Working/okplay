@@ -35,6 +35,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include "okp.h"
 #include "rr_fix.h"
+#include "ddshow.h"
 #include <mmsystem.h>
 #include "okbox.h"
 #include <commctrl.h>
@@ -1592,6 +1593,8 @@ static LRESULT CALLBACK box_filter(int code, WPARAM wp, LPARAM lp)
 
 static INT_PTR run_box(okw_box *b)
 {
+    /* a full-screen DirectDraw game: Windows' own screen page in front first, or the box is never seen (ddshow.c) */
+    if (game->kinds & OKW_TCP) dds_show_gdi();
     HHOOK h = SetWindowsHookExA(WH_GETMESSAGE, box_filter, NULL, GetCurrentThreadId());
     box_tid = GetCurrentThreadId();
     ndeferred = 0;
@@ -1621,6 +1624,7 @@ static INT_PTR run_box(okw_box *b)
     else b->r = okbox_ask_join_password(&b->g, b->w, 64);
     InterlockedExchange(&box_open, 0);
     if (h) UnhookWindowsHookEx(h);
+    dds_guard_end();
     if (box_done) SetEvent(box_done);
     for (int i = 0; i < ndeferred; i++) PostMessageA(deferred[i].w, deferred[i].m, deferred[i].wp, deferred[i].lp);
     ndeferred = 0;
@@ -3755,6 +3759,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
             snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
             okbox_init(inst, NULL, ini);
             okbox_set_topmost(TRUE);
+            if (game->kinds & OKW_TCP) dds_init();   /* okplay's boxes over a full-screen DirectDraw game (ddshow.c) */
             exit_watch_start(ini);
             if ((game->kinds & OKW_TCP) && !hook_exe_import("KERNEL32.dll", "ExitProcess", (void *)hook_ExitProcess, (void **)&real_ExitProcess))
                 okp_log(2, "wsock: the game's ExitProcess is not seen - no resets for open connections when it ends");
