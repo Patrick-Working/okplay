@@ -123,11 +123,11 @@ const KNOWN_APPS = [
 // The newest drop-in: older ones show "A newer version is available" (once, never blocking).
 // Change these when you release. The note is shown as plain text under the version (keep it short).
 const LATEST_VERSION = '0.8.3';
-const LATEST_NOTE    = 'Room list: matches on slower PCs no longer show as between games; a lobby settings fix.';
+const LATEST_NOTE    = 'Full games now refuse late joiners, as on Windows DirectPlay; Connection Check works in Winsock game folders; Need for Speed III online with the included wsock32.dll.';
 
 // The newest okplay wsock (the Winsock edition, okplay/wsock/): the same notice there.
-const LATEST_WSOCK_VERSION = '0.2.0';
-const LATEST_WSOCK_NOTE    = 'Road Rash: smoother bikes online (clock correction, glide instead of snap), no more flying AI bikers, a game closed mid-race now exits.';
+const LATEST_WSOCK_VERSION = '0.2.1';
+const LATEST_WSOCK_NOTE    = 'New: Need for Speed III: Hot Pursuit online (room list, passwords, up to 8 players). Road Rash unchanged.';
 
 function latest_line() {
     return 'latest ' . LATEST_VERSION . ' ' . (LATEST_NOTE === '' ? '-' : rawurlencode(LATEST_NOTE)) . "\n"

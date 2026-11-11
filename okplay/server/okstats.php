@@ -2,6 +2,7 @@
 /*
  * Oldkid.net Online Play - private usage stats and reports (what okplay.php collects).
  * ----------------------------------------------------------------------------------
+ * Script version: 2026-10-28 (change this line with every upload).
  * Deploy next to okplay.php. It needs a password, kept in okplay_admin.php in the same folder:
  *
  *     <?php define('OKSTATS_PASSWORD', 'pick-a-long-password');

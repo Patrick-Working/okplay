@@ -65,7 +65,7 @@ LATEST_VERSION = "0.7.0"
 LATEST_NOTE = "Adds Windows 98 support and the combined connection list."
 # the newest okplay wsock, as okplay.php's LATEST_WSOCK_VERSION / LATEST_WSOCK_NOTE (--latest-wsock /
 # --latest-wsock-note)
-LATEST_WSOCK_VERSION = "0.2.0"
+LATEST_WSOCK_VERSION = "0.2.1"
 LATEST_WSOCK_NOTE = ""
 
 

@@ -41,7 +41,7 @@
   <section class="card download">
     <div>
       <h2 style="margin-bottom:4px">Download</h2>
-      <div class="meta">Version {{VERSION}} &middot; {{ZIPSIZE}} &middot; {{DATE}} &middot; Windows 10 / 11</div>
+      <div class="meta">Version {{VERSION}} &middot; {{ZIPSIZE}} &middot; {{DATE}} &middot; Windows 98 to 11 &middot; new: Need for Speed III: Hot Pursuit online</div>
     </div>
     <a class="btn" href="{{ZIP}}" download>Download {{ZIP}}</a>
   </section>
@@ -65,7 +65,13 @@
        <span class="k">age2_x1.5.exe</span> (UserPatch 1.5, strongly recommended) &mdash; usually
        <span class="k">...\age2_x1\</span>. Then start the game as usual, go to Multiplayer and pick
        <b>{{ONLINE}}</b> (internet) or <b>{{LAN}}</b> (same network).</p>
-    <p>No installer, no administrator rights, no registry changes. To remove it, delete the three files.
+    <p><b>Road Rash Online (Steam/GoG/CD-Rom)</b>: copy the files, including <span class="k">wsock32.dll</span>, next to
+       <span class="k">RoadRash95.exe</span> or <span class="k">ROADRASH.EXE</span>, then Mano-&agrave;-Mano &rarr; TCP/IP; a box offers
+       Online Play or LAN Play. In other games <span class="k">wsock32.dll</span> does nothing, so copying everything is fine.</p>
+    <p><b>Need for Speed III: Hot Pursuit</b>: the same files next to <span class="k">nfs3.exe</span>, then Game Setup &rarr;
+       Connect Players &rarr; Network (TCP) &rarr; Host Game or Join Game; a box offers Online Play or LAN Play. To join, press Ok
+       on &ldquo;oldkid.net&rdquo; in the Join box and pick a game from the list.</p>
+    <p>No installer, no administrator rights, no registry changes. To remove it, delete the files you copied.
        Works on Windows 98 through Windows 11 (Windows 95 should work too).</p>
   </section>
 
@@ -113,8 +119,13 @@
       <li>Browser ports: the same DirectPlay compiled for the web, first used by a browser port of Age of Empires II
           (in development).</li>
     </ul>
-    <p>Coming next: games that don't use DirectPlay at all, starting with <b>Road Rash</b> &mdash; its LAN-only
-       multiplayer, online.</p>
+    <p>Games that don't use DirectPlay at all, through <span class="k">wsock32.dll</span> in the same download:</p>
+    <ul>
+      <li><b>Road Rash Online (Steam/GoG/CD-Rom)</b> &mdash; the Steam edition and the original 1996 CD release play each other, Windows 98 to
+          Windows 11, with passwords. Locked games show &ldquo;(pw)&rdquo; in the game's own list. New in 0.8.5: smoother racing online (the race clocks are matched, wrong guesses glide instead of jumping, no more flying bikes).</li>
+      <li><b>Need for Speed III: Hot Pursuit</b> &mdash; new in 0.8.6: the Modern Patch and the original 1998 release race each other,
+          with a list of games, passwords, Peer-to-Peer for 2 players and Client-Server for up to 8. A full game says &ldquo;full&rdquo; in the list.</li>
+    </ul>
   </section>
   <section class="card">
     <h2>Why?</h2>
@@ -143,6 +154,9 @@
         <tr><td><span class="k">okindeo.dll</span></td><td>The Indeo 5 decoder for the intro movies (built from FFmpeg).
           Optional: without it everything works, the movies just have no picture. Not used on Windows 98, which
           has its own.</td></tr>
+        <tr><td><span class="k">wsock32.dll</span></td><td>Online play for games that don't use DirectPlay, such as Road Rash Online (Steam/GoG/CD-Rom) and Need for Speed III: their own
+          LAN game list becomes the list of games on this site, with the same passwords. It only switches on for the games it
+          knows; in any other game it does nothing and Windows handles the network as usual.</td></tr>
         <tr><td><span class="k">okplay.ini</span></td><td>Settings (see below). Optional: without it, sensible defaults are used.</td></tr>
         <tr><td><span class="k">README.txt</span></td><td>Installation and troubleshooting, for offline reading.</td></tr>
         <tr><td><span class="k">SOURCE.txt</span></td><td>Where to get the source code (LGPL).</td></tr>

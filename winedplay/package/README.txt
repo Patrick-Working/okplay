@@ -1,8 +1,10 @@
-{{BRAND}} drop-in  v{{VERSION}}
-Classic Netplay for AoE2 - no installer
-======================================
+{{BRAND}}  v{{VERSION}}
+Classic Netplay for AoE2, Road Rash, Need for Speed III and more - no installer
+===============================================================================
 
-Online and LAN play for the original Age of Empires II: The Conquerors.
+Online and LAN play for the original Age of Empires II: The Conquerors, Road Rash
+(1996), Need for Speed III: Hot Pursuit (1998) and other old games (any DirectPlay
+game should work).
 No VPN, no port forwarding, no accounts - and nothing to install:
 no administrator rights, no registry changes, no Windows "DirectPlay" feature.
 
@@ -15,6 +17,9 @@ Copy these files into the folder that holds the game's exe:
     okindeo.dll    the intro-movie decoder (optional)
     okplay.ini     settings (optional)
     netcheck.exe   Connection Check: test before you play (optional)
+    wsock32.dll    online play for Road Rash and Need for Speed III (see below). In
+                   any other game it does nothing and Windows handles the network
+                   as usual
 
   - UserPatch 1.5: the folder with age2_x1.5.exe, usually ...\age2_x1\
   - otherwise: the folder with age2_x1.exe (or empires2.exe for Age of Kings)
@@ -28,6 +33,71 @@ Then start the game as usual -> Multiplayer. The connection list shows only:
 
 The first time you host, Windows may ask to let the game through the firewall:
 click Allow (LAN games need it; online games work either way).
+
+WHAT'S NEW IN 0.8.6
+-------------------
+- Need for Speed III: Hot Pursuit online (wsock32.dll {{WSOCKVER}}): a list of
+  games instead of typing addresses, optional passwords, no port forwarding,
+  up to 8 players. The Modern Patch and the original 1998 release both work
+  and race each other. See NEED FOR SPEED III.
+- Full games: a Need for Speed III game that is full says "full" in the list
+  and turns away more players ("That game is full."). DirectPlay games: a host
+  whose game is full now refuses a late joiner, as Windows' own DirectPlay does.
+- Need for Speed III: joining a race that has already started now says "No
+  answer from the host. The game may have started or closed." instead of
+  dropping back to the menu without a word.
+- Connection Check works in a Winsock game's folder too (Road Rash, Need for
+  Speed III): its test game runs through wsock32.dll or dplayx.dll, whichever
+  is there, and players in both kinds of folders test with each other. The
+  report says how this PC reaches the other players (the connection method),
+  warns when this PC shows two different public addresses (a second network
+  or a VPN), and compares your version with the newest.
+- Notices over a full-screen game: a stray Enter no longer says yes. The
+  update notice defaults to Not Now, the report questions to Don't Send. On
+  Windows 98 and 95 the update notice shows the download address instead of
+  opening a browser.
+- Steadier on slow PCs: okplay's network thread runs at a higher priority,
+  reads in batches and resends at most the 8 oldest messages at once. The
+  game file's version is checked when the game starts, not when a player
+  joins (that took up to 13 s on Windows 98). After a short outage, messages
+  waiting to be resent go again at once.
+- Stricter checks on everything received from the network. Windows 7 and 8.0
+  reach the room server with newer HTTPS (TLS 1.1 and 1.2).
+- The log notes every long pause in a game and its cause (for bug reports).
+- The DirectPlay files are rebuilt and report 0.8.6. Nothing changed on the
+  wire: players with 0.8.3 to 0.8.5 still play with 0.8.6.
+
+WHAT'S NEW IN 0.8.5
+-------------------
+- Road Rash online is much smoother (wsock32.dll 0.2.0). Measured against the
+  game's own netcode: 20-40 % fewer sudden jumps of the other bikes (most on a
+  LAN, fewer the higher the ping, about a third fewer through dropouts).
+  - The two PCs' race clocks start a few steps apart; they are now compared
+    and the difference taken out, so the other bikes are guessed for the
+    right moment.
+  - When a guess turns out wrong, the bike glides to the right place instead
+    of jumping there.
+  - No more "flying" bikes: gravity in the height guess, and AI bikers (or
+    players in a dropout) stop rising when no news comes for a while.
+  - AI bikers: both PCs now agree on who runs each one, and a PC ignores its
+    own AI bikers sent back to it.
+  - A game closed in the middle of a race now exits instead of staying in the
+    background.
+  These work for the Steam edition and the 1996 CD release, in any mix. Each
+  can be turned off in okplay.ini (the rr_ settings at the end).
+- Road Rash gets the same boxes as DirectPlay games: update notices, crash
+  and connection reports, "server unreachable" and "no network", and a
+  warning when the host's game is a build that doesn't race with yours.
+- The DirectPlay files are the same as in 0.8.3 (they still report 0.8.3).
+
+WHAT'S NEW IN 0.8.4
+-------------------
+- Road Rash online: wsock32.dll, for games that use Winsock directly instead of
+  DirectPlay (see ROAD RASH). The DirectPlay files are the same as in 0.8.3
+  (they still report version 0.8.3).
+- Road Rash over a poor line: each game packet also carries a copy of the one
+  before (Online Play), so single lost packets are filled in, and the log shows
+  lost packets per player every 10 s. Players with older files still connect.
 
 WHAT'S NEW IN 0.8.3
 -------------------
@@ -71,6 +141,51 @@ WHAT'S NEW IN 0.8.1
 - Connection Check (netcheck.exe): test hosting, joining, the server, your
   router and firewall before you play.
 - Tested on Windows 98 against Windows 10 in a full AoE2 match.
+
+ROAD RASH
+---------
+Road Rash (the Steam edition and the original 1996 CD release - they play each
+other) doesn't use DirectPlay; wsock32.dll gives it online play. Copy the files
+next to RoadRash95.exe (Steam: ...\steamapps\common\RoadRash) or ROADRASH.EXE (CD).
+In the game: Mano-a-Mano -> Host or Join -> TCP/IP. A box then asks:
+
+    Online Play    internet games, listed on {{HOST}}
+    LAN Play       same-network games, no internet needed
+    Original       the game's own TCP/IP, as if this weren't here
+
+Hosting asks for an optional password. In the game's "Pick from among the
+available TCP/IP games" list a locked game says "(pw)" after the host's name
+and asks for the password when you pick it; a wrong one keeps you in the list.
+Not carried yet: the game's IPX mode. If the game turns black after you switch
+away from it, that's the game itself: restart it. Logs: logs\ next to the game.
+
+NEED FOR SPEED III
+------------------
+Need for Speed III: Hot Pursuit (1998) doesn't use DirectPlay either; wsock32.dll
+gives its "Network (TCP)" mode online play. Copy the files next to nfs3.exe.
+Known: the Modern Patch (1.6.1, and the portable 1.6.2 Beta) and the original
+1998 release (CD and OEM). They race each other: joining a host with the other
+one asks first, as the game is a different version - "Join anyway" works.
+
+Host: Game Setup > Connect Players > Network (TCP) > Host Game. A box asks:
+
+    Online Play    internet games, listed on {{HOST}}
+    LAN Play       same-network games, no internet needed
+    Original       the game's own TCP/IP, as if this weren't here
+
+Then a box offers an optional password (asked at every hosting; empty = anyone
+can join). The game is listed as "Need for Speed III - <your name>'s game".
+Peer-to-Peer takes 2 players, Client-Server up to 8.
+
+Join: Game Setup > Connect Players > Network (TCP) > Join Game, and the same
+box. The Join box shows "oldkid.net": just press Ok (if it's empty - the 1998
+OEM release - type oldkid.net). A list of the open games shows the players,
+for example "(1/2 players)", and refreshes by itself; pick one and Join. A
+locked game asks for its password. A full game says "full" and can be joined
+once a place is free. A race that has already started can't be joined.
+
+With Original the game uses its own TCP/IP exactly as in 1998 (type the host's
+address; no list, no passwords). Logs: logs\ next to nfs3.exe.
 
 GAME PASSWORDS
 --------------
@@ -157,7 +272,7 @@ SETTINGS WORTH KNOWING (okplay.ini)
 
 UNINSTALL
 ---------
-Delete the three files (and version.dll, if you copied the movie helper, and
+Delete the files you copied (and version.dll, if you copied the movie helper, and
 the netplay-logs folder if you like). On Windows
 98/95 also dplayx-windows9x.dll, if it's there.
 
@@ -183,15 +298,18 @@ GOOD TO KNOW
 
 CONNECTION CHECK
 ----------------
-Start netcheck.exe from the game folder (next to dplayx.dll):
+Start netcheck.exe from the game folder (next to dplayx.dll or wsock32.dll):
   1. Check my connection   the files, the connection list, the room server,
                            your public address, UDP and how your router
                            handles direct connections.
   2. Host a test game      one player hosts...
-  3. Join a test game      ...the other joins: both see the ping (now, average,
-                           worst), jitter and loss, with a graph of the last
-                           minute; the joiner then runs a transmission test.
-Test games are only visible to Connection Check, never in the game.
+  3. Find test games       ...the others join it (up to 8 players in all): all
+                           see the ping (now, average, worst), jitter and loss,
+                           with a graph of the last minute; a joiner then runs
+                           a transmission test.
+Test games are only visible to Connection Check, never in the game. Connection
+Check 0.8.5 and older can't see this version's test games: everyone should use
+this one.
 "Save report" writes everything (plus the end of the log) to a text file you
 can send when asking for help. Works on Windows 95/98 up to 11.
 
@@ -204,6 +322,12 @@ need to fix anything unfinished.
 For a connection problem in a game other than AoE2, set trace=1 in okplay.ini:
 the log then lists every DirectPlay call the game makes and what it got back
 (big logs - turn it off again afterwards).
+Road Rash: its logs go to logs\ next to RoadRash95.exe / ROADRASH.EXE (one file
+per game run; a crash leaves an okplay-crash-*.dmp there too). Every 10 s the log
+notes each player's lost and late packets. Zip the logs folder from every PC in
+the game and send it back. wsock_trace=1 in okplay.ini logs every game packet
+(big logs - turn it off again afterwards).
+Need for Speed III: the same, in logs\ next to nfs3.exe.
 
 LICENSES
 --------
