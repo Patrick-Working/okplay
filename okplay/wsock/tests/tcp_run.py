@@ -221,6 +221,11 @@ SCENARIOS = {
                               joins=[S("menu", "await:closing", "wait:300", "joinfail:" + LO, "back", "menu", "host", "wait:3000")],
                               modes=("shim",), may_host=("join1",),
                               checks=[("log", "join1", NOTICE_NO_ANSWER), ("after", "join1", "no answer from the host", "hosting room")]),
+    # 9b. a join while the host's game is busy (its race runs): the connection comes up, no byte comes back and the
+    #     joining game gives up - the player is told; a later join works
+    "join_busy_host": dict(host=S("menu", "host", "busy:6000", "lobby:1", "left:1"),
+                           joins=[S("menu", "wait:1500", "joinquiet:" + LO, "back", "menu", "wait:4000", "join:" + LO, "wait:500", "leave")],
+                           modes=("shim",), checks=[("log", "join1", "The game may have started or closed")]),
     # 10. the host closes its room, leaves network play and hosts again with another password: the joiner is asked again
     "pw_rehost":  dict(host=S("menu", "host", "lobby:1", "left:1", "close", "quit", "env:OKP_TEST_HOST_PASSWORD=lap4",
                               "menu", "host", "say:rehosted", "lobby:2", "left:2"), env_host={"OKP_TEST_HOST_PASSWORD": "lap3"},

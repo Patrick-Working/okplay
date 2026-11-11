@@ -1175,6 +1175,8 @@ static int selftest(void)
  *   left:N        host: wait until N players in all have left
  *   quiet:MS      host: nobody may connect for MS ms
  *   join:ADDR     connect (the game's loop, 20 s) and reach the host's lobby; joinfail:ADDR: the connect must fail
+ *   joinquiet:ADDR connect, get no answer for 2.5 s, give up (the host's game is busy)
+ *   busy:MS       host: do nothing for MS ms (connections are accepted, nobody answers them)
  *   leave         the joiner leaves the lobby (leave message, then close)
  *   ping          a message to the host that must be answered within 10 s
  *   wait:MS       nothing for MS ms
@@ -1246,7 +1248,7 @@ static void close_all(void)
     if (lsock != INVALID_SOCKET) { closesocket(lsock); lsock = INVALID_SOCKET; }
 }
 
-static int script_join(const char *addr, int must_fail, char *why)
+static int script_join(const char *addr, int must_fail, int quiet, char *why)
 {
     struct sockaddr_in to;
     char how[64];
@@ -1275,6 +1277,14 @@ static int script_join(const char *addr, int must_fail, char *why)
     memset(v, 0, sizeof(v));
     memcpy(v + 1, "27, 2.0", 7);
     send_retry(c, v, 0x29);
+    if (quiet) {   /* the host's game is in a race: it accepts and never answers; the game gives up and closes */
+        for (DWORD t1 = now_ms(); !got_info && !c->closed && now_ms() - t1 < 2500;) Sleep(10);
+        if (got_info || c->closed) { strcpy(why, got_info ? "the host answered, but this join must get no answer" : "the host closed the connection first"); close_conn(c); return 0; }
+        close_conn(c);
+        gs_set(0, 1);
+        printf("EVENT no answer from the host: the game gave up\n");
+        return 1;
+    }
     for (DWORD t1 = now_ms(); !got_info && !c->closed && now_ms() - t1 < 10000;) Sleep(10);
     if (!got_info) { strcpy(why, c->closed ? "the host closed the connection before its game info" : "no game info from the host in 10 s"); return 0; }
     printf("EVENT in the lobby as player %d\n", my_player);
@@ -1343,15 +1353,15 @@ static int run_script(int n, char **steps)
             unsigned before = n_accepted;
             while (now_ms() - t0 < (DWORD)atoi(arg) && n_accepted == before) { host_claim(); Sleep(5); }
             if (n_accepted != before) { ok = 0; strcpy(why, "a player connected"); }
-        } else if (!strncmp(st, "join:", 5) || !strncmp(st, "joinfail:", 9)) {
-            ok = script_join(arg, st[4] == 'f', why);
+        } else if (!strncmp(st, "join:", 5) || !strncmp(st, "joinfail:", 9) || !strncmp(st, "joinquiet:", 10)) {
+            ok = script_join(arg, st[4] == 'f', st[4] == 'q', why);
         } else if (!strcmp(st, "joinbox")) {   /* the Join box: opens with the address typed last, the player presses Ok */
             char a[64];
             if (!gs_join) { ok = 0; strcpy(why, "joinbox needs TCPSIM_GAMESTATE"); }
             else {
                 printf("EVENT the Join box shows \"%s\"\n", gs_join);
                 snprintf(a, sizeof(a), "%s:%u", gs_join, port_arg);
-                ok = gs_join[0] && script_join(a, 0, why);
+                ok = gs_join[0] && script_join(a, 0, 0, why);
                 if (!gs_join[0]) strcpy(why, "the Join box is empty");
             }
         } else if (!strcmp(st, "leave")) {
@@ -1371,6 +1381,9 @@ static int run_script(int n, char **steps)
                 if (pongs == before) { ok = 0; strcpy(why, conns[0].closed ? "the connection closed" : "no answer in 10 s"); }
                 else printf("EVENT ping answered in %lu ms\n", (unsigned long)(now_ms() - t0));
             }
+        } else if (!strncmp(st, "busy:", 5)) {   /* the host's game is busy (a race): connections are accepted, nobody answers */
+            DWORD ms = (DWORD)atoi(arg);
+            while (now_ms() - t0 < ms) Sleep(5);
         } else if (!strncmp(st, "wait:", 5)) {
             DWORD ms = (DWORD)atoi(arg);
             while (now_ms() - t0 < ms) { if (is_host) host_claim(); Sleep(5); }
