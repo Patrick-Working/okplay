@@ -1,13 +1,13 @@
 # okplay - Oldkid.net Online Play
 
-**Latest release: v0.8.5** (2026-11-09) - one download for every game: [oldkid.net](https://oldkid.net/aoe2net/)
+**Latest release: v0.8.6** (2026-11-10) - one download for every game: [oldkid.net](https://oldkid.net/aoe2net/)
 
 | inside | version | for |
 |---|---|---|
-| **DirectPlay drop-in** (`dplayx.dll`, `dplay.dll`) | 0.8.3 | DirectPlay games (AoE2, Midtown Madness 2, Necrodome, ...) |
-| **Winsock shim** (`wsock32.dll`) | 0.2.0 | games that use Winsock directly: Road Rash. Inert in every other game |
+| **DirectPlay drop-in** (`dplayx.dll`, `dplay.dll`) | 0.8.6 | DirectPlay games (AoE2, Midtown Madness 2, Necrodome, ...) |
+| **Winsock shim** (`wsock32.dll`) | 0.2.1 | games that use Winsock directly: Road Rash, Need for Speed III. Inert in every other game |
 
-**Latest supported games:** Road Rash Online (Steam/GoG/CD-Rom; new in v0.8.5: [netcode fixes](#road-rash-online-steamgogcd-rom-what-v085-improves)) · Age of Empires II: The
+**Latest supported games:** Need for Speed III: Hot Pursuit (new in v0.8.6: Modern Patch and the 1998 release, room list, passwords, up to 8 players) · Road Rash Online (Steam/GoG/CD-Rom; new in v0.8.5: [netcode fixes](#road-rash-online-steamgogcd-rom-what-v085-improves)) · Age of Empires II: The
 Conquerors (original and UserPatch 1.5) · Midtown Madness 2 · Necrodome. Online Play with game passwords, LAN Play, Windows 98 to
 11. Details under [Games and projects](#games-and-projects).
 
@@ -140,13 +140,16 @@ Fixes for one game's own bugs are kept apart, in memory only and for an exact ga
 - **Browser ports**: `okweb/` gives a game compiled to WebAssembly the same DirectPlay; first used by a
   browser port of Age of Empires II (in development).
 
-**Winsock games (`okplay/wsock`)** - for games that talk UDP themselves instead of through DirectPlay:
+**Winsock games (`okplay/wsock`)** - for games that talk UDP or TCP themselves instead of through DirectPlay:
 a `wsock32.dll` beside the game carries their traffic over okplay (room list, hole punching, the same
 passwords and boxes as the drop-in), and the game's own LAN game list becomes the room list. Tested:
 
 - **Road Rash Online (Steam/GoG/CD-Rom)**: the Steam edition and the original CD release play each other,
   Windows 98 to 11, Online Play and LAN Play with game passwords, lobby and races, and since v0.8.5 smoother
   racing ([netcode fixes](#road-rash-online-steamgogcd-rom-what-v085-improves), `docs/GAME_ROADRASH.md`).
+- **Need for Speed III: Hot Pursuit** (new in v0.8.6): the Modern Patch and the original 1998 release race
+  each other, Client-Server and Peer-to-Peer games, a room list instead of typed addresses, a password per
+  hosting, up to 8 players, full games say so (`docs/GAME_NFS3.md`).
 
 Next: races with 3+ players, IPX games (Road Rash's IPX mode and others) over okplay.
 
