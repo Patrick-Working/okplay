@@ -7,6 +7,9 @@
 | **DirectPlay drop-in** (`dplayx.dll`, `dplay.dll`) | 0.8.6 | DirectPlay games (AoE2, Midtown Madness 2, Necrodome, ...) |
 | **Winsock shim** (`wsock32.dll`) | 0.2.1 | games that use Winsock directly: Road Rash, Need for Speed III. Inert in every other game |
 
+**What's new in v0.8.6:** [release notes](docs/RELEASE_0.8.6.md) - Need for Speed III: Hot Pursuit, TCP games over okplay,
+full DirectPlay sessions refuse late joiners, Connection Check in every game folder.
+
 **Latest supported games:** Need for Speed III: Hot Pursuit (new in v0.8.6: Modern Patch and the 1998 release, room list, passwords, up to 8 players) · Road Rash Online (Steam/GoG/CD-Rom; new in v0.8.5: [netcode fixes](#road-rash-online-steamgogcd-rom-what-v085-improves)) · Age of Empires II: The
 Conquerors (original and UserPatch 1.5) · Midtown Madness 2 · Necrodome. Online Play with game passwords, LAN Play, Windows 98 to
 11. Details under [Games and projects](#games-and-projects).
