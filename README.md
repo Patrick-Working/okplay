@@ -1,13 +1,16 @@
 # okplay - Oldkid.net Online Play
 
-**Latest release: v0.8.6** (2026-11-10) - one download for every game: [oldkid.net](https://oldkid.net/aoe2net/)
+**Latest release: v0.8.7** (2026-11-11) - one download for every game: [oldkid.net](https://oldkid.net/aoe2net/)
 
 | inside | version | for |
 |---|---|---|
-| **DirectPlay drop-in** (`dplayx.dll`, `dplay.dll`) | 0.8.6 | DirectPlay games (AoE2, Midtown Madness 2, Necrodome, ...) |
-| **Winsock shim** (`wsock32.dll`) | 0.2.1 | games that use Winsock directly: Road Rash, Need for Speed III. Inert in every other game |
+| **DirectPlay drop-in** (`dplayx.dll`, `dplay.dll`) | 0.8.7 | DirectPlay games (AoE2, Midtown Madness 2, Necrodome, ...) |
+| **Winsock shim** (`wsock32.dll`) | 0.2.2 | games that use Winsock directly: Road Rash, Need for Speed III. Inert in every other game |
 
-**What's new in v0.8.6:** [release notes](docs/RELEASE_0.8.6.md) - Need for Speed III: Hot Pursuit, TCP games over okplay,
+**What's new in v0.8.7:** [release notes](docs/RELEASE_0.8.7.md) - the mouse pointer shows on okplay's boxes again (Windows 10/11, Need for Speed III),
+boxes keep a sensible size on low-resolution game screens.
+
+**In v0.8.6:** [release notes](docs/RELEASE_0.8.6.md) - Need for Speed III: Hot Pursuit, TCP games over okplay,
 full DirectPlay sessions refuse late joiners, Connection Check in every game folder.
 
 **Latest supported games:** Need for Speed III: Hot Pursuit (new in v0.8.6: Modern Patch and the 1998 release, room list, passwords, up to 8 players) · Road Rash Online (Steam/GoG/CD-Rom; new in v0.8.5: [netcode fixes](#road-rash-online-steamgogcd-rom-what-v085-improves)) · Age of Empires II: The

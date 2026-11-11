@@ -2112,7 +2112,9 @@ static void ui_show_pending(void)
 }
 
 /* the first UDP socket (or own-address lookup) of a game run: Online Play, LAN Play or the original TCP/IP.
- * okplay.ini wsock_mode=ask (default) | online | lan | original; tests: OKP_WSOCK_MODE. No okw_lock held. */
+ * okplay.ini wsock_mode=ask (default) | online | lan | original; tests: OKP_WSOCK_MODE. No okw_lock held.
+ * The answer holds until end_session() clears it (check_new_game(): shared rule). A game that never meets
+ * that rule keeps one answer per launch - NFS3 does; see docs/GAME_NFS3.md "When it is asked again". */
 static int choose_mode(void)
 {
     if (mode_choice) return mode_choice;
@@ -2899,13 +2901,16 @@ static INT_PTR lb_run(okw_listbox *L)   /* the game's thread, inside run_box */
     *p++ = 0;   /* no menu */
     *p++ = 0;   /* the standard dialog class */
     p = dlg_str(p, title);
-    *p++ = 8;
+    *p++ = (WORD)okbox_font_pt(8);
     p = dlg_str(p, L"MS Shell Dlg");
     p = dlg_item(p, SS_LEFT, 8, 8, 244, 20, 100, 0x82, L"Looking for games...");
     p = dlg_item(p, LBS_NOTIFY | LBS_NOINTEGRALHEIGHT | WS_VSCROLL | WS_BORDER | WS_TABSTOP, 8, 30, 244, 92, 101, 0x83, L"");
     p = dlg_item(p, BS_DEFPUSHBUTTON | WS_TABSTOP, 136, 128, 56, 14, IDOK, 0x80, L"Join");
     p = dlg_item(p, BS_PUSHBUTTON | WS_TABSTOP, 196, 128, 56, 14, IDCANCEL, 0x80, L"Cancel");
-    return DialogBoxIndirectParamA(g_self, t, NULL, lb_proc, (LPARAM)L);
+    okbox_cursor_begin();   /* the game's hidden or fenced-in mouse pointer (okbox.c) */
+    INT_PTR lb_r = DialogBoxIndirectParamA(g_self, t, NULL, lb_proc, (LPARAM)L);
+    okbox_cursor_end();
+    return lb_r;
 }
 
 /* the list box: 1 = *host picked */

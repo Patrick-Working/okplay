@@ -494,7 +494,81 @@ static WORD *dlg_item( WORD *p, DWORD style, short x, short y, short cx, short c
     return p;
 }
 
+/* The mouse pointer while a box is open.  A full-screen game hides the pointer (ShowCursor counts per
+ * thread, and a box opens on the thread that called us - often the game's own) and may keep it inside a
+ * rectangle (ClipCursor); the box then has no pointer.  For the time a box is open: show the pointer,
+ * lift the rectangle, let go of a mouse capture; all put back when the last box closes.  Shared by every
+ * okplay box (okplay wsock's room list calls these too). */
+static LONG cur_depth;
+static DWORD cur_tid;
+static int cur_shows;
+static BOOL cur_clipped;
+static RECT cur_clip;
+
+/* The point size for a box's text. A game screen of 640x480 or 800x600 on a PC whose Windows text size is
+ * 125 % or more gets boxes that fill most of the screen (the text size follows the PC, the screen is the
+ * game's): there the text is brought back to what it is at 100 %. Shared by every box; no game specifics. */
+int okbox_font_pt( int pt )
+{
+    HDC dc = GetDC( NULL );
+    int dpi = GetDeviceCaps( dc, LOGPIXELSY );
+    ReleaseDC( NULL, dc );
+    if ( dpi <= 96 || GetSystemMetrics( SM_CYSCREEN ) > 600 ) return pt;
+    pt = MulDiv( pt, 96, dpi );
+    return pt < 5 ? 5 : pt;
+}
+
+void okbox_cursor_begin( void )
+{
+    RECT clip, scr;
+    int n = 0, i;
+    if ( InterlockedIncrement( &cur_depth ) != 1 ) return;
+    cur_tid = GetCurrentThreadId();
+    cur_shows = 0;
+    cur_clipped = FALSE;
+    for ( i = 0; i < 64; i++ )
+    {
+        n = ShowCursor( TRUE );
+        cur_shows++;
+        if ( n >= 0 ) break;
+    }
+    if ( cur_shows == 1 && n > 0 ) { ShowCursor( FALSE ); cur_shows = 0; }   /* was showing already */
+    SetRect( &scr, GetSystemMetrics( SM_XVIRTUALSCREEN ), GetSystemMetrics( SM_YVIRTUALSCREEN ), 0, 0 );
+    scr.right = scr.left + GetSystemMetrics( SM_CXVIRTUALSCREEN );
+    scr.bottom = scr.top + GetSystemMetrics( SM_CYVIRTUALSCREEN );
+    if ( scr.right <= scr.left )   /* Windows 95: no virtual screen */
+        SetRect( &scr, 0, 0, GetSystemMetrics( SM_CXSCREEN ), GetSystemMetrics( SM_CYSCREEN ) );
+    if ( GetClipCursor( &clip ) && (clip.left > scr.left || clip.top > scr.top ||
+                                    clip.right < scr.right || clip.bottom < scr.bottom) )
+    {
+        cur_clip = clip;
+        cur_clipped = TRUE;
+        ClipCursor( NULL );
+    }
+    if ( GetCapture() ) ReleaseCapture();
+    SetCursor( LoadCursorA( NULL, (LPCSTR)IDC_ARROW ) );
+}
+
+void okbox_cursor_end( void )
+{
+    if ( InterlockedDecrement( &cur_depth ) != 0 ) return;
+    if ( cur_clipped ) ClipCursor( &cur_clip );
+    if ( GetCurrentThreadId() == cur_tid ) while ( cur_shows-- > 0 ) ShowCursor( FALSE );
+    cur_shows = 0;
+    cur_clipped = FALSE;
+}
+
+static INT_PTR run_dialog_( DLGTEMPLATE *t, DLGPROC proc, struct pw_dialog *d );
 static INT_PTR run_dialog( DLGTEMPLATE *t, DLGPROC proc, struct pw_dialog *d )
+{
+    INT_PTR r;
+    okbox_cursor_begin();
+    r = run_dialog_( t, proc, d );
+    okbox_cursor_end();
+    return r;
+}
+
+static INT_PTR run_dialog_( DLGTEMPLATE *t, DLGPROC proc, struct pw_dialog *d )
 {
     /* DLGTEMPLATE strings are WCHAR for both calls; 9x only creates ANSI dialogs */
     INT_PTR (WINAPI *box_w)( HINSTANCE, LPCDLGTEMPLATEW, HWND, DLGPROC, LPARAM ) =
@@ -587,7 +661,7 @@ static INT_PTR show_simple_dialog( struct pw_dialog *d )
     p = (WORD *)(t + 1);
     *p++ = 0; *p++ = 0;                     /* no menu, default class */
     p = dlg_str( p, L"" );                  /* caption and texts are set in WM_INITDIALOG */
-    *p++ = 8; p = dlg_str( p, L"MS Shell Dlg" );
+    *p++ = (WORD)okbox_font_pt( 8 ); p = dlg_str( p, L"MS Shell Dlg" );
     p = dlg_item( p, SS_LEFT | SS_NOPREFIX, m, d->y_text, d->cx - 2 * m, d->text_h, PW_TEXT, 0x82, L"" );
     if ( d->edit )
     {

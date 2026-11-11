@@ -34,6 +34,19 @@ Then start the game as usual -> Multiplayer. The connection list shows only:
 The first time you host, Windows may ask to let the game through the firewall:
 click Allow (LAN games need it; online games work either way).
 
+WHAT'S NEW IN 0.8.7
+-------------------
+- The mouse pointer is back on our boxes (wsock32.dll {{WSOCKVER}}). On
+  Windows 10 and 11, Need for Speed III hid the pointer, so the Online Play /
+  LAN Play box, the game list and the password box could only be used with
+  the keyboard. The pointer now shows while one of our boxes is open and is
+  hidden again when it closes. Every game gets this.
+- Boxes are a sensible size again. With Windows' text size above 100 % and a
+  game running at 640x480 or 800x600, the boxes filled most of the screen.
+  Their text now follows the game's screen, not the desktop setting.
+- Nothing changed on the wire: players with 0.8.3 to 0.8.6 still play with
+  0.8.7.
+
 WHAT'S NEW IN 0.8.6
 -------------------
 - Need for Speed III: Hot Pursuit online (wsock32.dll {{WSOCKVER}}): a list of

@@ -225,6 +225,7 @@ void dds_init(void)
  * "you are no longer in front" messages stop at okplay. */
 static HWND dd_game_wnd;            /* the window guarded last: in front again when the box closes */
 static volatile LONG dd_guard;
+static volatile DWORD dd_tail;   /* when the last box closed (tick) */
 /* A window we take the place of keeps its own procedure in this property: each window is taken over once, and our
  * procedure is never stored as "the old one" (box 1 over window A, box 2 over window B, box 3 over A again used to do
  * that with one shared variable - the procedure then called itself until the stack ran out). */
@@ -240,10 +241,55 @@ static void dd_forget(HWND w)
     LeaveCriticalSection(&dd_lock);
 }
 
+/* The mouse pointer while a box is open.  The game hides it on the thread of its window (ShowCursor counts
+ * per thread, WM_SETCURSOR answered with no pointer); a box on another thread then still has no pointer
+ * wherever Windows asks the game window (seen with DDrawCompat, which draws the pointer itself).  So the
+ * game window's thread is asked - by a message, as only that thread can - to show the pointer while a box
+ * is open and to put its count back afterwards; WM_SETCURSOR gets the arrow meanwhile.  Shared: any game. */
+static UINT dd_cur_msg;
+static int dd_cur_shows;     /* ShowCursor(TRUE) calls to undo; the game window's thread only */
+
+static void dds_cursor_on_game_thread(int on)
+{
+    if (on) {
+        int n = 0;
+        if (dd_cur_shows) return;
+        for (int i = 0; i < 64; i++) { n = ShowCursor(TRUE); dd_cur_shows++; if (n >= 0) break; }
+        if (dd_cur_shows == 1 && n > 0) { ShowCursor(FALSE); dd_cur_shows = 0; }   /* was showing already */
+        SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_ARROW));
+        okp_log(2, "ddshow: mouse pointer for the box - the game's thread had it hidden %d deep", dd_cur_shows);
+    } else {
+        while (dd_cur_shows > 0) { ShowCursor(FALSE); dd_cur_shows--; }
+    }
+}
+
+static void dds_cursor(HWND w, int on)
+{
+    DWORD_PTR r = 0;
+    CURSORINFO ci;
+    RECT clip = { 0, 0, 0, 0 };
+    memset(&ci, 0, sizeof(ci)); ci.cbSize = sizeof(ci);
+    if (!dd_cur_msg) dd_cur_msg = RegisterWindowMessageA("okplay.ddshow.cursor");
+    if (!dd_cur_msg || !w || !IsWindow(w)) return;
+    if (on) {
+        GetCursorInfo(&ci);
+        GetClipCursor(&clip);
+        okp_log(2, "ddshow: mouse pointer before the box: %s, at %ld,%ld, kept inside %ld,%ld-%ld,%ld",
+                (ci.flags & CURSOR_SHOWING) ? "showing" : "hidden", ci.ptScreenPos.x, ci.ptScreenPos.y,
+                clip.left, clip.top, clip.right, clip.bottom);
+    }
+    if (GetWindowThreadProcessId(w, NULL) == GetCurrentThreadId()) SendMessageA(w, dd_cur_msg, on, 0);
+    else if (!SendMessageTimeoutA(w, dd_cur_msg, on, 0, SMTO_ABORTIFHUNG, 300, &r))
+        PostMessageA(w, dd_cur_msg, on, 0);   /* (busy just now: when it next reads its messages) */
+}
+
 static LRESULT CALLBACK dds_game_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
     WNDPROC old = (WNDPROC)GetPropA(w, DD_PROP);
     if (!old) return DefWindowProcA(w, m, wp, lp);   /* (never: the property is set before this is put in place) */
+    if (dd_cur_msg && m == dd_cur_msg) { dds_cursor_on_game_thread(wp != 0); return 0; }
+    if (m == WM_NCDESTROY) dd_cur_shows = 0;
+    if (dd_guard && m == WM_SETCURSOR) { SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_ARROW)); return TRUE; }
     if (dd_guard) {
         int off = (m == WM_ACTIVATEAPP && !wp) || (m == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE) || m == WM_KILLFOCUS ||
                   (m == WM_NCACTIVATE && !wp);
@@ -251,6 +297,12 @@ static LRESULT CALLBACK dds_game_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
             m == WM_SYSCOMMAND || m == WM_DISPLAYCHANGE || m == WM_SHOWWINDOW)
             okp_log(3, "ddshow: game window message 0x%04x wp %lx lp %lx%s", m, (unsigned long)wp, (unsigned long)lp, off ? " - kept from the game" : "");
         if (off) return m == WM_NCACTIVATE ? TRUE : 0;
+    }
+    else if (dd_tail && GetTickCount() - dd_tail < 4000) {   /* just after a box: what reaches the game (log only) */
+        if (m == WM_ACTIVATEAPP || m == WM_ACTIVATE || m == WM_SETFOCUS || m == WM_KILLFOCUS || m == WM_NCACTIVATE || m == WM_SIZE ||
+            m == WM_SYSCOMMAND || m == WM_DISPLAYCHANGE || m == WM_SHOWWINDOW || m == WM_WINDOWPOSCHANGED)
+            okp_log(3, "ddshow: after the box, game window message 0x%04x wp %lx lp %lx%s", m, (unsigned long)wp, (unsigned long)lp,
+                    IsIconic(w) ? " (minimised)" : "");
     }
     if (m == WM_NCDESTROY) {   /* the window goes: its own procedure back, and forgotten here */
         RemovePropA(w, DD_PROP);
@@ -300,6 +352,7 @@ static void dds_guard_begin(void)
     }
     dd_game_wnd = w;
     InterlockedExchange(&dd_guard, 1);
+    if (GetPropA(w, DD_PROP)) dds_cursor(w, 1);
 }
 
 void dds_detach(void)   /* this DLL is unloaded while the process goes on: every window gets its own procedure back */
@@ -322,7 +375,9 @@ void dds_detach(void)   /* this DLL is unloaded while the process goes on: every
 void dds_guard_end(void)   /* the box is gone: the game window in front again, then its messages as usual */
 {
     if (!dd_guard) return;
+    if (dd_game_wnd && IsWindow(dd_game_wnd) && GetPropA(dd_game_wnd, DD_PROP)) dds_cursor(dd_game_wnd, 0);
     if (dd_game_wnd && IsWindow(dd_game_wnd)) SetForegroundWindow(dd_game_wnd);
+    dd_tail = GetTickCount() | 1;
     InterlockedExchange(&dd_guard, 0);
 }
 

@@ -126,8 +126,8 @@ const LATEST_VERSION = '0.8.3';
 const LATEST_NOTE    = 'Full games now refuse late joiners, as on Windows DirectPlay; Connection Check works in Winsock game folders; Need for Speed III online with the included wsock32.dll.';
 
 // The newest okplay wsock (the Winsock edition, okplay/wsock/): the same notice there.
-const LATEST_WSOCK_VERSION = '0.2.1';
-const LATEST_WSOCK_NOTE    = 'New: Need for Speed III: Hot Pursuit online (room list, passwords, up to 8 players). Road Rash unchanged.';
+const LATEST_WSOCK_VERSION = '0.2.2';
+const LATEST_WSOCK_NOTE    = 'Fixes the missing mouse pointer and the oversized boxes on Windows 10 and 11 (Need for Speed III, Road Rash).';
 
 function latest_line() {
     return 'latest ' . LATEST_VERSION . ' ' . (LATEST_NOTE === '' ? '-' : rawurlencode(LATEST_NOTE)) . "\n"

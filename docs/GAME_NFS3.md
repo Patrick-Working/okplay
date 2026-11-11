@@ -56,6 +56,14 @@ two PCs: Modern Patch against Modern Patch and 1998 against 1998, host and join,
   only), else the computer's name.
 - **Online / LAN / Original**: the same box as in every okplay game (`wsock_mode=ask|online|lan|original`),
   shown when Host Game or Join Game is chosen.
+  **When it is asked again** (noted 2026-11-10, wsock 0.2.2 test): the shared rule is "a new game asks again" -
+  `check_new_game()` in wsock.c clears the choice once the game has had no UDP socket open for 2 s (Road Rash:
+  Disconnect) or a host closed its room with no player left. NFS3 never meets that rule from its menus (seen in
+  the live test: Join Game, Cancel, Join Game again shows no box), so here the choice holds for the whole game
+  run: **once per launch**. To change it the player restarts the game; `wsock_mode=online|lan|original` fixes it
+  with no box. Host or Join is the game's own menu and comes every time; so do the room list and the password
+  boxes. Possible later hook (game-only, not built): ask again when the game leaves its network screen (the log
+  line "game state now: net 0").
 - **Windows 9x**: the 1998 exe gives its threads a 32,000-byte stack; okplay's own threads ask for their own
   stack size and keep large buffers on the heap.
 

@@ -32,6 +32,9 @@ struct pw_dialog
 /* hinst: the module the dialogs belong to; is_aoe2: NULL = never styled automatically; ini: okplay.ini path */
 void okbox_init( HINSTANCE hinst, BOOL (*is_aoe2)( void ), const char *ini );
 void okbox_set_topmost( BOOL on );   /* boxes always on top and in front (okplay wsock: full-screen games) */
+int okbox_font_pt( int pt );   /* text size for a box: smaller on a small game screen of a high-DPI PC */
+void okbox_cursor_begin( void );    /* mouse pointer shown and free while a box is open (full-screen games hide it) */
+void okbox_cursor_end( void );
 INT_PTR okbox_show( struct pw_dialog *d );   /* IDOK, IDCANCEL or PW_THIRD */
 void okbox_hash_password( const WCHAR *typed, const GUID *instance, WCHAR *out, DWORD size );
 void okbox_brand( WCHAR *out, DWORD size );
