@@ -1945,11 +1945,50 @@ typedef struct { HWND w; UINT m; WPARAM wp; LPARAM lp; } okw_msg;
 static okw_msg deferred[64];
 static int ndeferred;
 
+static int box_front;        /* okplay.ini wsock_box_front=1: boxes take the front as before (no hooks) */
+static HHOOK na_cbt, na_keys;
+static HWND na_dlg, na_focus, na_caret;
+static void na_sync(void);
+extern int okbox_no_front;
+extern HWND okbox_no_front_wnd, okbox_no_front_focus;
+
+/* [universal] The one gate every box goes through (docs/BOX_METHOD.md: one box at a time).  "Is a box open?" and "then it is
+ * mine" are one step under this lock: looked at first and set later, two threads could both find it free, and the
+ * second box then took the first one's hooks and guard away with it. */
+static CRITICAL_SECTION box_gate;
+enum { BOX_BUSY, BOX_MINE, BOX_INNER };
+
+static int box_claim(DWORD me)
+{
+    int r;
+    EnterCriticalSection(&box_gate);
+    if (!box_open) {
+        box_tid = me;
+        if (box_done) ResetEvent(box_done);
+        InterlockedExchange(&box_open, 1);
+        r = BOX_MINE;
+    }
+    else r = box_tid == me ? BOX_INNER : BOX_BUSY;
+    LeaveCriticalSection(&box_gate);
+    return r;
+}
+
+static void box_release(void)   /* last, when everything the box set up is put back */
+{
+    EnterCriticalSection(&box_gate);
+    InterlockedExchange(&box_open, 0);
+    if (box_done) SetEvent(box_done);
+    LeaveCriticalSection(&box_gate);
+}
+
 static void wait_for_box(void)
 {
     /* Windows 9x: not there - a multimedia-timer thread made to wait never sent again (the game's join then
      * times out while the player types; the password is kept, and joining again goes straight in) */
     if (okp_sys.win9x) return;
+    /* never the thread of the game window: a window that stops reading its messages holds up the box itself
+     * (Need for Speed III: seconds before the room list could be used) */
+    if (dds_on_game_window_thread()) return;
     if (box_open && GetCurrentThreadId() != box_tid && box_done) WaitForSingleObject(box_done, INFINITE);
 }
 
@@ -1970,6 +2009,11 @@ static LRESULT CALLBACK box_filter(int code, WPARAM wp, LPARAM lp)
          * that comes back in from opening another box */
         int quiet = m->message == WM_TIMER || (m->message >= WM_KEYFIRST && m->message <= WM_KEYLAST) ||
                     (m->message >= WM_MOUSEFIRST && m->message <= WM_MOUSELAST);
+        /* over a full-screen game the box stays where it is: dragging it by its title bar went wrong there
+         * (the game does not redraw behind it) */
+        if (m->message == WM_NCLBUTTONDOWN && m->wParam == HTCAPTION && dds_box_over_game() && in_box_window(m->hwnd))
+            m->message = WM_NULL;
+        if (na_dlg || okbox_no_front_wnd) na_sync();
         if (quiet && !in_box_window(m->hwnd)) {
             if (m->message >= WM_USER && m->hwnd && ndeferred < 64) {   /* the game's own: later, not never */
                 okw_msg *d = &deferred[ndeferred++];
@@ -1981,15 +2025,269 @@ static LRESULT CALLBACK box_filter(int code, WPARAM wp, LPARAM lp)
     return CallNextHookEx(NULL, code, wp, lp);
 }
 
+/* ---- a box over a full-screen game never becomes the active window (Windows NT) ----
+ * Universal (any full-screen DirectDraw game the boxes open over), found with Need for Speed III on Windows 11:
+ * each time the front moved between the box and the game, Windows made the box's thread wait for the thread of
+ * the game window - and that one answers only every few seconds while the game connects (the room list froze,
+ * a 0.3 s connection took 16 s, and when the box closed another program got the front and the game minimised).
+ * So the game keeps the front the whole time: the box is a topmost window that is never activated; the mouse
+ * works on it as it is, and the keyboard is read with a low-level hook on the box's own thread and handed to
+ * the box (Enter, Esc, Tab, arrows, typing).  Windows 9x has no such hook and keeps the old way. */
+
+/* [universal] A box opened inside another one (the room list, then "Wrong password") gets the keys while it is
+ * open; the box under it is remembered and gets them back when the inner one closes.  Before this the keys went
+ * to the game from then on, with the outer box still on the screen. */
+#define NA_DEPTH 4
+static struct { HWND dlg, focus; } na_under[NA_DEPTH];
+static int na_nunder;
+
+static void na_take(HWND w, HWND focus)   /* w gets the keys from now on */
+{
+    if (na_dlg && na_dlg != w && IsWindow(na_dlg) && na_nunder < NA_DEPTH) {
+        na_under[na_nunder].dlg = na_dlg; na_under[na_nunder].focus = na_focus; na_nunder++;
+    }
+    na_dlg = w; na_focus = focus; na_caret = NULL;
+}
+
+static void na_gone(HWND w)   /* w is closing: the box under it, if any, has the keys again */
+{
+    for (int i = 0; i < na_nunder; i++)
+        if (na_under[i].dlg == w) { for (int j = i; j < na_nunder - 1; j++) na_under[j] = na_under[j + 1]; na_nunder--; i--; }
+    if (w != na_dlg) return;
+    na_dlg = na_focus = na_caret = NULL;
+    while (na_nunder > 0 && !na_dlg) {
+        na_nunder--;
+        if (IsWindow(na_under[na_nunder].dlg)) {
+            na_dlg = na_under[na_nunder].dlg; na_focus = na_under[na_nunder].focus;
+            okp_log(2, "box: the inner box closed; the keys go to the box under it again");
+        }
+    }
+}
+
+static void na_sync(void)   /* the control the keys go to shows it (an edit field: its caret) */
+{
+    if (okbox_no_front_wnd) {   /* a box that came up without asking for the activation (okbox.c box_shown) */
+        HWND w = okbox_no_front_wnd;
+        okbox_no_front_wnd = NULL;
+        if (w != na_dlg && IsWindow(w)) {
+            na_take(w, okbox_no_front_focus);
+            SetWindowPos(w, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            okp_log(2, "box: up without asking for the front (the game keeps it); keys come by hook");
+        }
+    }
+    if (na_focus == na_caret) return;
+    if (na_caret && IsWindow(na_caret) && GetFocus() != na_caret) SendMessageA(na_caret, WM_KILLFOCUS, 0, 0);
+    na_caret = na_focus;
+    if (na_caret && IsWindow(na_caret) && GetFocus() != na_caret) SendMessageA(na_caret, WM_SETFOCUS, 0, 0);
+}
+
+static LRESULT CALLBACK na_cbt_proc(int code, WPARAM wp, LPARAM lp)
+{
+    if (code == HCBT_ACTIVATE && in_box_window((HWND)wp)) {
+        HWND w = (HWND)wp;
+        if (w != na_dlg) {
+            na_take(w, NULL);
+            SetWindowLongA(w, GWL_EXSTYLE, GetWindowLongA(w, GWL_EXSTYLE) | WS_EX_NOACTIVATE | WS_EX_TOPMOST);
+            SetWindowPos(w, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            okp_log(2, "box: asked for the front and was refused; keys come by hook");
+        }
+        return 1;   /* not activated */
+    }
+    if (code == HCBT_SETFOCUS && wp && in_box_window((HWND)wp) && (GetWindowLongA((HWND)wp, GWL_STYLE) & WS_CHILD)) na_focus = (HWND)wp;
+    if (code == HCBT_DESTROYWND && wp) na_gone((HWND)wp);
+    return CallNextHookEx(NULL, code, wp, lp);
+}
+
+static int na_is(HWND w, const char *cls)
+{
+    char c[16];
+    return w && GetClassNameA(w, c, sizeof(c)) && !_stricmp(c, cls);
+}
+
+static DWORD na_pend;   /* Esc, Enter or Space is down in the box; it acts when let go */
+
+static LRESULT CALLBACK na_key_proc(int code, WPARAM wp, LPARAM lp)
+{
+    KBDLLHOOKSTRUCT *k = (KBDLLHOOKSTRUCT *)lp;
+    HWND dlg, fg, game = dds_game_window();
+    DWORD vk, klp;
+    int shift, ctrl;
+    int down, altgr;
+    if (okbox_no_front_wnd) na_sync();
+    if (na_dlg && !IsWindow(na_dlg)) na_gone(na_dlg);   /* (closed without the activation hook seeing it) */
+    dlg = na_dlg;
+    if (code != HC_ACTION || !dlg || !IsWindowVisible(dlg)) return CallNextHookEx(NULL, code, wp, lp);
+    fg = GetForegroundWindow();
+    if (fg && fg != game && fg != dlg) return CallNextHookEx(NULL, code, wp, lp);   /* another program is in front (nothing in front: the box takes the key) */
+    vk = k->vkCode;
+    down = wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN;
+    /* the modifiers themselves, and the keys of Windows itself, go on as usual */
+    if (vk == VK_LWIN || vk == VK_RWIN ||
+        vk == VK_LSHIFT || vk == VK_RSHIFT || vk == VK_SHIFT || vk == VK_LCONTROL || vk == VK_RCONTROL || vk == VK_CONTROL ||
+        vk == VK_LMENU || vk == VK_RMENU || vk == VK_MENU || vk == VK_CAPITAL || vk == VK_NUMLOCK || vk == VK_SNAPSHOT)
+        return CallNextHookEx(NULL, code, wp, lp);
+    /* [universal] Alt+F4 with the game in front would close the game: it cancels the box instead */
+    if (vk == VK_F4 && ((k->flags & LLKHF_ALTDOWN) || (GetAsyncKeyState(VK_MENU) & 0x8000))) {
+        if (down) { okp_log(2, "box: Alt+F4 cancels the box (not passed to the game)"); PostMessageA(dlg, WM_COMMAND, IDCANCEL, 0); }
+        return 1;
+    }
+    /* [universal] AltGr (= Ctrl+Alt) makes characters on many keyboards (@ \ { } | and the euro sign on German,
+     * French, Nordic ... layouts): those are typed into the box.  Passed on as "a key with Alt", they could not be
+     * typed at all and the game got the key. */
+    altgr = (GetAsyncKeyState(VK_MENU) & 0x8000) && (GetAsyncKeyState(VK_CONTROL) & 0x8000);
+    if (altgr) {
+        BYTE ks[256];
+        WCHAR ch[4];
+        memset(ks, 0, sizeof(ks));
+        ks[VK_CONTROL] = ks[VK_MENU] = ks[VK_LCONTROL] = ks[VK_RMENU] = 0x80;
+        if (GetAsyncKeyState(VK_SHIFT) & 0x8000) ks[VK_SHIFT] = 0x80;
+        if (ToUnicode(vk, k->scanCode, ks, ch, 4, 4 /* leave the keyboard state alone */) == 1 && ch[0] >= 0x20) {
+            if (down) {
+                char mb[4];
+                int nb = WideCharToMultiByte(CP_ACP, 0, ch, 1, mb, sizeof(mb), NULL, NULL);
+                if (na_focus && (!IsWindow(na_focus) || !IsWindowVisible(na_focus) || !IsWindowEnabled(na_focus))) na_focus = NULL;
+                if (!na_focus) na_focus = GetNextDlgTabItem(dlg, NULL, FALSE);
+                na_sync();
+                for (int i = 0; na_focus && i < nb; i++)
+                    SendMessageA(na_focus, WM_CHAR, (BYTE)mb[i], 1 | (k->scanCode << 16));
+            }
+            return 1;   /* down and up: the game gets neither */
+        }
+    }
+    /* any other key with Alt (Alt+Tab, Alt+Enter ...) is Windows' or the game's */
+    if ((k->flags & LLKHF_ALTDOWN) || wp == WM_SYSKEYDOWN || wp == WM_SYSKEYUP)
+        return CallNextHookEx(NULL, code, wp, lp);
+    /* [universal] the keys that can close the box act when they are let go: acted on when pressed, the box (and
+     * this hook) was gone before the key came up, and the game got that key-up */
+    if (wp != WM_KEYDOWN) {
+        if (wp != WM_KEYUP || vk != na_pend) return 1;   /* key up: not for the game either */
+        na_pend = 0;
+    }
+    else if (vk == VK_ESCAPE || vk == VK_RETURN || vk == VK_SPACE) {
+        if (na_focus && (!IsWindow(na_focus) || !IsWindowVisible(na_focus) || !IsWindowEnabled(na_focus))) na_focus = NULL;
+        if (vk != VK_SPACE || na_is(na_focus, "Button")) { na_pend = vk; return 1; }
+    }
+    shift = (GetAsyncKeyState(VK_SHIFT) & 0x8000) != 0;
+    ctrl = (GetAsyncKeyState(VK_CONTROL) & 0x8000) != 0;
+    klp = 1 | (k->scanCode << 16) | ((k->flags & LLKHF_EXTENDED) ? 1u << 24 : 0);
+    if (na_focus && (!IsWindow(na_focus) || !IsWindowVisible(na_focus) || !IsWindowEnabled(na_focus))) na_focus = NULL;
+    if (!na_focus) na_focus = GetNextDlgTabItem(dlg, NULL, FALSE);
+    na_sync();
+    if (vk == VK_ESCAPE) PostMessageA(dlg, WM_COMMAND, IDCANCEL, 0);
+    else if (vk == VK_TAB) {
+        HWND n = GetNextDlgTabItem(dlg, na_focus, shift);
+        if (n) { na_focus = n; na_sync(); if (na_is(n, "Edit")) SendMessageA(n, EM_SETSEL, 0, -1); }
+    }
+    else if (vk == VK_RETURN || (vk == VK_SPACE && na_is(na_focus, "Button"))) {
+        if (na_is(na_focus, "Button") && (vk == VK_SPACE || (SendMessageA(na_focus, WM_GETDLGCODE, 0, 0) & (DLGC_DEFPUSHBUTTON | DLGC_UNDEFPUSHBUTTON)))) {
+            LONG st = GetWindowLongA(na_focus, GWL_STYLE) & 0xf;
+            if (st == BS_AUTOCHECKBOX || st == BS_CHECKBOX || st == BS_AUTORADIOBUTTON) SendMessageA(na_focus, BM_CLICK, 0, 0);
+            else PostMessageA(dlg, WM_COMMAND, MAKEWPARAM(GetDlgCtrlID(na_focus), BN_CLICKED), (LPARAM)na_focus);
+        } else {
+            LRESULT d = SendMessageA(dlg, DM_GETDEFID, 0, 0);
+            int id = HIWORD(d) == DC_HASDEFID ? LOWORD(d) : IDOK;
+            HWND btn = GetDlgItem(dlg, id);
+            if (!btn || (IsWindowEnabled(btn) && IsWindowVisible(btn))) PostMessageA(dlg, WM_COMMAND, MAKEWPARAM(id, BN_CLICKED), (LPARAM)btn);
+        }
+    }
+    else if (na_focus) {
+        BYTE ks[256];
+        WCHAR ch[4];
+        int n;
+        memset(ks, 0, sizeof(ks));
+        if (shift) ks[VK_SHIFT] = 0x80;
+        if (ctrl) ks[VK_CONTROL] = 0x80;
+        if (GetKeyState(VK_CAPITAL) & 1) ks[VK_CAPITAL] = 1;
+        n = ToUnicode(vk, k->scanCode, ks, ch, 4, 4 /* leave the keyboard state alone */);
+        /* (sent, not posted: the message loop of the box would make letters of a posted key a second time) */
+        if (n == 1 && !(vk >= VK_PRIOR && vk <= VK_DOWN) && vk != VK_DELETE && vk != VK_INSERT) {
+            char mb[4];   /* (the ANSI call: Windows 9x has no SendMessageW, and the DLL must load there) */
+            int nb = WideCharToMultiByte(CP_ACP, 0, ch, 1, mb, sizeof(mb), NULL, NULL);
+            for (int i = 0; i < nb; i++) SendMessageA(na_focus, WM_CHAR, (BYTE)mb[i], klp);
+        }
+        else if (n <= 0) SendMessageA(na_focus, WM_KEYDOWN, vk, klp);
+    }
+    return 1;   /* the game does not get it */
+}
+
+static INT_PTR run_box_show(okw_box *b);
+
 static INT_PTR run_box(okw_box *b)
 {
+    /* [universal] One box at a time (docs/BOX_METHOD.md rule 3).  A box asked for from inside another one on the
+     * same thread (the game re-entered) is shown, but the outer box keeps everything it set up: before this, the
+     * inner one took the outer one's hooks and guard away with it.  A box asked for on another thread waits for the
+     * open one (Windows NT; not the thread of the game window, which an open box may need). */
+    DWORD me = GetCurrentThreadId(), t0 = GetTickCount();
+    int claim, waited = 0;
+    HHOOK my_keys = NULL, my_cbt = NULL;
+    while ((claim = box_claim(me)) == BOX_BUSY) {
+        /* open on another thread.  Windows 9x and the thread of the game window cannot wait for it (see
+         * wait_for_box): this box is then shown beside the open one, which keeps everything it set up */
+        if (okp_sys.win9x || !box_done || dds_on_game_window_thread()) break;
+        waited = 1;
+        WaitForSingleObject(box_done, 250);
+    }
+    if (waited) okp_log(2, "box: kind %d waited %lu ms for the box open on another thread", b->kind, (unsigned long)(GetTickCount() - t0));
+    if (claim != BOX_MINE) {
+        INT_PTR r;
+        okp_log(1, claim == BOX_INNER ? "box: kind %d asked for inside an open box on the same thread - shown inside it"
+                                      : "box: kind %d asked for while a box is open on another thread, and this thread cannot wait - shown beside it", b->kind);
+        if (claim == BOX_BUSY) {   /* its own thread's messages are held as for any box; nothing shared is touched */
+            HHOOK hb;
+            if (game->kinds & OKW_TCP) dds_show_gdi();
+            hb = SetWindowsHookExA(WH_GETMESSAGE, box_filter, NULL, me);
+            r = run_box_show(b);
+            if (hb) UnhookWindowsHookEx(hb);
+        }
+        else r = run_box_show(b);
+        okp_log(2, "box: inner kind %d closed (answer %ld, %lu ms)", b->kind, (long)r, (unsigned long)(GetTickCount() - t0));
+        return r;
+    }
     /* a full-screen DirectDraw game: Windows' own screen page in front first, or the box is never seen (ddshow.c) */
     if (game->kinds & OKW_TCP) dds_show_gdi();
     HHOOK h = SetWindowsHookExA(WH_GETMESSAGE, box_filter, NULL, GetCurrentThreadId());
-    box_tid = GetCurrentThreadId();
+    int na = !okp_sys.win9x && dds_box_over_game() && !box_front;
+    if (na) {
+        na_dlg = na_focus = na_caret = NULL; na_pend = 0; na_nunder = 0;
+        okbox_no_front = 1;
+        na_cbt = SetWindowsHookExA(WH_CBT, na_cbt_proc, NULL, GetCurrentThreadId());
+        na_keys = SetWindowsHookExA(WH_KEYBOARD_LL, na_key_proc, g_self, 0);
+        if (!na_cbt || !na_keys) {
+            /* [universal] a box that cannot be given its keys takes the front the old way instead (rule 6) */
+            okp_log(1, "box: hooks not set (%p, %p; error %lu) - this box takes the front instead", (void *)na_cbt, (void *)na_keys, (unsigned long)GetLastError());
+            if (na_keys) UnhookWindowsHookEx(na_keys);
+            if (na_cbt) UnhookWindowsHookEx(na_cbt);
+            na_keys = na_cbt = NULL;
+            okbox_no_front = 0;
+            na = 0;
+        }
+    }
+    okp_log(2, "box: opens (kind %d, thread %lx, %s)", b->kind, (unsigned long)me,
+            na ? "over a full-screen game, out of the front" : dds_box_over_game() ? (okp_sys.win9x ? "over a full-screen game, Windows 9x way" : "over a full-screen game, takes the front") : "plain, takes the front");
+    my_keys = na_keys; my_cbt = na_cbt;   /* (this box's own: taken off by these, whatever the shared ones hold later) */
     ndeferred = 0;
-    if (box_done) ResetEvent(box_done);
-    InterlockedExchange(&box_open, 1);
+    run_box_show(b);
+    if (na) {
+        if (my_keys) UnhookWindowsHookEx(my_keys);
+        if (my_cbt) UnhookWindowsHookEx(my_cbt);
+        na_keys = na_cbt = NULL; na_dlg = na_focus = na_caret = NULL; na_nunder = 0;
+        okbox_no_front = 0; okbox_no_front_wnd = okbox_no_front_focus = NULL;
+    }
+    if (h) UnhookWindowsHookEx(h);
+    okp_log(2, "box: closed (kind %d, answer %ld, %lu ms); hooks removed%s", b->kind, (long)b->r, (unsigned long)(GetTickCount() - t0), na ? " (messages, activation, keyboard)" : " (messages)");
+    dds_guard_end();
+    for (int i = 0; i < ndeferred; i++) PostMessageA(deferred[i].w, deferred[i].m, deferred[i].wp, deferred[i].lp);
+    ndeferred = 0;
+    {
+        INT_PTR r = b->r;
+        box_release();   /* last: the next box starts from a clean state */
+        return r;
+    }
+}
+
+static INT_PTR run_box_show(okw_box *b)   /* the box itself */
+{
     if (b->kind == 0) b->r = okbox_ask_mode("TCP/IP");
     else if (b->kind == 1) b->r = okbox_ask_host_password(&b->g, b->w, 64);
     else if (b->kind == 3) b->r = (okbox_wrong_password(), 1);
@@ -2022,12 +2320,6 @@ static INT_PTR run_box(okw_box *b)
         b->r = okbox_show(&d) == IDOK;
     }
     else b->r = okbox_ask_join_password(&b->g, b->w, 64);
-    InterlockedExchange(&box_open, 0);
-    if (h) UnhookWindowsHookEx(h);
-    dds_guard_end();
-    if (box_done) SetEvent(box_done);
-    for (int i = 0; i < ndeferred; i++) PostMessageA(deferred[i].w, deferred[i].m, deferred[i].wp, deferred[i].lp);
-    ndeferred = 0;
     return b->r;
 }
 
@@ -2200,11 +2492,9 @@ static DWORD WINAPI join_box_thread(LPVOID arg)
     WCHAR w[64];
     GUID g = room_guid(auth_room);
     (void)arg;
-    box_tid = GetCurrentThreadId();
-    if (box_done) ResetEvent(box_done);
-    InterlockedExchange(&box_open, 1);
+    /* [universal] through the same gate as every other box (this thread is our own: it can wait on any Windows) */
+    while (box_claim(GetCurrentThreadId()) != BOX_MINE) { if (box_done) WaitForSingleObject(box_done, 250); else Sleep(50); }
     int ok = okbox_ask_join_password(&g, w, 64);
-    InterlockedExchange(&box_open, 0);
     EnterCriticalSection(&okw_lock);
     if (ok) {
         wide_to_ascii(w, join_hash, sizeof(join_hash));
@@ -2216,7 +2506,7 @@ static DWORD WINAPI join_box_thread(LPVOID arg)
     }
     LeaveCriticalSection(&okw_lock);
     SecureZeroMemory(w, sizeof(w));
-    if (box_done) SetEvent(box_done);
+    box_release();
     return 0;
 }
 
@@ -2841,10 +3131,23 @@ static INT_PTR CALLBACK lb_proc(HWND dlg, UINT m, WPARAM wp, LPARAM lp)
         }
         SetTimer(dlg, 1, L->mode == LB_LIST ? 300 : 50, NULL);
         if (!L->hidden) {
-            SetWindowPos(dlg, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE);
-            SetForegroundWindow(dlg);
+            SetWindowPos(dlg, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            if (!okbox_no_front && GetForegroundWindow() != dlg) SetForegroundWindow(dlg);
+            if (okbox_no_front) {
+                /* [universal] shown here, without activation: left to DialogBox, the show moved the front from the game to
+                 * the box's thread before the activation was refused - nothing was in front and no key reached the box
+                 * (seen on Windows 10 with the full-screen stand-in, 2026-11-11) */
+                SetWindowLongA(dlg, GWL_EXSTYLE, GetWindowLongA(dlg, GWL_EXSTYLE) | WS_EX_NOACTIVATE);
+                ShowWindow(dlg, SW_SHOWNOACTIVATE);
+                okbox_no_front_focus = NULL; okbox_no_front_wnd = dlg;
+            }
+            okp_log(2, "box: the %s is up after %lu ms (in front: %s)", L->mode == LB_LIST ? "room list" : "waiting box",
+                    (unsigned long)(GetTickCount() - L->t0), GetForegroundWindow() == dlg ? "yes" : "no");
         }
-        return TRUE;
+        return okbox_no_front ? FALSE : TRUE;   /* (FALSE: Windows does not set the focus, which would ask for the front) */
+    case WM_ACTIVATE:
+        okp_log(3, "box: %s", LOWORD(wp) == WA_INACTIVE ? "no longer the active window" : LOWORD(wp) == WA_CLICKACTIVE ? "active (clicked)" : "active");
+        return FALSE;
     case WM_TIMER:
         if (!L) break;
         if (L->mode == LB_LIST) {
@@ -4413,6 +4716,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
 #endif
         InitializeCriticalSection(&okw_ask_lock);
         InitializeCriticalSection(&ui_lock);
+        InitializeCriticalSection(&box_gate);
         box_done = CreateEventA(NULL, TRUE, TRUE, NULL);
         okw_ev = CreateEventA(NULL, TRUE, FALSE, NULL);
         {
@@ -4421,6 +4725,19 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
             okbox_init(inst, NULL, ini);
             okbox_set_topmost(TRUE);
             if (game->kinds & OKW_TCP) dds_init();   /* okplay's boxes over a full-screen DirectDraw game (ddshow.c) */
+            if (game->kinds & OKW_TCP) {   /* wsock_box_focus: is the game told that a box took its place in front? */
+                char v[16];
+                int keep;
+                box_front = GetPrivateProfileIntA("okplay", "wsock_box_front", 0, ini) != 0;
+                if (GetPrivateProfileIntA("okplay", "wsock_box_stall_log", 0, ini)) { dds_set_stall_log(1); okp_log(2, "boxes: thread positions are logged when the game stalls under a box (okplay.ini wsock_box_stall_log=1)"); }
+                GetPrivateProfileStringA("okplay", "wsock_box_flip", "", v, sizeof(v), ini);
+                if (!_stricmp(v, "hold")) { dds_set_flip_hold(1); okp_log(2, "boxes: the game's page flips are held while a box is open (okplay.ini wsock_box_flip=hold)"); }
+                GetPrivateProfileStringA("okplay", "wsock_box_focus", "auto", v, sizeof(v), ini);
+                keep = _stricmp(v, "release") != 0;   /* auto = keep */
+                dds_set_keep(keep);
+                okp_log(2, "boxes: while one is open the game %s (okplay.ini wsock_box_focus=%s)",
+                        keep ? "is not told it lost the front" : "is told it lost the front, and lets go of mouse and keyboard", v);
+            }
             exit_watch_start(ini);
             if ((game->kinds & OKW_TCP) && !hook_exe_import("KERNEL32.dll", "ExitProcess", (void *)hook_ExitProcess, (void **)&real_ExitProcess))
                 okp_log(2, "wsock: the game's ExitProcess is not seen - no resets for open connections when it ends");

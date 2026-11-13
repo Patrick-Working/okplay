@@ -267,19 +267,36 @@ static void fit_text( HWND dlg, struct pw_dialog *d, HFONT font, HWND text_ctl )
     EnumChildWindows( dlg, move_down, (LPARAM)args );
     GetWindowRect( dlg, &wr );
     SetWindowPos( dlg, NULL, wr.left, wr.top - d->grow / 2, wr.right - wr.left, wr.bottom - wr.top + d->grow,
-                  SWP_NOZORDER );
+                  SWP_NOZORDER | SWP_NOACTIVATE );
 }
 
 /* both kinds of box, once laid out: in front, focus on the field (or the first button).
  * Tests: OKP_TEST_BOX_CLOSE_MS=<ms> closes a box by itself (as Cancel) so its layout can be checked. */
+HWND okbox_no_front_wnd, okbox_no_front_focus;   /* that box and the control its keys start on, for the shim's key hook */
+int okbox_no_front;   /* set by the Winsock shim: a box over a full-screen game does not ask for the front */
+
 static void box_shown( HWND dlg, struct pw_dialog *d )
 {
     const char *ms = getenv( "OKP_TEST_BOX_CLOSE_MS" );
     int def = d->cancel && d->cancel_default ? IDCANCEL : IDOK;
     SendMessageA( dlg, DM_SETDEFID, def, 0 );
-    SetWindowPos( dlg, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE );
-    SetForegroundWindow( dlg );
-    SetFocus( GetDlgItem( dlg, d->edit ? 101 : def ) );
+    SetWindowPos( dlg, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | (okbox_no_front ? SWP_NOACTIVATE : 0) );
+    if (!okbox_no_front) SetForegroundWindow( dlg );
+    else
+    {
+        /* [universal] A box that leaves the front to the game must never ASK for the activation: the asking
+         * alone moves the front off the game before any refusal counts (found on Windows 10 with the full-screen
+         * stand-in, 2026-11-11: the resize of the box asked, nothing was in front, and no key reached the box).
+         * So: every SetWindowPos with SWP_NOACTIVATE, no DS_SETFOREGROUND, shown here without activation. */
+        SetWindowLongA( dlg, GWL_EXSTYLE, GetWindowLongA( dlg, GWL_EXSTYLE ) | WS_EX_NOACTIVATE );
+        ShowWindow( dlg, SW_SHOWNOACTIVATE );
+        /* no SetFocus either: it asks for the activation, and asking alone moves the front.  The shim's key
+         * hook is told the box and the control the keys start on. */
+        okbox_no_front_focus = GetDlgItem( dlg, d->edit ? 101 : def );
+        okbox_no_front_wnd = dlg;
+    }
+    if (!okbox_no_front) SetFocus( GetDlgItem( dlg, d->edit ? 101 : def ) );
+   
     if ( ms && atoi( ms ) > 0 ) SetTimer( dlg, 1, atoi( ms ), NULL );
 }
 
@@ -576,7 +593,7 @@ static INT_PTR run_dialog_( DLGTEMPLATE *t, DLGPROC proc, struct pw_dialog *d )
     HWND owner = GetActiveWindow();
     /* on top and in front: when there is no window to own the box, and always for okplay wsock (games
      * that draw full screen over everything; okbox_set_topmost) */
-    if ( !owner || okbox_top ) t->style |= DS_SYSMODAL | DS_SETFOREGROUND;
+    if ( !owner || okbox_top ) t->style |= DS_SYSMODAL | (okbox_no_front ? 0 : DS_SETFOREGROUND);   /* (no front asked for: see box_shown) */
     if ( box_w ) return box_w( okbox_self, t, owner, proc, (LPARAM)d );
     return DialogBoxIndirectParamA( okbox_self, t, owner, proc, (LPARAM)d );
 }

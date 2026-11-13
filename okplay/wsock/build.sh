@@ -25,3 +25,7 @@ echo "built $here/bin/rrsim.exe"
 # the TCP test game (Need for Speed III's socket patterns: comms thread, select, peek framing, connect loop)
 gcc -O2 -Wall -Wl,--disable-dynamicbase -o "$here/bin/tcpsim.exe" "$here/tests/tcpsim.c" -lwsock32 -lwinmm   # (at 0x400000, as the game: nfs3_fix.c)
 echo "built $here/bin/tcpsim.exe"
+# the box test game (docs/BOX_METHOD.md 5.1: a full-screen DirectDraw stand-in that loads this wsock32.dll; Windows 95/98..11)
+gcc $CPU -O2 -Wall -Wextra -Wno-unused-parameter -Wno-cast-function-type -Wno-unused-value -mwindows -o "$here/bin/boxgame.exe" "$here/tests/boxgame.c" -lwsock32 -lwinmm -lgdi32
+bash "$OK/../winedplay/check9x.sh" "$(cygpath -aw "$here/bin/boxgame.exe")"
+echo "built $here/bin/boxgame.exe"

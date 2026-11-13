@@ -20,11 +20,13 @@
 #include "ddshow.h"
 
 #define NSLOT 32   /* IDirectDraw7 has 30 methods; the older interfaces fewer, in the same order */
+#define NSURF 52   /* IDirectDrawSurface7 has 49 methods; the older surface interfaces fewer, in the same order */
+#define NTHUNK NSURF
 
 typedef struct dd_px {
     void **vtbl;
     void *real;            /* the real interface */
-    int v4;                /* IDirectDraw4/7: DDSURFACEDESC2 */
+    int v4;                /* objects: 0 = IDirectDraw/2, 1 = IDirectDraw4, 2 = IDirectDraw7 (non-zero: DDSURFACEDESC2); surfaces: 1..5 = IDirectDrawSurface, 2, 3, 4, 7 */
     volatile LONG live;
     struct dd_px *next;
 } dd_px;
@@ -32,6 +34,7 @@ typedef struct dd_px {
 static CRITICAL_SECTION dd_lock;
 static dd_px *dd_list;
 static void *dd_vtbl[NSLOT];
+static void *dd_thunk[NTHUNK];   /* the plain thunks, by slot (the same code serves objects and surfaces) */
 static HRESULT (WINAPI *real_ddc)(GUID *, void **, IUnknown *);
 static HRESULT (WINAPI *real_ddcex)(GUID *, void **, REFIID, IUnknown *);
 static HMODULE (WINAPI *real_lla)(LPCSTR);
@@ -64,7 +67,7 @@ static void *dd_wrap(void *real, int which)   /* the stand-in for `real` (one pe
         if (p) {
             p->vtbl = dd_vtbl;
             p->real = real;
-            p->v4 = which >= 3;
+            p->v4 = which >= 3 ? which - 2 : 0;
             p->live = 1;
             p->next = dd_list;
             dd_list = p;
@@ -172,6 +175,185 @@ static int hook_import(HMODULE m, const char *dll, const char *fn, void *to, voi
     return n;
 }
 
+/* ---- the game lets go of the mouse while a box is open (Windows NT family) ----
+ * A game that still runs behind a box keeps putting the pointer back in the middle of its screen and keeps it
+ * inside its window (Need for Speed III, Windows 11, 2026-11-11: the pointer "jumped through" the room list).
+ * While a box is open those two calls from the game's threads do nothing; the box's own thread is not touched.
+ * Shared: any game whose imports are watched here. */
+static volatile LONG dd_guard;
+static volatile DWORD dd_box_tid;   /* the thread of the open box */
+static int dd_keep;                 /* 1 = the game is not told it lost the front (every Windows; dds_set_keep) */
+static BOOL (WINAPI *real_scp)(int, int);
+static BOOL (WINAPI *real_clip)(const RECT *);
+
+static BOOL WINAPI hk_scp(int x, int y)
+{
+    if (dd_guard && GetCurrentThreadId() != dd_box_tid) return TRUE;
+    return real_scp ? real_scp(x, y) : SetCursorPos(x, y);
+}
+
+static BOOL WINAPI hk_clip(const RECT *r)
+{
+    if (dd_guard && r && GetCurrentThreadId() != dd_box_tid) return TRUE;
+    return real_clip ? real_clip(r) : ClipCursor(r);
+}
+
+void dds_set_keep(int keep) { dd_keep = keep; }
+static int dd_stall_log;            /* dds_set_stall_log */
+void dds_set_stall_log(int on) { dd_stall_log = on; }
+
+/* ---- the game's page flips are held while a box is open (opt-in: okplay.ini wsock_box_flip=hold) ----
+ * dds_show_gdi puts Windows' screen page in front once; a game whose drawing thread goes on calling Flip while
+ * the box is open (its network calls on another thread) puts its own page back at once and the box is never seen
+ * (boxgame.c on Windows 98, 2026-11-11).  With the hold on, the stand-in's CreateSurface is ours: a primary
+ * surface the game makes is handed over as a stand-in too (every call thunks straight to the real surface, as for
+ * the DirectDraw object), and its Flip does nothing while a box is open - it waits 15 ms (a game that spins on
+ * Flip must not eat the processor) and answers DD_OK.  Off (the default), CreateSurface is the plain thunk and
+ * nothing here runs: games that work today run exactly as before.
+ * Known limit - why this is opt-in per game: the game holds our stand-in pointer for its primary.  Calls made ON
+ * the stand-in are fine, and where one of them takes a surface argument that may be one of our stand-ins (Blt
+ * and BltFast from itself, Flip's target, Add/DeleteAttachedSurface) it is given the real surface.  NOT covered:
+ * the stand-in handed as an argument to a call on any OTHER object - e.g. a back buffer's Blt/BltFast FROM the
+ * primary, an overlay's UpdateOverlay/UpdateOverlayZOrder with the primary as destination,
+ * IDirectDraw::DuplicateSurface of the primary, a Direct3D device made on the primary (IDirect3D*::CreateDevice),
+ * a primary set as render target, or the primary inside a DDBLTBATCH.  Real DirectDraw would then read our
+ * stand-in as its own surface: wrong results or a fault.  Also not covered: a primary reached another way than
+ * CreateSurface/QueryInterface on a stand-in (GetAttachedSurface/EnumAttachedSurfaces asking for the front
+ * buffer, GetSurfaceFromDC) is the real one, and its Flip is not held; QueryInterface for IUnknown (or anything
+ * not a surface interface) answers the real pointer, so an identity compare with the stand-in fails.
+ * [universal; found with: boxgame.c (the stand-in game)] */
+static int dd_hold;                 /* dds_set_flip_hold */
+static volatile LONG dd_held;       /* flips held during the box now open */
+static volatile LONG dd_stop;       /* flips stop now: set before the switch to Windows' page, so none slips in after it */
+static CRITICAL_SECTION ds_flip_cs; /* a flip under way ends before that switch */
+static CRITICAL_SECTION ds_lock_cs; /* (dd_lock serves too; kept apart so the surface list never waits on FlipToGDISurface) */
+static dd_px *ds_list;
+static void *ds_vtbl[NSURF];
+
+static const GUID ds_iids[5] = {   /* IDirectDrawSurface, 2, 3, 4, 7 (ddraw.h) */
+    { 0x6C14DB81, 0xA733, 0x11CE, { 0xA5, 0x21, 0x00, 0x20, 0xAF, 0x0B, 0xE5, 0x60 } },
+    { 0x57805885, 0x6EEC, 0x11CF, { 0x94, 0x41, 0xA8, 0x23, 0x03, 0xC1, 0x0E, 0x27 } },
+    { 0xDA044E00, 0x69B2, 0x11D0, { 0xA1, 0xD5, 0x00, 0xAA, 0x00, 0xB8, 0xDF, 0xBB } },
+    { 0x0B2B8630, 0xAD35, 0x11D0, { 0x8E, 0xA6, 0x00, 0x60, 0x97, 0x97, 0xEA, 0x5B } },
+    { 0x06675A80, 0x3B9B, 0x11D2, { 0xB9, 0x2F, 0x00, 0x60, 0x97, 0x97, 0xEA, 0x5B } },
+};
+
+static int ds_iid(REFIID r)   /* 1..5 = IDirectDrawSurface, 2, 3, 4, 7; 0 = another interface */
+{
+    for (int i = 0; i < 5; i++) if (!memcmp(r, &ds_iids[i], sizeof(GUID))) return i + 1;
+    return 0;
+}
+
+static void *ds_unwrap(void *s)   /* a surface argument: our stand-in -> the real surface; anything else as it is */
+{
+    return s && *(void ***)s == ds_vtbl ? ((dd_px *)s)->real : s;
+}
+
+static void *ds_wrap(void *real, int which)   /* the stand-in for a real primary surface (one per real interface) */
+{
+    if (!real) return NULL;
+    EnterCriticalSection(&ds_lock_cs);
+    dd_px *p;
+    for (p = ds_list; p; p = p->next) if (p->real == real && p->live) break;
+    if (!p) {
+        p = (dd_px *)HeapAlloc(GetProcessHeap(), HEAP_ZERO_MEMORY, sizeof(*p));
+        if (p) {
+            p->vtbl = ds_vtbl;
+            p->real = real;
+            p->v4 = which;
+            p->live = 1;
+            p->next = ds_list;
+            ds_list = p;
+            okp_log(3, "ddshow: the game has a primary surface (%p, IDirectDrawSurface%s) - its flips are held while a box is open",
+                    real, which == 1 ? "" : which == 2 ? "2" : which == 3 ? "3" : which == 4 ? "4" : "7");
+        }
+    }
+    LeaveCriticalSection(&ds_lock_cs);
+    return p ? (void *)p : real;
+}
+
+static HRESULT WINAPI ps_qi(dd_px *p, REFIID r, void **out)
+{
+    void **rv = *(void ***)p->real;
+    HRESULT hr = ((HRESULT (WINAPI *)(void *, REFIID, void **))rv[0])(p->real, r, out);
+    if (SUCCEEDED(hr) && out && *out && ds_iid(r)) *out = ds_wrap(*out, ds_iid(r));
+    return hr;
+}
+
+static HRESULT WINAPI ps_blt(dd_px *p, RECT *dst, void *src, RECT *sr, DWORD flags, void *fx)   /* slot 5 */
+{
+    void **rv = *(void ***)p->real;
+    return ((HRESULT (WINAPI *)(void *, RECT *, void *, RECT *, DWORD, void *))rv[5])(p->real, dst, ds_unwrap(src), sr, flags, fx);
+}
+
+static HRESULT WINAPI ps_bltfast(dd_px *p, DWORD x, DWORD y, void *src, RECT *sr, DWORD t)   /* slot 7 */
+{
+    void **rv = *(void ***)p->real;
+    return ((HRESULT (WINAPI *)(void *, DWORD, DWORD, void *, RECT *, DWORD))rv[7])(p->real, x, y, ds_unwrap(src), sr, t);
+}
+
+static HRESULT WINAPI ps_addatt(dd_px *p, void *s)   /* slot 3: AddAttachedSurface */
+{
+    void **rv = *(void ***)p->real;
+    return ((HRESULT (WINAPI *)(void *, void *))rv[3])(p->real, ds_unwrap(s));
+}
+
+static HRESULT WINAPI ps_delatt(dd_px *p, DWORD f, void *s)   /* slot 8: DeleteAttachedSurface */
+{
+    void **rv = *(void ***)p->real;
+    return ((HRESULT (WINAPI *)(void *, DWORD, void *))rv[8])(p->real, f, ds_unwrap(s));
+}
+
+static HRESULT WINAPI ps_flip(dd_px *p, void *target, DWORD flags)   /* slot 11 in every IDirectDrawSurface */
+{
+    void **rv = *(void ***)p->real;
+    HRESULT hr;
+    if (!dd_hold) return ((HRESULT (WINAPI *)(void *, void *, DWORD))rv[11])(p->real, ds_unwrap(target), flags);
+    EnterCriticalSection(&ds_flip_cs);
+    if (dd_stop) {
+        LeaveCriticalSection(&ds_flip_cs);
+        InterlockedIncrement(&dd_held);
+        Sleep(15);
+        return DD_OK;
+    }
+    hr = ((HRESULT (WINAPI *)(void *, void *, DWORD))rv[11])(p->real, ds_unwrap(target), flags);
+    LeaveCriticalSection(&ds_flip_cs);
+    return hr;
+}
+
+/* IDirectDraw*::CreateSurface (slot 6), in the stand-in's table only while the hold is on */
+static HRESULT WINAPI px_cs(dd_px *p, void *desc, void **out, IUnknown *outer)
+{
+    void **rv = *(void ***)p->real;
+    HRESULT hr = ((HRESULT (WINAPI *)(void *, void *, void **, IUnknown *))rv[6])(p->real, desc, out, outer);
+    if (FAILED(hr) || !desc || !out || !*out || outer || !dd_hold) return hr;
+    DWORD size = *(DWORD *)desc, flags = ((DWORD *)desc)[1], caps;
+    /* (ddsCaps sits at the same place in both today's headers; read through the right type all the same) */
+    if (p->v4) {
+        if (size < offsetof(DDSURFACEDESC2, ddsCaps) + sizeof(DWORD)) return hr;
+        caps = ((DDSURFACEDESC2 *)desc)->ddsCaps.dwCaps;
+    } else {
+        if (size < offsetof(DDSURFACEDESC, ddsCaps) + sizeof(DWORD)) return hr;
+        caps = ((DDSURFACEDESC *)desc)->ddsCaps.dwCaps;
+    }
+    if (!(flags & DDSD_CAPS) || !(caps & DDSCAPS_PRIMARYSURFACE)) return hr;
+    /* the surface interface follows the object's: IDirectDraw/2 -> IDirectDrawSurface, 4 -> 4, 7 -> 7 */
+    *out = ds_wrap(*out, p->v4 == 2 ? 5 : p->v4 ? 4 : 1);
+    return hr;
+}
+
+static void dd_put_cs(void)   /* slot 6 of the stand-in: ours with the hold on, the plain thunk without */
+{
+    if (dd_thunk[6]) dd_vtbl[6] = dd_hold ? (void *)px_cs : dd_thunk[6];
+}
+
+void dds_set_flip_hold(int on)   /* before dds_init (DllMain) or after: both work */
+{
+    dd_hold = on != 0;
+    dd_put_cs();
+    okp_log(2, "ddshow: page flips of the game %s while a box is open (okplay.ini wsock_box_flip)", dd_hold ? "held" : "not held");
+}
+
 static void patch_module(HMODULE m)
 {
     char path[MAX_PATH];
@@ -183,6 +365,10 @@ static void patch_module(HMODULE m)
     hook_import(m, "kernel32.dll", "LoadLibraryA", (void *)hk_lla, NULL);
     hook_import(m, "kernel32.dll", "LoadLibraryExA", (void *)hk_llexa, NULL);
     hook_import(m, "kernel32.dll", "GetProcAddress", (void *)hk_gpa, NULL);
+    if (!okp_sys.win9x) {
+        hook_import(m, "user32.dll", "SetCursorPos", (void *)hk_scp, (void **)&real_scp);
+        hook_import(m, "user32.dll", "ClipCursor", (void *)hk_clip, (void **)&real_clip);
+    }
     if (n) okp_log(3, "ddshow: %s imports DirectDraw - watched", path);
 }
 
@@ -195,9 +381,9 @@ void dds_init(void)
     if (!real_lla || !real_llexa || !real_gpa) return;
     /* the thunks: mov eax,[esp+4]; mov eax,[eax+4] (the real interface); mov [esp+4],eax; mov eax,[eax];
      * jmp [eax+slot*4] - the real method, with the real `this`, the caller's return address and arguments */
-    uint8_t *code = (uint8_t *)VirtualAlloc(NULL, NSLOT * 20, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+    uint8_t *code = (uint8_t *)VirtualAlloc(NULL, NTHUNK * 20, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
     if (!code) return;
-    for (int i = 0; i < NSLOT; i++) {
+    for (int i = 0; i < NTHUNK; i++) {
         static const uint8_t t[13] = { 0x8B, 0x44, 0x24, 0x04, 0x8B, 0x40, 0x04, 0x89, 0x44, 0x24, 0x04, 0x8B, 0x00 };
         uint8_t *c = code + i * 20;
         DWORD disp = (DWORD)(i * 4);
@@ -205,14 +391,33 @@ void dds_init(void)
         c[13] = 0xFF; c[14] = 0xA0;
         memcpy(c + 15, &disp, 4);
         c[19] = 0xCC;
-        dd_vtbl[i] = c;
+        dd_thunk[i] = c;
+        if (i < NSLOT) dd_vtbl[i] = c;
+        ds_vtbl[i] = c;
     }
     dd_vtbl[0] = (void *)px_qi;
     dd_vtbl[1] = (void *)px_addref;
     dd_vtbl[2] = (void *)px_release;
-    FlushInstructionCache(GetCurrentProcess(), code, NSLOT * 20);
+    ds_vtbl[0] = (void *)ps_qi;          /* the surface stand-ins (made only with the hold on: dds_set_flip_hold) */
+    ds_vtbl[1] = (void *)px_addref;
+    ds_vtbl[2] = (void *)px_release;
+    ds_vtbl[3] = (void *)ps_addatt;
+    ds_vtbl[5] = (void *)ps_blt;
+    ds_vtbl[7] = (void *)ps_bltfast;
+    ds_vtbl[8] = (void *)ps_delatt;
+    ds_vtbl[11] = (void *)ps_flip;
+    FlushInstructionCache(GetCurrentProcess(), code, NTHUNK * 20);
     InitializeCriticalSection(&dd_lock);
+    InitializeCriticalSection(&ds_lock_cs);
+    InitializeCriticalSection(&ds_flip_cs);
+    dd_put_cs();                         /* (the hold may have been asked for before this: slot 6 now follows it) */
     if (!GetWindowsDirectoryA(win_dir, sizeof(win_dir))) win_dir[0] = 0;
+    if (!okp_sys.win9x) {
+        /* a window that does not read its messages for 5 s is swapped for a pale "not responding" copy by
+         * Windows; the game's window does that while it connects, under our box (Need for Speed III) */
+        void (WINAPI *noghost)(void) = (void (WINAPI *)(void))GetProcAddress(GetModuleHandleA("user32.dll"), "DisableProcessWindowsGhosting");
+        if (noghost) noghost();
+    }
     dd_ready = 1;
     patch_module(GetModuleHandleA(NULL));
 }
@@ -224,7 +429,6 @@ void dds_init(void)
  * full-screen mode: the screen keeps the last picture and the box is never seen.  While a box is open the
  * "you are no longer in front" messages stop at okplay. */
 static HWND dd_game_wnd;            /* the window guarded last: in front again when the box closes */
-static volatile LONG dd_guard;
 static volatile DWORD dd_tail;   /* when the last box closed (tick) */
 /* A window we take the place of keeps its own procedure in this property: each window is taken over once, and our
  * procedure is never stored as "the old one" (box 1 over window A, box 2 over window B, box 3 over A again used to do
@@ -248,6 +452,10 @@ static void dd_forget(HWND w)
  * is open and to put its count back afterwards; WM_SETCURSOR gets the arrow meanwhile.  Shared: any game. */
 static UINT dd_cur_msg;
 static int dd_cur_shows;     /* ShowCursor(TRUE) calls to undo; the game window's thread only */
+/* What the box side wants last (1 = pointer shown, 0 = given back).  A "show" that timed out is posted, and a later
+ * "hide" sent may arrive before it (open point 6.7): so the message only says "look again", and the game window's
+ * thread always puts the pointer in the state wanted last, whatever order the messages come in. */
+static volatile LONG dd_cur_want;
 
 static void dds_cursor_on_game_thread(int on)
 {
@@ -278,25 +486,117 @@ static void dds_cursor(HWND w, int on)
                 (ci.flags & CURSOR_SHOWING) ? "showing" : "hidden", ci.ptScreenPos.x, ci.ptScreenPos.y,
                 clip.left, clip.top, clip.right, clip.bottom);
     }
+    InterlockedExchange(&dd_cur_want, on ? 1 : 0);   /* (before the message: whichever message comes last reads this) */
     if (GetWindowThreadProcessId(w, NULL) == GetCurrentThreadId()) SendMessageA(w, dd_cur_msg, on, 0);
     else if (!SendMessageTimeoutA(w, dd_cur_msg, on, 0, SMTO_ABORTIFHUNG, 300, &r))
         PostMessageA(w, dd_cur_msg, on, 0);   /* (busy just now: when it next reads its messages) */
+}
+
+/* Where a thread is, for the log: its instruction pointer and what on its stack points into a loaded module
+ * (mostly return addresses).  Read while it is held for a moment; named and logged after it runs again (it
+ * may hold the locks that naming and logging need). */
+static void dds_where(DWORD tid, const char *who, DWORD silent)
+{
+    DWORD a[400], out[14];
+    SIZE_T got = 0;
+    int n = 0, na = 0;
+    CONTEXT c;
+    /* (by name: Windows 98's KERNEL32 has no OpenThread, and the DLL must still load there) */
+    HANDLE (WINAPI *open_thread)(DWORD, BOOL, DWORD) = (HANDLE (WINAPI *)(DWORD, BOOL, DWORD))GetProcAddress(GetModuleHandleA("kernel32.dll"), "OpenThread");
+    HANDLE t = tid && open_thread ? open_thread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, tid) : NULL;
+    if (!t) return;
+    memset(&c, 0, sizeof(c));
+    c.ContextFlags = CONTEXT_CONTROL;
+    if (SuspendThread(t) != (DWORD)-1) {
+        if (GetThreadContext(t, &c) && ReadProcessMemory(GetCurrentProcess(), (void *)(ULONG_PTR)c.Esp, a, sizeof(a), &got))
+            na = (int)(got / 4);
+        ResumeThread(t);
+    }
+    CloseHandle(t);
+    if (!c.Eip) return;
+    out[n++] = c.Eip;
+    for (int i = 0; i < na && n < 14; i++) {
+        MEMORY_BASIC_INFORMATION mi;
+        if (a[i] < 0x10000 || !VirtualQuery((void *)(ULONG_PTR)a[i], &mi, sizeof(mi))) continue;
+        if (mi.Type != MEM_IMAGE || !(mi.Protect & (PAGE_EXECUTE | PAGE_EXECUTE_READ | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY))) continue;
+        out[n++] = a[i];
+    }
+    char line[900];
+    int o = 0;
+    for (int i = 0; i < n && o < (int)sizeof(line) - 80; i++) {
+        MEMORY_BASIC_INFORMATION mi;
+        char path[MAX_PATH] = "", *name = path;
+        if (!VirtualQuery((void *)(ULONG_PTR)out[i], &mi, sizeof(mi)) || !mi.AllocationBase) continue;
+        GetModuleFileNameA((HMODULE)mi.AllocationBase, path, sizeof(path));
+        for (char *q = path; *q; q++) if (*q == '\\' || *q == '/') name = q + 1;
+        o += snprintf(line + o, sizeof(line) - o, "%s%s+0x%lx", i ? (i == 1 ? " | stack: " : ", ") : "", name[0] ? name : "?",
+                      (unsigned long)(out[i] - (DWORD)(ULONG_PTR)mi.AllocationBase));
+    }
+    okp_log(1, "stall: %s (thread %lx)%s is at %s", who, (unsigned long)tid, silent ? " has not read its messages" : "", line);
+    if (silent) okp_log(1, "stall: ... for %lu ms", (unsigned long)silent);
+}
+
+/* While a box is open: does the thread of the game window still read its messages?  Asked four times a second;
+ * when it has not answered for 700 ms that goes to the log (8 times a box at most) - with where it and the box's
+ * thread are only when okplay.ini wsock_box_stall_log=1 asks for it. */
+static volatile DWORD dd_pong;
+static DWORD WINAPI dds_watch(LPVOID arg)
+{
+    DWORD asked = 0, last = 0;
+    int shots = 0, was = 0;
+    (void)arg;
+    while (dd_guard) {
+        HWND w = dd_game_wnd;
+        DWORD now = GetTickCount() | 1;
+        if (!w || !IsWindow(w) || !dd_cur_msg) break;
+        if (!asked) { asked = now; PostMessageA(w, dd_cur_msg, 2, (LPARAM)asked); }
+        else if (dd_pong == asked) {
+            if (was) okp_log(2, "stall: the game window's thread reads its messages again (after %lu ms)", (unsigned long)(now - asked));
+            was = 0; asked = 0;
+        }
+        else if (now - asked > 700 && shots < 8 && now - last > 1000) {
+            DWORD gt = GetWindowThreadProcessId(w, NULL);
+            /* where the threads are is read by holding them for a moment: a diagnosis, only when asked for
+             * (okplay.ini wsock_box_stall_log=1).  Otherwise one line, and no thread is touched. */
+            if (dd_stall_log) {
+                dds_where(gt, "the game window's thread", now - asked);
+                if (dd_box_tid != gt) dds_where(dd_box_tid, "the box's thread", 0);
+            }
+            else okp_log(2, "stall: the game window's thread (%lx) has not read its messages for %lu ms", (unsigned long)gt, (unsigned long)(now - asked));
+            shots++; last = now; was = 1;
+        }
+        Sleep(250);
+    }
+    return 0;
 }
 
 static LRESULT CALLBACK dds_game_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
 {
     WNDPROC old = (WNDPROC)GetPropA(w, DD_PROP);
     if (!old) return DefWindowProcA(w, m, wp, lp);   /* (never: the property is set before this is put in place) */
-    if (dd_cur_msg && m == dd_cur_msg) { dds_cursor_on_game_thread(wp != 0); return 0; }
+    if (dd_cur_msg && m == dd_cur_msg) {
+        if (wp == 2) dd_pong = (DWORD)lp;   /* the watcher's question: this thread reads its messages */
+        else dds_cursor_on_game_thread(dd_cur_want != 0);   /* (wp: what was wanted when sent; the last wish counts) */
+        return 0;
+    }
     if (m == WM_NCDESTROY) dd_cur_shows = 0;
     if (dd_guard && m == WM_SETCURSOR) { SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_ARROW)); return TRUE; }
     if (dd_guard) {
         int off = (m == WM_ACTIVATEAPP && !wp) || (m == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE) || m == WM_KILLFOCUS ||
                   (m == WM_NCACTIVATE && !wp);
+        /* "in front again" while the box is still open (the player clicked the game, then the box): the game was
+         * never told it left the front, and told "in front" a second time it started drawing with the screen not
+         * its own - a fault inside its drawing followed (Need for Speed III, Windows 11, 2026-11-11).  Kept from
+         * the game too; Windows 9x as tested, unchanged. */
+        int on = !okp_sys.win9x && ((m == WM_ACTIVATEAPP && wp) || (m == WM_ACTIVATE && LOWORD(wp) != WA_INACTIVE) ||
+                                    m == WM_SETFOCUS || (m == WM_NCACTIVATE && wp));
+        int kept = dd_keep && (off || on);
         if (off || m == WM_ACTIVATEAPP || m == WM_ACTIVATE || m == WM_SETFOCUS || m == WM_NCACTIVATE || m == WM_SIZE ||
             m == WM_SYSCOMMAND || m == WM_DISPLAYCHANGE || m == WM_SHOWWINDOW)
-            okp_log(3, "ddshow: game window message 0x%04x wp %lx lp %lx%s", m, (unsigned long)wp, (unsigned long)lp, off ? " - kept from the game" : "");
-        if (off) return m == WM_NCACTIVATE ? TRUE : 0;
+            okp_log(3, "ddshow: game window message 0x%04x wp %lx lp %lx%s", m, (unsigned long)wp, (unsigned long)lp,
+                    kept ? " - kept from the game" : "");
+        /* okplay.ini wsock_box_focus=release: the game is told instead (it then puts itself away while a box is open) */
+        if (kept) return m == WM_NCACTIVATE ? TRUE : 0;
     }
     else if (dd_tail && GetTickCount() - dd_tail < 4000) {   /* just after a box: what reaches the game (log only) */
         if (m == WM_ACTIVATEAPP || m == WM_ACTIVATE || m == WM_SETFOCUS || m == WM_KILLFOCUS || m == WM_NCACTIVATE || m == WM_SIZE ||
@@ -325,11 +625,11 @@ static BOOL CALLBACK dds_game_win(HWND w, LPARAM lp)   /* a visible top-level wi
     return FALSE;
 }
 
-static void dds_guard_begin(void)
+static int dds_guard_begin(void)   /* 0: no game window found */
 {
     HWND w = NULL;
     EnumWindows(dds_game_win, (LPARAM)&w);
-    if (!w) return;
+    if (!w) return 0;
     if (!GetPropA(w, DD_PROP)) {   /* not taken over yet */
         WNDPROC cur = (WNDPROC)GetWindowLongA(w, GWL_WNDPROC);
         int room = 0;
@@ -351,8 +651,14 @@ static void dds_guard_begin(void)
         okp_log(3, "ddshow: the game window's procedure changed since okplay took its place in front");
     }
     dd_game_wnd = w;
+    dd_box_tid = GetCurrentThreadId();
     InterlockedExchange(&dd_guard, 1);
     if (GetPropA(w, DD_PROP)) dds_cursor(w, 1);
+    if (!okp_sys.win9x && GetPropA(w, DD_PROP)) {   /* (log only; Windows 9x has no OpenThread) */
+        HANDLE t = CreateThread(NULL, 64 * 1024, dds_watch, NULL, 0, NULL);
+        if (t) CloseHandle(t);
+    }
+    return 1;
 }
 
 void dds_detach(void)   /* this DLL is unloaded while the process goes on: every window gets its own procedure back */
@@ -374,17 +680,43 @@ void dds_detach(void)   /* this DLL is unloaded while the process goes on: every
 
 void dds_guard_end(void)   /* the box is gone: the game window in front again, then its messages as usual */
 {
+    int fg = -1;   /* SetForegroundWindow's answer; -1 = no game window to call it for */
+    DWORD fpid = 0;
+    HWND f;
     if (!dd_guard) return;
     if (dd_game_wnd && IsWindow(dd_game_wnd) && GetPropA(dd_game_wnd, DD_PROP)) dds_cursor(dd_game_wnd, 0);
-    if (dd_game_wnd && IsWindow(dd_game_wnd)) SetForegroundWindow(dd_game_wnd);
+    if (dd_game_wnd && IsWindow(dd_game_wnd)) {
+        if (!dd_keep && IsIconic(dd_game_wnd)) ShowWindowAsync(dd_game_wnd, SW_RESTORE);   /* (it put itself away) */
+        fg = SetForegroundWindow(dd_game_wnd) ? 1 : 0;
+    }
     dd_tail = GetTickCount() | 1;
     InterlockedExchange(&dd_guard, 0);
+    InterlockedExchange(&dd_stop, 0);
+    f = GetForegroundWindow();
+    if (f) GetWindowThreadProcessId(f, &fpid);
+    okp_log(2, "ddshow: box over - guard off, pointer given back, game window to the front: %d, foreground now %s", fg,
+            f && fpid == GetCurrentProcessId() ? "ours" : "other");
+    if (dd_hold) okp_log(2, "ddshow: held %ld page flips of the game while the box was open", (long)InterlockedExchange(&dd_held, 0));
+}
+
+int dds_box_over_game(void) { return dd_guard != 0; }
+HWND dds_game_window(void) { return dd_guard ? dd_game_wnd : NULL; }
+
+int dds_on_game_window_thread(void)   /* the calling thread owns the game window a box is open over */
+{
+    HWND w = dd_game_wnd;
+    return dd_guard && w && GetWindowThreadProcessId(w, NULL) == GetCurrentThreadId();
 }
 
 int dds_show_gdi(void)   /* the thread that will show the window (the game's own, for okplay's boxes) */
 {
     if (!dd_ready) return 0;
     int n = 0;
+    if (dd_hold) {   /* no flip of the game after the switch below: one under way ends first, later ones are held */
+        EnterCriticalSection(&ds_flip_cs);
+        InterlockedExchange(&dd_stop, 1);
+        LeaveCriticalSection(&ds_flip_cs);
+    }
     EnterCriticalSection(&dd_lock);
     for (dd_px *p = dd_list; p; p = p->next) {
         if (!p->live) continue;
@@ -394,6 +726,10 @@ int dds_show_gdi(void)   /* the thread that will show the window (the game's own
         n++;
     }
     LeaveCriticalSection(&dd_lock);
-    if (n) dds_guard_begin();
+    InterlockedExchange(&dd_held, 0);
+    if (!n || !dds_guard_begin()) {
+        InterlockedExchange(&dd_stop, 0);   /* (no guard: nothing would switch the hold off again) */
+        okp_log(2, "ddshow: no DirectDraw object of the game / no game window found - the box opens the plain way");
+    }
     return n;
 }
