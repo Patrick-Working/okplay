@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""boxgame_check.py - judges one boxgame run from its two logs (docs/BOX_METHOD.md 5.2), version 1.
+"""boxgame_check.py - judges one boxgame run from its two logs (docs/BOX_METHOD.md 5.2), version 2.
 
     python boxgame_check.py BOXGAME_LOG [OKPLAY_LOG]
 
@@ -153,7 +153,12 @@ def main():
         say("FAIL" if cl else "PASS", "clock", cl[0][13:] if cl else f"the join clock held ({c})")
 
     # ---- keys (rules 6, 7)
-    kin = [l for l in bg if "KEY WHILE A BOX IS OPEN" in l]
+    kall = [l for l in bg if "KEY WHILE A BOX IS OPEN" in l]
+    # Shift, Ctrl and Alt by themselves go on to the game on purpose (wsock.c na_key_proc): noted, not a failure
+    kmod = [l for l in kall if re.search(r" wp (10|11|12|a[0-5]) ", l)]
+    kin = [l for l in kall if l not in kmod]
+    if kmod:
+        say("NOTE", "keys", f"{len(kmod)} message(s) of Shift/Ctrl/Alt alone reached the game while a box was open (meant so)")
     sent = [l for l in bg if "keys: typing" in l]
     notsent = [l for l in bg if "keys: not sent" in l]
     if kin:
@@ -165,11 +170,17 @@ def main():
             + ("" if not notsent else " (synthetic keys not sent: " + notsent[0].split("keys: not sent - ")[-1] + ")"))
     m = re.search(r'keys: typing "([^"]*)"', "\n".join(sent))
     if m:
-        typed = re.sub(r"\{[^}]*\}", "", m.group(1).split("{tab}")[0])
+        typed = m.group(1).split("{tab}")[0]
+        while re.search(r"[^{}]\{bs\}", typed):   # a backspace takes the character before it
+            typed = re.sub(r"[^{}]\{bs\}", "", typed, count=1)
+        typed = re.sub(r"\{[^}]*\}", "", typed)
         fields = [re.search(r'box: field now "([^"]*)"', l) for l in bg]
         fields = [f.group(1) for f in fields if f]
         if typed:
-            say("PASS" if typed in fields else "FAIL", "keys", f"typed \"{typed}\": the field held {fields[-3:] if fields else 'nothing'}")
+            if not fields and any("box: closed after" in l and '(field: "")' in l for l in bg) and "{enter}" in m.group(1):
+                say("SKIP", "keys", f"typed \"{typed}\" and Enter: the box closed before its field was read")
+            else:
+                say("PASS" if fields and fields[-1] == typed else "FAIL", "keys", f"typed \"{typed}\": the field held {fields[-3:] if fields else 'nothing'}")
 
     # ---- put back (rule 8)
     ptr = {}

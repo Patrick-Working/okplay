@@ -26,7 +26,7 @@
  *  --addr    where a TCP joiner connects (default 127.0.0.1:9804: an address okplay knows no room for)
  *  --lo      bind sockets to 127.0.0.1 (dry runs with okplay out of the way: no firewall question)
  *  --keys T  synthetic keys typed into the first box, KEYDELAY ms after it is up: plain characters and {tab}
- *            {enter} {esc} {space} {bs}; only when the front window is this program's (never another program's)
+ *            {enter} {esc} {space} {bs} {altf4} (AltGr characters are typed as Ctrl+Alt+key); only when the front window is this program's (never another program's)
  *  --grab    the game keeps the pointer: re-traps it every second and puts it in the middle every frame
  *
  * The log: "HH:MM:SS.mmm [tid] text" lines; window messages ("msg: ..."), one "tick:" line a second (frames,
@@ -623,7 +623,7 @@ static void send_keys(void)
     LOG("keys: typing \"%s\" (front: %s)", keys_s, wnd_desc(f, b, sizeof(b)));
     InterlockedExchange(&keys_sent, 1);
     while (*p) {
-        BYTE vk = 0, shift = 0;
+        BYTE vk = 0, shift = 0, alt = 0, ctrl = 0;
         if (*p == '{') {
             const char *e = strchr(p, '}');
             char name[16] = "";
@@ -631,17 +631,23 @@ static void send_keys(void)
             lstrcpynA(name, p + 1, (int)(e - p) < (int)sizeof(name) ? (int)(e - p) : (int)sizeof(name));
             vk = !_stricmp(name, "tab") ? VK_TAB : !_stricmp(name, "enter") ? VK_RETURN : !_stricmp(name, "esc") ? VK_ESCAPE :
                  !_stricmp(name, "space") ? VK_SPACE : !_stricmp(name, "bs") ? VK_BACK : 0;
+            if (!_stricmp(name, "altf4")) { vk = VK_F4; alt = 1; }
             p = e + 1;
         } else {
             SHORT k = VkKeyScanA(*p++);
             if (k == -1) continue;
             vk = LOBYTE(k);
             shift = (HIBYTE(k) & 1) != 0;
+            if ((HIBYTE(k) & 6) == 6) ctrl = alt = 1;   /* an AltGr character on this keyboard layout */
         }
         if (!vk) continue;
         if (shift) keybd_event(VK_SHIFT, (BYTE)MapVirtualKeyA(VK_SHIFT, 0), 0, 0);
+        if (ctrl) keybd_event(VK_CONTROL, (BYTE)MapVirtualKeyA(VK_CONTROL, 0), 0, 0);
+        if (alt) keybd_event(VK_MENU, (BYTE)MapVirtualKeyA(VK_MENU, 0), 0, 0);
         keybd_event(vk, (BYTE)MapVirtualKeyA(vk, 0), 0, 0);
         keybd_event(vk, (BYTE)MapVirtualKeyA(vk, 0), KEYEVENTF_KEYUP, 0);
+        if (alt) keybd_event(VK_MENU, (BYTE)MapVirtualKeyA(VK_MENU, 0), KEYEVENTF_KEYUP, 0);
+        if (ctrl) keybd_event(VK_CONTROL, (BYTE)MapVirtualKeyA(VK_CONTROL, 0), KEYEVENTF_KEYUP, 0);
         if (shift) keybd_event(VK_SHIFT, (BYTE)MapVirtualKeyA(VK_SHIFT, 0), KEYEVENTF_KEYUP, 0);
         Sleep(60);
     }

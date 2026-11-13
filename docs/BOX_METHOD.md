@@ -339,3 +339,22 @@ the three key changes over a real full-screen surface (stand-in, then Need for S
 Still open from section 2.2 of the review: Shift/Ctrl selection and dead keys in a no-front box; a keyboard
 hook Windows drops silently; Alt+Tab while a box is open; a key held when the box opens; mouse click does not
 move the keyboard to a field; Road Rash on NT still takes the front (section 6.1).
+
+### 10.1 Stand-in runs over a real full-screen surface (2026-11-12 evening, Windows 10, US keyboard)
+
+`boxgame` full screen (640x480 exclusive), no-front box, NFS3 shape (TCP, network calls on a second thread):
+
+| Case | Result |
+|---|---|
+| Alt+F4 on the mode box | the box is cancelled, the game keeps running and keeps the front; F4 never reaches the game |
+| Alt+F4 on the room list of a joiner whose window reads its messages every 300 ms | the same |
+| Host box: typed `Ab1x` + Backspace (Shift, digit, Backspace) | the field holds `Ab1`; no key reaches the game |
+| Road Rash shape (UDP, calls on the window's thread; this box still takes the front) | Alt+F4 closes the box as Windows does; the game is not closed |
+
+Found and changed by these runs: Alt+F4 now cancels on the key going **up** (cancelling on the way down let the
+key-up reach the game after the box and its hook were gone). Shift, Ctrl and Alt alone still go on to the game on
+purpose; `boxgame_check.py` (version 2) notes them and no longer fails on them, and it understands `{bs}`.
+`boxgame --keys` knows `{altf4}` and types AltGr characters as Ctrl+Alt+key.
+
+Still not tested: AltGr characters (needs a keyboard layout that has them: a VM with a German or French layout),
+a box inside a box and two threads at the gate (no stand-in case stages them yet), Windows 98, and the real game.

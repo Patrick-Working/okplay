@@ -2128,7 +2128,8 @@ static LRESULT CALLBACK na_key_proc(int code, WPARAM wp, LPARAM lp)
         return CallNextHookEx(NULL, code, wp, lp);
     /* [universal] Alt+F4 with the game in front would close the game: it cancels the box instead */
     if (vk == VK_F4 && ((k->flags & LLKHF_ALTDOWN) || (GetAsyncKeyState(VK_MENU) & 0x8000))) {
-        if (down) { okp_log(2, "box: Alt+F4 cancels the box (not passed to the game)"); PostMessageA(dlg, WM_COMMAND, IDCANCEL, 0); }
+        /* (on the key going up: both halves of the key are over before the box, and this hook with it, is gone) */
+        if (!down) { okp_log(2, "box: Alt+F4 cancels the box (not passed to the game)"); PostMessageA(dlg, WM_COMMAND, IDCANCEL, 0); }
         return 1;
     }
     /* [universal] AltGr (= Ctrl+Alt) makes characters on many keyboards (@ \ { } | and the euro sign on German,
