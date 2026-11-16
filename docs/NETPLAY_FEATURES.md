@@ -59,4 +59,4 @@ A replacement `dplayx.dll` (Wine's DirectPlay, ported to Windows and extended) t
 | Outside Windows | no | Wine's code: runs under Wine; a full own stack (our dplayx + our TCP/IP provider) works on Windows, Linux run not tried yet |
 
 ## Not done yet (main items)
-Reliable protocol layer (48/49); an AoE2 game with DirectPlay-style as the default; silent UPnP port mapping as a hosting last resort; lobby launching through the room server; per-game profiles; LAN discovery on VPN adapters; a run under Wine on Linux. Plan and test results: `docs/DPLAY_CONFORMANCE.md`.
+Reliable protocol layer (48/49); an AoE2 game with DirectPlay-style as the default; lobby launching through the room server; per-game profiles; a run under Wine on Linux. Plan and test results: `docs/DPLAY_CONFORMANCE.md`. (Dropped 2026-11-16: UPnP port mapping and LAN discovery on VPN adapters - okplay helps LAN or Online play only, no VPN, no port forwarding.)

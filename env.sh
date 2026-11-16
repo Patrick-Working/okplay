@@ -10,7 +10,6 @@
 #   AOE2_GAME_DIR   the game's age2_x1 folder (real-game smoke test, intro-video checks)
 #   DELIVERABLES    where package.sh writes releases        (default: <workspace>/deliverables)
 #   FFMPEG_PREFIX   the static FFmpeg okindeo.dll links     (default: <workspace>/okindeo/ff)
-#   CSC             .NET Framework 4 C# compiler for the launcher
 #   SITE_FILES      folder of the files the release page's site-only part offers (site-extras.html
 #                   links "patches/<file>"; package.sh copies them; neither is in git)
 
@@ -59,8 +58,7 @@ fi
 
 DELIVERABLES="${DELIVERABLES:-$AOE2TOOL/deliverables}"
 FFMPEG_PREFIX="${FFMPEG_PREFIX:-$AOE2TOOL/okindeo/ff}"
-CSC="${CSC:-$(cygpath -u "${WINDIR:-C:\\Windows}")/Microsoft.NET/Framework/v4.0.30319/csc.exe}"
-export AOE2TOOL MINGW32_BIN PY AOE2_GAME_DIR DELIVERABLES FFMPEG_PREFIX CSC SITE_FILES
+export AOE2TOOL MINGW32_BIN PY AOE2_GAME_DIR DELIVERABLES FFMPEG_PREFIX SITE_FILES
 unset _d _c _p _loc _exe
 
 # call before compiling: puts the 32-bit gcc first on PATH, or stops with what to do
@@ -77,7 +75,7 @@ need_python() {
 }
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
-    for _v in AOE2TOOL MINGW32_BIN PY AOE2_GAME_DIR DELIVERABLES FFMPEG_PREFIX CSC; do
+    for _v in AOE2TOOL MINGW32_BIN PY AOE2_GAME_DIR DELIVERABLES FFMPEG_PREFIX; do
         printf '%-14s %s\n' "$_v" "${!_v:-(not found)}"
     done
 fi

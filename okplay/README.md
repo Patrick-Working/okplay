@@ -3,7 +3,9 @@
 > **The release is the drop-in edition** (`../winedplay`, v0.3.0: okplay built into Wine's
 > dplayx.dll, released with `winedplay/package.sh`). The installer edition described here (launcher
 > + okplay.dll on Windows' DirectPlay, v0.2.0) was retired on 2026-09-28; its last release is in
-> `deliverables/archive/`. This folder stays the home of the okplay source, its tests and the server.
+> `deliverables/archive/`. Its launcher, release script and registry files were removed on 2026-11-16
+> (they installed system-wide connection types, which okplay no longer does). This folder stays the
+> home of the okplay source, its tests and the server; okplay.dll is still built for the tests.
 
 A DirectPlay 4 service provider for AoE2 (it should also help other DirectPlay 4 games; only AoE2
 is tested), registered twice. Display names come from `okplay.ini` (per server); GUIDs are fixed:
@@ -28,14 +30,13 @@ server's list carries each host's protocol version so incompatible rooms aren't 
 
     src/            okplay.dll: sp.c (DirectPlay glue), net.c (UDP, punching, STUN, reliable lane,
                     router-sim hook), rdv.c (server client), lan.c (LAN discovery), crash.c, util.c
-    launcher/       ClassicNetplay.exe (C# 5, Windows' own csc): checks, install, hide other
-                    connection types, launch, logs, uninstall. --selftest, --dryrun-install
     codec/          okindeo.dll: Indeo 5 decoder for Video for Windows (FFmpeg, LGPL) - the intro movies
     tools/          dptest.c (AoE2 stand-in), vfwprobe.c (can VfW decode this AVI?)
-    server/         okplay.php + index.html (templated), rdv_standin.py (same API, local)
+    server/         okplay.php, rdv_standin.py (same API, local)
     tests/          run_local.sh, soak.sh, fuzz.c, natsim.py + nat_matrix.py, rdv_conformance.py
     docs/           SELF-HOSTING.md, wine-dplayx-exploration.md, overnight report
-    package/        README.txt + okplay.ini templates for a release (package.sh fills them)
+    package/        okplay.ini: the release's branding (brand, names, server, key), read by
+                    winedplay/package.sh
 
 ## Build / test (MSYS2 mingw32, 32-bit)
 
@@ -47,7 +48,6 @@ folder and the FFmpeg prefix at run time. `bash ../env.sh` shows what it found; 
 workspace path may contain spaces.
 
     ./build.sh                     # bin/okplay.dll, bin/dptest.exe (+ bin/dpwsockx.dll copy, see below)
-    launcher/build.sh              # bin/ClassicNetplay.exe
     python server/rdv_standin.py [--port 8787] [--www server] [--fake-client-ip 203.0.113.7]
     tests/run_local.sh all         # pair mesh3 loss15 v6only lan lanmesh lanneg
     tests/run_local.sh mesh8|lanmesh8|migrate|loss30   # 8 players, host quits mid-game, 30% loss
@@ -56,17 +56,16 @@ workspace path may contain spaces.
     bin/fuzz.exe 1000 --control    # the old player-data parser - must be CAUGHT (proves the trap)
     python tests/nat_matrix.py     # 25 router-type pairs through natsim (uses bin_matrix\)
     python tests/rdv_conformance.py [URL]      # 19 checks; run against the live server after uploading
-    bin/ClassicNetplay.exe --selftest out.txt   # layout + garbled-text audit
-    bin/ClassicNetplay.exe --dryrun-install <dir> <game.exe>   # install/hide/rename/uninstall, no admin
-    ./package.sh                   # -> deliverables\<brand> v<ver>\ + "upload to <host> (v<ver>)"
+    ../winedplay/package.sh        # the release (drop-in edition)
 
 ## Intro movies (codec/)
 AoE2's AVIs are Indeo 5 ("IV50"), which Windows dropped, so MCIWnd plays sound with no picture.
 `okindeo.dll` is a VfW decoder (DriverProc) around FFmpeg's indeo5 decoder, static, importing only
-Windows DLLs. Install registers it as `vidc.IV50` under HKLM (32-bit view) `...\Windows NT\
-CurrentVersion\Drivers32` unless a working IV50 decoder is already there; Uninstall removes only ours.
-No game file changes. The install folder is locked to read-only for Users (logs\ stays writable),
-because any program that plays Indeo loads this DLL.
+Windows DLLs. The drop-in's dplayx.dll registers it for the game's own process when it sits next
+to the game (`winedplay/port/dlls/dplayx/builtin.c`); for a game whose intros another program
+plays, the movie helper (`version.dll`, codec/moviehelper.c) does it. Nothing is registered
+system-wide and no game file changes. (The retired installer
+registered it as `vidc.IV50` under HKLM; that code went with the launcher.)
 
     codec/build-ffmpeg.sh          # once: FFmpeg 7.1, indeo5 only, w32threads, static (re-runs itself in MSYS2 MINGW32)
     codec/build.sh                 # bin/okindeo.dll, vfwprobe.exe, fuzz_indeo.exe (build.sh runs it)
@@ -84,8 +83,7 @@ Still to confirm in the real game.
 
 **Dev loop without admin:** the IPX provider's registry Path is the bare name `dpwsockx.dll`, so
 `dptest.exe` in `bin\` loads `bin\dpwsockx.dll` (= this build). With `OKP_TEST_AS=online|lan`,
-SPInit accepts the IPX GUID and runs as that mode. Tests use `dptest --sp ipx`. (Keep the
-launcher's "only show our connections" box unticked on the dev PC or the IPX entry is hidden.)
+SPInit accepts the IPX GUID and runs as that mode. Tests use `dptest --sp ipx`.
 If some other tool rewrote that Path to a full path, set it back (admin, 32-bit view):
 `reg add "HKLM\SOFTWARE\WOW6432Node\Microsoft\DirectPlay\Service Providers\IPX Connection For DirectPlay" /v Path /t REG_SZ /d dpwsockx.dll /f`
 

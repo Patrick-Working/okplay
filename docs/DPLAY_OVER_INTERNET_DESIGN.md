@@ -30,7 +30,7 @@ Recommendation: B as the foundation, with per-game profiles (section 6).
 
 ## 5. Rendezvous and NAT traversal
 - Candidate gathering ICE-style: local, IPv6, STUN-reflexive; simultaneous probes (hole punching); prefer IPv6 and LAN.
-- Add **port mapping** (UPnP IGD / NAT-PMP / PCP) as a first try for hosts that can open a port (suggested in the discussion).
+- ~~Add **port mapping** (UPnP IGD / NAT-PMP / PCP) as a first try for hosts that can open a port (suggested in the discussion).~~ Dropped 2026-11-16 (owner decision): no port forwarding of any kind, automatic or manual.
 - Add a **relay fallback** for symmetric-NAT pairs (UDP relay or TCP/443 relay); the current drop-in has none, so both-symmetric pairs fail.
 - Matchmaker stays discovery-only and never lists IP addresses; peer ids instead of addresses; token on every packet; hash passwords with the session id.
 
