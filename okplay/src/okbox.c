@@ -20,6 +20,12 @@ static char okbox_ini[ MAX_PATH ];
 static BOOL okbox_top;
 
 void okbox_set_topmost( BOOL on ) { okbox_top = on; }
+/* [universal] the window that owns the next boxes (NULL = the box thread's active window, as before).  An owned
+ * window always stays above its owner: set to a game window that a DirectDraw wrapper shows, so the game window
+ * cannot cover the box (okplay wsock, NFS3 portable with DDrawCompat, 2026-11-16) */
+static HWND okbox_owner;
+void okbox_set_owner( HWND w ) { okbox_owner = w; }
+HWND okbox_get_owner( void ) { return okbox_owner && IsWindow( okbox_owner ) ? okbox_owner : NULL; }
 
 void okbox_init( HINSTANCE hinst, BOOL (*is_aoe2)( void ), const char *ini )
 {
@@ -590,7 +596,7 @@ static INT_PTR run_dialog_( DLGTEMPLATE *t, DLGPROC proc, struct pw_dialog *d )
     /* DLGTEMPLATE strings are WCHAR for both calls; 9x only creates ANSI dialogs */
     INT_PTR (WINAPI *box_w)( HINSTANCE, LPCDLGTEMPLATEW, HWND, DLGPROC, LPARAM ) =
         (void *)user32_w( "DialogBoxIndirectParamW" );
-    HWND owner = GetActiveWindow();
+    HWND owner = okbox_get_owner() ? okbox_get_owner() : GetActiveWindow();
     /* on top and in front: when there is no window to own the box, and always for okplay wsock (games
      * that draw full screen over everything; okbox_set_topmost) */
     if ( !owner || okbox_top ) t->style |= DS_SYSMODAL | (okbox_no_front ? 0 : DS_SETFOREGROUND);   /* (no front asked for: see box_shown) */

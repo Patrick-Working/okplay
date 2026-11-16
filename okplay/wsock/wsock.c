@@ -2010,8 +2010,9 @@ static LRESULT CALLBACK box_filter(int code, WPARAM wp, LPARAM lp)
         int quiet = m->message == WM_TIMER || (m->message >= WM_KEYFIRST && m->message <= WM_KEYLAST) ||
                     (m->message >= WM_MOUSEFIRST && m->message <= WM_MOUSELAST);
         /* over a full-screen game the box stays where it is: dragging it by its title bar went wrong there
-         * (the game does not redraw behind it) */
-        if (m->message == WM_NCLBUTTONDOWN && m->wParam == HTCAPTION && dds_box_over_game() && in_box_window(m->hwnd))
+         * (the game does not redraw behind it; over DDrawCompat a "hall of mirrors", 2026-11-16) - unless the
+         * game's picture is kept and painted back behind it (ddshow.c, over a wrapper's window) */
+        if (m->message == WM_NCLBUTTONDOWN && m->wParam == HTCAPTION && dds_box_over_game() && !dds_box_can_drag() && in_box_window(m->hwnd))
             m->message = WM_NULL;
         if (na_dlg || okbox_no_front_wnd) na_sync();
         if (quiet && !in_box_window(m->hwnd)) {
@@ -2248,7 +2249,7 @@ static INT_PTR run_box(okw_box *b)
     /* a full-screen DirectDraw game: Windows' own screen page in front first, or the box is never seen (ddshow.c) */
     if (game->kinds & OKW_TCP) dds_show_gdi();
     HHOOK h = SetWindowsHookExA(WH_GETMESSAGE, box_filter, NULL, GetCurrentThreadId());
-    int na = !okp_sys.win9x && dds_box_over_game() && !box_front;
+    int na = !okp_sys.win9x && dds_box_over_game() && !box_front && !dds_box_wrapped();
     if (na) {
         na_dlg = na_focus = na_caret = NULL; na_pend = 0; na_nunder = 0;
         okbox_no_front = 1;
@@ -2265,10 +2266,16 @@ static INT_PTR run_box(okw_box *b)
         }
     }
     okp_log(2, "box: opens (kind %d, thread %lx, %s)", b->kind, (unsigned long)me,
-            na ? "over a full-screen game, out of the front" : dds_box_over_game() ? (okp_sys.win9x ? "over a full-screen game, Windows 9x way" : "over a full-screen game, takes the front") : "plain, takes the front");
+            na ? "over a full-screen game, out of the front" : dds_box_wrapped() ? "over a wrapper's window, takes the front" : dds_box_over_game() ? (okp_sys.win9x ? "over a full-screen game, Windows 9x way" : "over a full-screen game, takes the front") : "plain, takes the front");
     my_keys = na_keys; my_cbt = na_cbt;   /* (this box's own: taken off by these, whatever the shared ones hold later) */
     ndeferred = 0;
+    /* over a wrapper's window the game window owns the box: it can then never cover it (ddshow.c dds_wrapper) */
+    if (dds_box_wrapped()) {
+        okbox_set_owner(dds_game_window());
+        okp_log(2, "box: owned by the game window %p (it stays above it)", (void *)dds_game_window());
+    }
     run_box_show(b);
+    okbox_set_owner(NULL);
     if (na) {
         if (my_keys) UnhookWindowsHookEx(my_keys);
         if (my_cbt) UnhookWindowsHookEx(my_cbt);
@@ -3212,7 +3219,7 @@ static INT_PTR lb_run(okw_listbox *L)   /* the game's thread, inside run_box */
     p = dlg_item(p, BS_DEFPUSHBUTTON | WS_TABSTOP, 136, 128, 56, 14, IDOK, 0x80, L"Join");
     p = dlg_item(p, BS_PUSHBUTTON | WS_TABSTOP, 196, 128, 56, 14, IDCANCEL, 0x80, L"Cancel");
     okbox_cursor_begin();   /* the game's hidden or fenced-in mouse pointer (okbox.c) */
-    INT_PTR lb_r = DialogBoxIndirectParamA(g_self, t, NULL, lb_proc, (LPARAM)L);
+    INT_PTR lb_r = DialogBoxIndirectParamA(g_self, t, okbox_get_owner(), lb_proc, (LPARAM)L);
     okbox_cursor_end();
     return lb_r;
 }
@@ -4730,6 +4737,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
                 char v[16];
                 int keep;
                 box_front = GetPrivateProfileIntA("okplay", "wsock_box_front", 0, ini) != 0;
+                GetPrivateProfileStringA("okplay", "wsock_box_wrapper", "auto", v, sizeof(v), ini);
+                if (!_stricmp(v, "off")) { dds_set_wrapper(0); okp_log(2, "boxes: DirectDraw wrappers are not looked for (okplay.ini wsock_box_wrapper=off)"); }
+                if (!GetPrivateProfileIntA("okplay", "wsock_box_drag", 1, ini)) { dds_set_drag(0); okp_log(2, "boxes: no dragging over a wrapper's window (okplay.ini wsock_box_drag=0)"); }
                 if (GetPrivateProfileIntA("okplay", "wsock_box_stall_log", 0, ini)) { dds_set_stall_log(1); okp_log(2, "boxes: thread positions are logged when the game stalls under a box (okplay.ini wsock_box_stall_log=1)"); }
                 GetPrivateProfileStringA("okplay", "wsock_box_flip", "", v, sizeof(v), ini);
                 if (!_stricmp(v, "hold")) { dds_set_flip_hold(1); okp_log(2, "boxes: the game's page flips are held while a box is open (okplay.ini wsock_box_flip=hold)"); }

@@ -1,6 +1,6 @@
 # How okplay shows its boxes over a game
 
-Document version 2 (2026-11-12). Study of the code as it stands for the box fix that follows 0.8.7 (not yet released).
+Document version 3 (2026-11-16; section 11 added). Study of the code as it stands for the box fix that follows 0.8.7 (not yet released).
 Covers the Winsock shim games: Road Rash (UDP) and Need for Speed III (TCP).
 
 This is the method every box must follow, for every game we add. It has four parts:
@@ -358,3 +358,44 @@ purpose; `boxgame_check.py` (version 2) notes them and no longer fails on them, 
 
 Still not tested: AltGr characters (needs a keyboard layout that has them: a VM with a German or French layout),
 a box inside a box and two threads at the gate (no stand-in case stages them yet), Windows 98, and the real game.
+
+## 11. DirectDraw wrappers (2026-11-16; wsock 0.2.4 - 0.2.9, tested on a laptop with the real game)
+
+What we had missed: players' game packs often bring their own `ddraw.dll`. The Need for Speed III portable 1.6.2
+ships **DDrawCompat 0.7.1** with `FullscreenMode = borderless`, `GdiInterops = all`, `AltTabFix = noactivateapp(1)`
+and `CpuAffinity = 1` (every thread on one core; SilentPatch pins new threads too). Every stand-in run so far used
+Windows' own DirectDraw, so none of them saw this. With the wrapper, beta 1's out-of-the-front box (section 10)
+could not be seen or used, the system-wide keyboard hook stopped answering (Alt+F4 reached the game), and the
+laptop had to be reset.
+
+**Rule 9 (universal): find out what shows the game before choosing a method.** `ddshow.c dds_wrapper` looks at the
+module the game's `DirectDrawCreate` is in (not "ddraw.dll" by name: the wrapper loads Windows' own one too) and
+reads its version text (RT_VERSION, read in place). For DDrawCompat it reads `FullscreenMode` and
+`EnableDDrawCompat` from `DDrawCompat-<exe name>.ini` beside the exe, then `DDrawCompat.ini` beside the wrapper.
+
+| What shows the game | Method |
+|---|---|
+| DDrawCompat, enabled, borderless (its default) | **wrapper method** (below) |
+| DDrawCompat with `FullscreenMode = exclusive`, or `EnableDDrawCompat = off` | the usual measures (sections 2, 10) |
+| dgVoodoo, cnc-ddraw | the usual measures, and a log line "not tested with okplay's boxes yet" |
+| Windows' own DirectDraw | the usual measures (unchanged) |
+
+**The wrapper method** (one round of laptop tests per step, 2026-11-16):
+
+| Step | Result |
+|---|---|
+| 0.2.4: plain box, takes the front, no guard | box usable, game went down (minimised) under it |
+| 0.2.5: + guard (game not told it lost the front) | game stayed up, but its window covered the box |
+| 0.2.6: + the box **owned by the game window** (`okbox_set_owner`) | works: box on top, keys, Enter, buttons; dragging left a "hall of mirrors" |
+| 0.2.8: + the game's picture kept when the box opens, painted back in the game window's WM_PAINT | works, dragging clean |
+
+So over a borderless wrapper: no screen-page switch, no out-of-the-front box, no system-wide keyboard hook; the
+guard stays (activation messages kept from the game, a minimise asked by message refused, the game restored if it
+went down anyway, the pointer looked after); the box is owned by the game window (an owned window always stays
+above its owner; the game window takes no clicks meanwhile); a picture of the screen is kept for under the box
+(`okplay.ini wsock_box_drag=0`: no picture, no dragging). `okplay.ini wsock_box_wrapper=off` turns the whole method off.
+
+Not known yet (each needs a real run): the original 1998 exe and 1.6.1 without a wrapper on Windows 10/11 (they get
+the usual measures, i.e. beta 1's method, which has only been run against the stand-in); dgVoodoo and cnc-ddraw;
+DDrawCompat on other games; Windows 98 is not affected (no wrapper there, the 9x path is unchanged). The stand-in
+cannot test the wrapper method: DDrawCompat 0.7.1 crashes boxgame.exe even without okplay.

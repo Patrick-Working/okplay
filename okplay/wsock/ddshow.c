@@ -181,6 +181,16 @@ static int hook_import(HMODULE m, const char *dll, const char *fn, void *to, voi
  * While a box is open those two calls from the game's threads do nothing; the box's own thread is not touched.
  * Shared: any game whose imports are watched here. */
 static volatile LONG dd_guard;
+static volatile LONG dd_wrap_now;   /* the guard is on over a game a DirectDraw wrapper shows (dds_wrapper) */
+/* The game's picture as it was when the box opened, over a wrapper's window: painted back wherever the box uncovers
+ * the game window (the game itself does not redraw while it waits on us - dragging the box left a "hall of mirrors"
+ * with DDrawCompat, 2026-11-16).  Taken from the screen, the size of the game window's monitor (a wrapper may tell
+ * this program the game's own 640x480 instead of the real window size); painted at the window's top left. */
+static HBITMAP dd_snap;
+static int dd_snap_w, dd_snap_h;
+static CRITICAL_SECTION dd_snap_cs;
+static int dd_drag = 1;             /* okplay.ini wsock_box_drag: 0 = the box cannot be dragged over a wrapper's window */
+void dds_set_drag(int on) { dd_drag = on; }
 static volatile DWORD dd_box_tid;   /* the thread of the open box */
 static int dd_keep;                 /* 1 = the game is not told it lost the front (every Windows; dds_set_keep) */
 static BOOL (WINAPI *real_scp)(int, int);
@@ -408,6 +418,7 @@ void dds_init(void)
     ds_vtbl[11] = (void *)ps_flip;
     FlushInstructionCache(GetCurrentProcess(), code, NTHUNK * 20);
     InitializeCriticalSection(&dd_lock);
+    InitializeCriticalSection(&dd_snap_cs);
     InitializeCriticalSection(&ds_lock_cs);
     InitializeCriticalSection(&ds_flip_cs);
     dd_put_cs();                         /* (the hold may have been asked for before this: slot 6 now follows it) */
@@ -580,6 +591,21 @@ static LRESULT CALLBACK dds_game_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         return 0;
     }
     if (m == WM_NCDESTROY) dd_cur_shows = 0;
+    if (dd_guard && dd_wrap_now && dd_snap && (m == WM_PAINT || m == WM_ERASEBKGND)) {
+        if (m == WM_ERASEBKGND) return 1;
+        PAINTSTRUCT ps;
+        HDC dc = BeginPaint(w, &ps);
+        EnterCriticalSection(&dd_snap_cs);
+        if (dc && dd_snap) {
+            HDC mdc = CreateCompatibleDC(dc);
+            HGDIOBJ was = mdc ? SelectObject(mdc, dd_snap) : NULL;
+            if (mdc) BitBlt(dc, 0, 0, dd_snap_w, dd_snap_h, mdc, 0, 0, SRCCOPY);
+            if (mdc) { SelectObject(mdc, was); DeleteDC(mdc); }
+        }
+        LeaveCriticalSection(&dd_snap_cs);
+        EndPaint(w, &ps);
+        return 0;
+    }
     if (dd_guard && m == WM_SETCURSOR) { SetCursor(LoadCursorA(NULL, (LPCSTR)IDC_ARROW)); return TRUE; }
     if (dd_guard) {
         int off = (m == WM_ACTIVATEAPP && !wp) || (m == WM_ACTIVATE && LOWORD(wp) == WA_INACTIVE) || m == WM_KILLFOCUS ||
@@ -591,10 +617,15 @@ static LRESULT CALLBACK dds_game_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
         int on = !okp_sys.win9x && ((m == WM_ACTIVATEAPP && wp) || (m == WM_ACTIVATE && LOWORD(wp) != WA_INACTIVE) ||
                                     m == WM_SETFOCUS || (m == WM_NCACTIVATE && wp));
         int kept = dd_keep && (off || on);
+        /* over a wrapper's window (dds_wrapper) the box takes the front, so the game window must not be put away
+         * meanwhile: a minimise asked by message is refused (the game came down under a front-taking box with
+         * DDrawCompat, 2026-11-16); one made another way is logged below and undone when the box closes */
+        int nomin = dd_wrap_now && m == WM_SYSCOMMAND && (wp & 0xfff0) == SC_MINIMIZE;
         if (off || m == WM_ACTIVATEAPP || m == WM_ACTIVATE || m == WM_SETFOCUS || m == WM_NCACTIVATE || m == WM_SIZE ||
-            m == WM_SYSCOMMAND || m == WM_DISPLAYCHANGE || m == WM_SHOWWINDOW)
-            okp_log(3, "ddshow: game window message 0x%04x wp %lx lp %lx%s", m, (unsigned long)wp, (unsigned long)lp,
-                    kept ? " - kept from the game" : "");
+            m == WM_SYSCOMMAND || m == WM_DISPLAYCHANGE || m == WM_SHOWWINDOW || m == WM_WINDOWPOSCHANGED)
+            okp_log(3, "ddshow: game window message 0x%04x wp %lx lp %lx%s%s", m, (unsigned long)wp, (unsigned long)lp,
+                    kept || nomin ? " - kept from the game" : "", IsIconic(w) ? " (minimised)" : "");
+        if (nomin) return 0;
         /* okplay.ini wsock_box_focus=release: the game is told instead (it then puts itself away while a box is open) */
         if (kept) return m == WM_NCACTIVATE ? TRUE : 0;
     }
@@ -678,6 +709,115 @@ void dds_detach(void)   /* this DLL is unloaded while the process goes on: every
     LeaveCriticalSection(&dd_lock);
 }
 
+/* ---- a DirectDraw wrapper shows the game (universal: any game that ships one) ----
+ * Some game packs bring their own ddraw.dll that turns "full screen" into a borderless window and shows ordinary
+ * Windows windows over it itself - DDrawCompat (Need for Speed III portable 1.6.2: FullscreenMode = borderless,
+ * GdiInterops = all, AltTabFix = noactivateapp, CpuAffinity = 1).  Our own full-screen measures then fight the
+ * wrapper's: on a laptop, with Windows' screen page asked for, the box kept out of the front and the keyboard taken
+ * by a system-wide hook, the box could not be seen or used and the game froze (2026-11-16).  So with such a wrapper
+ * the box takes the front as over a windowed game, with none of the screen-page switch, out-of-the-front box or
+ * system-wide keyboard hook.  The guard stays (test 1 without it: the game minimised itself under the box): the game
+ * window is not told it lost the front, a minimise asked of it is refused, its pointer is looked after; afterwards
+ * it gets the front back (restored if it was put away anyway).
+ * Found by the wrapper's own version text (RT_VERSION of the loaded ddraw.dll, read in place) and, for DDrawCompat,
+ * its FullscreenMode setting: "exclusive" there means real full screen, and the usual measures apply.
+ * okplay.ini wsock_box_wrapper=off turns this off. */
+static int dd_wrap_mode = 1;        /* dds_set_wrapper: 1 = auto, 0 = off */
+static int dd_wrapped = -1;         /* -1 = not looked yet; 0 = none (or exclusive); 1 = a borderless wrapper */
+void dds_set_wrapper(int on) { dd_wrap_mode = on; }
+
+static int dd_has_wtext(const BYTE *p, DWORD n, const char *t)   /* an ASCII text stored as UTF-16 in p[0..n) */
+{
+    size_t k = strlen(t);
+    for (DWORD i = 0; i + 2 * k <= n; i++) {
+        size_t j = 0;
+        while (j < k && p[i + 2 * j] == (BYTE)t[j] && p[i + 2 * j + 1] == 0) j++;
+        if (j == k) return 1;
+    }
+    return 0;
+}
+
+static void dd_ini_value(const char *path, const char *key, char *out, int n)   /* "Key = value" lines, no sections */
+{
+    char buf[8192];
+    DWORD got = 0;
+    HANDLE h = CreateFileA(path, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE, NULL, OPEN_EXISTING, 0, NULL);
+    if (h == INVALID_HANDLE_VALUE) return;
+    if (!ReadFile(h, buf, sizeof(buf) - 1, &got, NULL)) got = 0;
+    CloseHandle(h);
+    buf[got] = 0;
+    size_t k = strlen(key);
+    for (char *l = buf; l && *l; ) {
+        char *e = strpbrk(l, "\r\n");
+        if (e) *e = 0;
+        while (*l == ' ' || *l == '\t') l++;
+        if (!_strnicmp(l, key, k) && (l[k] == ' ' || l[k] == '\t' || l[k] == '=')) {
+            char *v = strchr(l, '=');
+            if (v) {
+                v++;
+                while (*v == ' ' || *v == '\t') v++;
+                lstrcpynA(out, v, n);
+                for (int i = (int)strlen(out) - 1; i >= 0 && (out[i] == ' ' || out[i] == '\t'); i--) out[i] = 0;
+            }
+            return;
+        }
+        l = e ? e + 1 : NULL;
+        while (l && (*l == '\r' || *l == '\n')) l++;
+    }
+}
+
+static int dds_wrapper(void)
+{
+    char path[MAX_PATH] = "", dir[MAX_PATH], exe[MAX_PATH] = "", ini[MAX_PATH], mode[32] = "";
+    const char *name = NULL;
+    if (!dd_wrap_mode) return 0;
+    if (dd_wrapped >= 0) return dd_wrapped;
+    /* the DirectDraw the game got (a wrapper loads Windows' own ddraw.dll too, under the same name): the module
+     * its DirectDrawCreate is in; by name only if the game's call was not seen */
+    MEMORY_BASIC_INFORMATION mb;
+    void *f = real_ddc ? (void *)real_ddc : (void *)real_ddcex;
+    HMODULE m = NULL;
+    if (f && VirtualQuery(f, &mb, sizeof(mb))) m = (HMODULE)mb.AllocationBase;
+    if (!m) m = GetModuleHandleA("ddraw.dll");
+    if (!m) return 0;   /* (not loaded yet: looked at again at the next box) */
+    dd_wrapped = 0;
+    GetModuleFileNameA(m, path, sizeof(path));
+    HRSRC r = FindResourceA(m, MAKEINTRESOURCEA(1), (LPCSTR)RT_VERSION);
+    HGLOBAL g = r ? LoadResource(m, r) : NULL;
+    const BYTE *v = g ? (const BYTE *)LockResource(g) : NULL;
+    DWORD vn = r ? SizeofResource(m, r) : 0;
+    if (v && dd_has_wtext(v, vn, "DDrawCompat")) name = "DDrawCompat";
+    else if (v && dd_has_wtext(v, vn, "dgVoodoo")) name = "dgVoodoo";
+    else if (v && dd_has_wtext(v, vn, "cnc-ddraw")) name = "cnc-ddraw";
+    if (!name) { okp_log(3, "ddshow: DirectDraw is %s - no wrapper known", path); return 0; }
+    if (strcmp(name, "DDrawCompat")) {   /* known, but not tested yet: the usual measures, and a note in the log */
+        okp_log(1, "ddshow: DirectDraw is %s (%s) - not tested with okplay's boxes yet, the usual measures apply", name, path);
+        return 0;
+    }
+    /* DDrawCompat's settings: DDrawCompat-<exe name>.ini beside the exe, else DDrawCompat.ini beside the wrapper */
+    GetModuleFileNameA(NULL, exe, sizeof(exe));
+    lstrcpynA(dir, exe, sizeof(dir));
+    char *sl = strrchr(dir, '\\'); if (sl) sl[1] = 0;
+    char *base = strrchr(exe, '\\'); base = base ? base + 1 : exe;
+    char *dot = strrchr(base, '.'); if (dot) *dot = 0;
+    char gini[MAX_PATH], on[16] = "";
+    snprintf(ini, sizeof(ini), "%sDDrawCompat-%s.ini", dir, base);
+    lstrcpynA(gini, path, sizeof(gini));
+    sl = strrchr(gini, '\\'); if (sl) lstrcpyA(sl + 1, "DDrawCompat.ini");
+    dd_ini_value(ini, "FullscreenMode", mode, sizeof(mode));   /* (the program's own settings first, then the shared ones) */
+    if (!mode[0]) dd_ini_value(gini, "FullscreenMode", mode, sizeof(mode));
+    dd_ini_value(ini, "EnableDDrawCompat", on, sizeof(on));
+    if (!on[0]) dd_ini_value(gini, "EnableDDrawCompat", on, sizeof(on));
+    if (!_stricmp(on, "off")) {   /* switched off: it hands everything to Windows' own DirectDraw */
+        okp_log(1, "ddshow: DirectDraw is DDrawCompat (%s) with EnableDDrawCompat = off - the usual measures apply", path);
+        return 0;
+    }
+    dd_wrapped = _strnicmp(mode, "exclusive", 9) != 0;   /* (borderless is DDrawCompat's own default) */
+    okp_log(1, "ddshow: DirectDraw is DDrawCompat (%s), FullscreenMode = %s - %s", path, mode[0] ? mode : "(not set: borderless)",
+            dd_wrapped ? "okplay's boxes open as over a windowed game (no full-screen measures)" : "real full screen, the usual measures apply");
+    return dd_wrapped;
+}
+
 void dds_guard_end(void)   /* the box is gone: the game window in front again, then its messages as usual */
 {
     int fg = -1;   /* SetForegroundWindow's answer; -1 = no game window to call it for */
@@ -686,11 +826,22 @@ void dds_guard_end(void)   /* the box is gone: the game window in front again, t
     if (!dd_guard) return;
     if (dd_game_wnd && IsWindow(dd_game_wnd) && GetPropA(dd_game_wnd, DD_PROP)) dds_cursor(dd_game_wnd, 0);
     if (dd_game_wnd && IsWindow(dd_game_wnd)) {
-        if (!dd_keep && IsIconic(dd_game_wnd)) ShowWindowAsync(dd_game_wnd, SW_RESTORE);   /* (it put itself away) */
+        if ((!dd_keep || dd_wrap_now) && IsIconic(dd_game_wnd)) {   /* (it put itself away) */
+            okp_log(1, "ddshow: the game window was minimised under the box - restored");
+            ShowWindowAsync(dd_game_wnd, SW_RESTORE);
+        }
         fg = SetForegroundWindow(dd_game_wnd) ? 1 : 0;
     }
     dd_tail = GetTickCount() | 1;
     InterlockedExchange(&dd_guard, 0);
+    InterlockedExchange(&dd_wrap_now, 0);
+    if (dd_snap) {
+        EnterCriticalSection(&dd_snap_cs);
+        DeleteObject(dd_snap);
+        dd_snap = NULL;
+        LeaveCriticalSection(&dd_snap_cs);
+        if (dd_game_wnd && IsWindow(dd_game_wnd)) InvalidateRect(dd_game_wnd, NULL, FALSE);
+    }
     InterlockedExchange(&dd_stop, 0);
     f = GetForegroundWindow();
     if (f) GetWindowThreadProcessId(f, &fpid);
@@ -700,6 +851,8 @@ void dds_guard_end(void)   /* the box is gone: the game window in front again, t
 }
 
 int dds_box_over_game(void) { return dd_guard != 0; }
+int dds_box_wrapped(void) { return dd_guard && dd_wrap_now; }
+int dds_box_can_drag(void) { return dd_guard && dd_wrap_now && dd_snap; }
 HWND dds_game_window(void) { return dd_guard ? dd_game_wnd : NULL; }
 
 int dds_on_game_window_thread(void)   /* the calling thread owns the game window a box is open over */
@@ -712,6 +865,43 @@ int dds_show_gdi(void)   /* the thread that will show the window (the game's own
 {
     if (!dd_ready) return 0;
     int n = 0;
+    if (dds_wrapper()) {   /* the wrapper shows our window itself: no screen-page switch (see dds_wrapper) */
+        if (dd_guard) return 0;   /* (an inner box: the outer one's guard stays) */
+        InterlockedExchange(&dd_wrap_now, 1);
+        if (!dds_guard_begin()) {
+            InterlockedExchange(&dd_wrap_now, 0);
+            okp_log(2, "ddshow: over a wrapper's window, but no game window found - the box opens the plain way");
+            return 0;
+        }
+        if (dd_drag && !dd_snap) {
+            MONITORINFO mi;
+            HMONITOR mon = MonitorFromWindow(dd_game_wnd, MONITOR_DEFAULTTONEAREST);
+            memset(&mi, 0, sizeof(mi)); mi.cbSize = sizeof(mi);
+            if (mon && GetMonitorInfoA(mon, &mi)) {
+                int cw = mi.rcMonitor.right - mi.rcMonitor.left, ch = mi.rcMonitor.bottom - mi.rcMonitor.top;
+                HDC sdc = GetDC(NULL);
+                HDC mdc = sdc ? CreateCompatibleDC(sdc) : NULL;
+                HBITMAP bm = sdc ? CreateCompatibleBitmap(sdc, cw, ch) : NULL;
+                if (mdc && bm) {
+                    HGDIOBJ was = SelectObject(mdc, bm);
+                    BOOL ok = BitBlt(mdc, 0, 0, cw, ch, sdc, mi.rcMonitor.left, mi.rcMonitor.top, SRCCOPY);
+                    SelectObject(mdc, was);
+                    if (ok) {
+                        EnterCriticalSection(&dd_snap_cs);
+                        dd_snap = bm; dd_snap_w = cw; dd_snap_h = ch; bm = NULL;
+                        LeaveCriticalSection(&dd_snap_cs);
+                    }
+                }
+                if (bm) DeleteObject(bm);
+                if (mdc) DeleteDC(mdc);
+                if (sdc) ReleaseDC(NULL, sdc);
+            }
+            okp_log(2, "ddshow: the game's picture kept for under the box: %s (%dx%d)", dd_snap ? "yes" : "no - the box cannot be dragged",
+                    dd_snap_w, dd_snap_h);
+        }
+        okp_log(2, "ddshow: box over a wrapper's window - no screen-page switch; the game is not told it lost the front; the box takes the front");
+        return 0;
+    }
     if (dd_hold) {   /* no flip of the game after the switch below: one under way ends first, later ones are held */
         EnterCriticalSection(&ds_flip_cs);
         InterlockedExchange(&dd_stop, 1);

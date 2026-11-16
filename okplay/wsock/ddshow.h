@@ -11,6 +11,11 @@ void dds_set_stall_log(int on);      /* okplay.ini wsock_box_stall_log=1: a game
                                       * gets its threads' positions logged (they are held for a moment to read them) */
 void dds_set_flip_hold(int on);      /* okplay.ini wsock_box_flip=hold: the game's page flips (its primary surface's Flip) do
                                       * nothing while a box is open; off by default. Callable before or after dds_init */
+void dds_set_wrapper(int on);        /* okplay.ini wsock_box_wrapper: 1 = auto (default: a borderless DirectDraw wrapper such as
+                                      * DDrawCompat gets plain boxes, none of the full-screen measures), 0 = off */
+int dds_box_can_drag(void);          /* over a wrapper's window with the game's picture kept: the box may be dragged */
+void dds_set_drag(int on);           /* okplay.ini wsock_box_drag=0: no dragging (and no picture kept) over a wrapper's window */
+int dds_box_wrapped(void);           /* that game is shown by a DirectDraw wrapper: the box takes the front (no out-of-front box) */
 int dds_box_over_game(void);         /* a box is open over a full-screen game */
 HWND dds_game_window(void);         /* that game's window (NULL: no box over a full-screen game) */
 int dds_on_game_window_thread(void); /* a box is open and the caller is the thread of the game window under it */
