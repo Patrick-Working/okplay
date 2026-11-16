@@ -399,3 +399,16 @@ Not known yet (each needs a real run): the original 1998 exe and 1.6.1 without a
 the usual measures, i.e. beta 1's method, which has only been run against the stand-in); dgVoodoo and cnc-ddraw;
 DDrawCompat on other games; Windows 98 is not affected (no wrapper there, the 9x path is unchanged). The stand-in
 cannot test the wrapper method: DDrawCompat 0.7.1 crashes boxgame.exe even without okplay.
+
+### 11.1 Screenshot key (2026-11-16, wsock 0.2.10 - 0.2.11)
+
+Windows' screenshot keys get nothing of a game DDrawCompat shows, and never the game and a box together. The shim
+registers a key (default Ctrl+F12, `okplay.ini wsock_screenshot_key`, `off` to turn it off) on a thread of its own and
+saves a BMP in `okplay-screenshots` beside the game: the game's picture with okplay's open boxes drawn in (PrintWindow).
+0.2.10 read the screen from the key's own thread while a box was open over DDrawCompat: the game froze (laptop,
+DDrawCompat AVs at ddraw.dll+0x2c7ca, no "screenshot:" line). 0.2.11: with a box open the key's thread posts the
+work to the box's thread (taken in the box's message filter, `dds_shot_here`), and over a wrapper the picture kept
+when the box opened is used (no new screen read); with a wrapper and no box open nothing is taken (logged); every step
+is logged. Stand-in run here (no wrapper): taken on the box's thread, box drawn in, saved. Over DDrawCompat: not run
+yet (DDrawCompat 0.7.1 crashes any program on this PC at "Installing DirectDraw hooks", so it cannot be tried here).
+Test knob: `OKP_TEST_SHOT_MS=N` "presses" the key N ms after start.

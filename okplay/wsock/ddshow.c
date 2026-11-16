@@ -16,6 +16,8 @@
  * patched (on Windows 9x they are shared between programs). */
 #include "okp.h"
 #include <string.h>
+#include <ctype.h>
+#include <stdlib.h>
 #include <ddraw.h>
 #include "ddshow.h"
 
@@ -922,4 +924,187 @@ int dds_show_gdi(void)   /* the thread that will show the window (the game's own
         okp_log(2, "ddshow: no DirectDraw object of the game / no game window found - the box opens the plain way");
     }
     return n;
+}
+
+
+/* ---- a screenshot on a key (universal: any game the shim is in) ----
+ * Windows' own screenshot keys often get nothing of a game a wrapper shows (NFS3 portable with DDrawCompat,
+ * 2026-11-16), and never the game and okplay's box together.  A key registered for this program (default
+ * Ctrl+F12, okplay.ini wsock_screenshot_key=off|ctrl+f12|alt+f11|...) saves what is on the screen of the game, with
+ * okplay's open boxes drawn on top where they are, as a BMP in "okplay-screenshots" beside the game.
+ * Where the work is done (the first try read the screen from the key's own thread while a box was open over
+ * DDrawCompat, and the game froze, 2026-11-16 - every step is logged now, so a stop shows where it was):
+ *  - a box is open: on the box's own thread (the key's thread posts it there; the box's message filter in wsock.c
+ *    calls dds_shot_here), and over a wrapper's window the game's picture is the one kept when the box opened
+ *    (dd_snap: that screen read worked) - nothing of the screen is read again;
+ *  - no box open, a wrapper shows the game: not taken (logged), until a safe way is known;
+ *  - otherwise: the screen is read on the key's thread, the size of the game window's monitor.
+ * The boxes are drawn in by PrintWindow (XP and later, looked up at run time). */
+static BOOL CALLBACK shot_box_win(HWND w, LPARAM lp)   /* okplay's visible dialogs, top first */
+{
+    HWND *list = (HWND *)lp;
+    DWORD pid = 0;
+    char cls[16] = "";
+    GetWindowThreadProcessId(w, &pid);
+    if (pid != GetCurrentProcessId() || !IsWindowVisible(w)) return TRUE;
+    GetClassNameA(w, cls, sizeof(cls));
+    if (strcmp(cls, "#32770")) return TRUE;
+    for (int i = 0; i < 15; i++) if (!list[i]) { list[i] = w; break; }
+    return TRUE;
+}
+
+static int shot_save(HBITMAP bm, int w, int h, const char *path)   /* a 24-bit BMP */
+{
+    BITMAPINFOHEADER bi;
+    BITMAPFILEHEADER bf;
+    int stride = ((w * 3 + 3) & ~3), ok = 0;
+    BYTE *px = (BYTE *)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)stride * h);
+    HDC dc = GetDC(NULL);
+    if (!px || !dc) { if (px) HeapFree(GetProcessHeap(), 0, px); if (dc) ReleaseDC(NULL, dc); return 0; }
+    memset(&bi, 0, sizeof(bi));
+    bi.biSize = sizeof(bi); bi.biWidth = w; bi.biHeight = h; bi.biPlanes = 1; bi.biBitCount = 24; bi.biCompression = BI_RGB;
+    if (GetDIBits(dc, bm, 0, h, px, (BITMAPINFO *)&bi, DIB_RGB_COLORS) == h) {
+        HANDLE f = CreateFileA(path, GENERIC_WRITE, 0, NULL, CREATE_NEW, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (f != INVALID_HANDLE_VALUE) {
+            DWORD n;
+            memset(&bf, 0, sizeof(bf));
+            bf.bfType = 0x4d42; bf.bfOffBits = sizeof(bf) + sizeof(bi); bf.bfSize = bf.bfOffBits + (DWORD)stride * h;
+            ok = WriteFile(f, &bf, sizeof(bf), &n, NULL) && WriteFile(f, &bi, sizeof(bi), &n, NULL) &&
+                 WriteFile(f, px, (DWORD)stride * h, &n, NULL);
+            CloseHandle(f);
+        }
+    }
+    HeapFree(GetProcessHeap(), 0, px);
+    ReleaseDC(NULL, dc);
+    return ok;
+}
+
+static void shot_take(int on_box_thread)
+{
+    MONITORINFO mi;
+    HWND g = NULL, boxes[16];
+    char dir[MAX_PATH], path[MAX_PATH];
+    SYSTEMTIME t;
+    BOOL (WINAPI *pw)(HWND, HDC, UINT) = (BOOL (WINAPI *)(HWND, HDC, UINT))GetProcAddress(GetModuleHandleA("user32.dll"), "PrintWindow");
+    EnumWindows(dds_game_win, (LPARAM)&g);
+    memset(&mi, 0, sizeof(mi)); mi.cbSize = sizeof(mi);
+    HMONITOR mon = MonitorFromWindow(g ? g : GetDesktopWindow(), MONITOR_DEFAULTTOPRIMARY);
+    if (!mon || !GetMonitorInfoA(mon, &mi)) SetRect(&mi.rcMonitor, 0, 0, GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN));
+    int w = mi.rcMonitor.right - mi.rcMonitor.left, h = mi.rcMonitor.bottom - mi.rcMonitor.top, nb = 0, ok = 0;
+    int kept = on_box_thread && dd_wrap_now && dd_snap;
+    if (kept) { w = dd_snap_w; h = dd_snap_h; }
+    okp_log(3, "screenshot: %dx%d, the game's picture %s", w, h, kept ? "kept when the box opened" : "read from the screen now");
+    HDC sdc = GetDC(NULL);
+    HDC mdc = sdc ? CreateCompatibleDC(sdc) : NULL;
+    HBITMAP bm = sdc ? CreateCompatibleBitmap(sdc, w, h) : NULL;
+    if (mdc && bm) {
+        HGDIOBJ was = SelectObject(mdc, bm);
+        if (kept) {
+            EnterCriticalSection(&dd_snap_cs);
+            HDC kdc = dd_snap ? CreateCompatibleDC(sdc) : NULL;
+            HGDIOBJ kwas = kdc ? SelectObject(kdc, dd_snap) : NULL;
+            if (kdc) { BitBlt(mdc, 0, 0, w, h, kdc, 0, 0, SRCCOPY); SelectObject(kdc, kwas); DeleteDC(kdc); }
+            LeaveCriticalSection(&dd_snap_cs);
+        }
+        else BitBlt(mdc, 0, 0, w, h, sdc, mi.rcMonitor.left, mi.rcMonitor.top, SRCCOPY);
+        okp_log(3, "screenshot: game picture copied");
+        memset(boxes, 0, sizeof(boxes));
+        EnumWindows(shot_box_win, (LPARAM)boxes);
+        for (int i = 14; i >= 0; i--) {   /* bottom first, so the top box ends on top */
+            RECT r;
+            if (!boxes[i] || !pw || !GetWindowRect(boxes[i], &r)) continue;
+            int bw = r.right - r.left, bh = r.bottom - r.top;
+            HDC bdc = CreateCompatibleDC(sdc);
+            HBITMAP bb = bdc ? CreateCompatibleBitmap(sdc, bw, bh) : NULL;
+            if (bb) {
+                HGDIOBJ bwas = SelectObject(bdc, bb);
+                okp_log(3, "screenshot: drawing box %p (%dx%d)", (void *)boxes[i], bw, bh);
+                if (pw(boxes[i], bdc, 0)) {
+                    BitBlt(mdc, r.left - mi.rcMonitor.left, r.top - mi.rcMonitor.top, bw, bh, bdc, 0, 0, SRCCOPY);
+                    nb++;
+                }
+                SelectObject(bdc, bwas);
+                DeleteObject(bb);
+            }
+            if (bdc) DeleteDC(bdc);
+        }
+        SelectObject(mdc, was);
+        okp_log(3, "screenshot: saving");
+        snprintf(dir, sizeof(dir), "%sokplay-screenshots", okp_dll_dir());
+        CreateDirectoryA(dir, NULL);
+        GetLocalTime(&t);
+        snprintf(path, sizeof(path), "%s\\okplay-%04u%02u%02u-%02u%02u%02u-%03u.bmp", dir, t.wYear, t.wMonth, t.wDay,
+                 t.wHour, t.wMinute, t.wSecond, t.wMilliseconds);
+        ok = shot_save(bm, w, h, path);
+    }
+    if (bm) DeleteObject(bm);
+    if (mdc) DeleteDC(mdc);
+    if (sdc) ReleaseDC(NULL, sdc);
+    if (ok) okp_log(1, "screenshot: %s (%dx%d, %d okplay box(es) drawn on top)", path, w, h, nb);
+    else okp_log(1, "screenshot: could not be taken (error %lu)", (unsigned long)GetLastError());
+}
+
+static UINT shot_mods, shot_vk, shot_msg;
+
+int dds_shot_here(UINT m)   /* the box's message filter: a screenshot asked for on this (the box's) thread */
+{
+    if (!shot_msg || m != shot_msg) return 0;
+    shot_take(1);
+    return 1;
+}
+
+static void shot_key(void)
+{
+    okp_log(2, "screenshot: key pressed");
+    if (dd_guard && dd_box_tid && shot_msg) {
+        if (PostThreadMessageA(dd_box_tid, shot_msg, 0, 0)) { okp_log(3, "screenshot: handed to the box's thread %lx", (unsigned long)dd_box_tid); return; }
+    }
+    if (dd_wrapped == 1) {
+        okp_log(1, "screenshot: not taken - over a DirectDraw wrapper only while an okplay box is open, for now");
+        return;
+    }
+    shot_take(0);
+}
+
+static DWORD WINAPI shot_thread(LPVOID arg)
+{
+    MSG m;
+    (void)arg;
+    char tv[16];
+    if (GetEnvironmentVariableA("OKP_TEST_SHOT_MS", tv, sizeof(tv)) && atoi(tv) > 0) {   /* tests: the key "pressed" after N ms */
+        Sleep((DWORD)atoi(tv));
+        shot_key();
+    }
+    if (!RegisterHotKey(NULL, 0x4f4b, shot_mods, shot_vk)) {
+        okp_log(1, "screenshot: key not available (error %lu: another program has it?) - set okplay.ini wsock_screenshot_key", (unsigned long)GetLastError());
+        return 0;
+    }
+    while (GetMessageA(&m, NULL, 0, 0) > 0)
+        if (m.message == WM_HOTKEY) shot_key();
+    return 0;
+}
+
+void dds_shot_start(const char *key)   /* "off", or modifiers + a key: ctrl+f12, alt+shift+s, f11 */
+{
+    char k[32];
+    UINT mods = 0, vk = 0;
+    if (!key || !_stricmp(key, "off") || !key[0]) { okp_log(2, "screenshot: off (okplay.ini wsock_screenshot_key=off)"); return; }
+    lstrcpynA(k, key, sizeof(k));
+    CharLowerA(k);
+    for (char *p = k; p && *p; ) {
+        char *e = strchr(p, '+');
+        if (e) *e = 0;
+        if (!strcmp(p, "ctrl")) mods |= MOD_CONTROL;
+        else if (!strcmp(p, "alt")) mods |= MOD_ALT;
+        else if (!strcmp(p, "shift")) mods |= MOD_SHIFT;
+        else if (p[0] == 'f' && atoi(p + 1) >= 1 && atoi(p + 1) <= 24) vk = VK_F1 + atoi(p + 1) - 1;
+        else if (!p[1] && ((p[0] >= 'a' && p[0] <= 'z') || (p[0] >= '0' && p[0] <= '9'))) vk = (UINT)toupper((unsigned char)p[0]);
+        p = e ? e + 1 : NULL;
+    }
+    if (!vk) { okp_log(1, "screenshot: key \"%s\" not understood (okplay.ini wsock_screenshot_key) - off", key); return; }
+    shot_mods = mods; shot_vk = vk;
+    shot_msg = RegisterWindowMessageA("okplay.ddshow.screenshot");
+    HANDLE t = CreateThread(NULL, 64 * 1024, shot_thread, NULL, 0, NULL);
+    if (t) CloseHandle(t);
+    okp_log(2, "screenshot: %s saves the screen with okplay's boxes to okplay-screenshots (okplay.ini wsock_screenshot_key)", key);
 }

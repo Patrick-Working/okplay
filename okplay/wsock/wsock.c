@@ -2004,6 +2004,7 @@ static LRESULT CALLBACK box_filter(int code, WPARAM wp, LPARAM lp)
 {
     if (code >= 0 && wp == PM_REMOVE) {
         MSG *m = (MSG *)lp;
+        if (!m->hwnd && dds_shot_here(m->message)) m->message = WM_NULL;   /* a screenshot key press, taken here (ddshow.c) */
         /* only its timer ticks and input: its own posted messages go through as usual (holding them back and
          * posting them again later left Road Rash's join without its network tick); box_open keeps any call
          * that comes back in from opening another box */
@@ -4732,6 +4733,11 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
             snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
             okbox_init(inst, NULL, ini);
             okbox_set_topmost(TRUE);
+            {   /* [universal] a screenshot key, any game (ddshow.c dds_shot_start) */
+                char sk[32];
+                GetPrivateProfileStringA("okplay", "wsock_screenshot_key", "ctrl+f12", sk, sizeof(sk), ini);
+                dds_shot_start(sk);
+            }
             if (game->kinds & OKW_TCP) dds_init();   /* okplay's boxes over a full-screen DirectDraw game (ddshow.c) */
             if (game->kinds & OKW_TCP) {   /* wsock_box_focus: is the game told that a box took its place in front? */
                 char v[16];

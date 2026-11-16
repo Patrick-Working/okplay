@@ -19,4 +19,7 @@ int dds_box_wrapped(void);           /* that game is shown by a DirectDraw wrapp
 int dds_box_over_game(void);         /* a box is open over a full-screen game */
 HWND dds_game_window(void);         /* that game's window (NULL: no box over a full-screen game) */
 int dds_on_game_window_thread(void); /* a box is open and the caller is the thread of the game window under it */
+void dds_shot_start(const char *key); /* okplay.ini wsock_screenshot_key (default ctrl+f12, "off"): a key that saves the screen
+                                      * with okplay's boxes as a BMP in okplay-screenshots beside the game */
+int dds_shot_here(UINT m);           /* the box's message filter: 1 = m was a screenshot asked for on the box's thread (taken) */
 void dds_detach(void);               /* DLL unload (not process exit): the game windows get their own procedures back */
