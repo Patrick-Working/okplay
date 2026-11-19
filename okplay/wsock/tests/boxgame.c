@@ -632,6 +632,7 @@ static void send_keys(void)
             vk = !_stricmp(name, "tab") ? VK_TAB : !_stricmp(name, "enter") ? VK_RETURN : !_stricmp(name, "esc") ? VK_ESCAPE :
                  !_stricmp(name, "space") ? VK_SPACE : !_stricmp(name, "bs") ? VK_BACK : 0;
             if (!_stricmp(name, "altf4")) { vk = VK_F4; alt = 1; }
+            if (!_stricmp(name, "shot")) { vk = VK_F12; ctrl = 1; }   /* okplay's screenshot key (Ctrl+F12) */
             p = e + 1;
         } else {
             SHORT k = VkKeyScanA(*p++);

@@ -15,11 +15,14 @@ void dds_set_wrapper(int on);        /* okplay.ini wsock_box_wrapper: 1 = auto (
                                       * DDrawCompat gets plain boxes, none of the full-screen measures), 0 = off */
 int dds_box_can_drag(void);          /* over a wrapper's window with the game's picture kept: the box may be dragged */
 void dds_set_drag(int on);           /* okplay.ini wsock_box_drag=0: no dragging (and no picture kept) over a wrapper's window */
+void dds_set_paint(int on);          /* okplay.ini wsock_box_paint=0: over a wrapper, the box is not drawn into the game's screen */
+void dds_box_paint_end(void);        /* the box closed: the kept picture back on the game's screen (box thread) */
+void dds_box_watch(int first);       /* over a wrapper's window: the box put back above the game if covered (box thread, timer) */
 int dds_box_wrapped(void);           /* that game is shown by a DirectDraw wrapper: the box takes the front (no out-of-front box) */
 int dds_box_over_game(void);         /* a box is open over a full-screen game */
 HWND dds_game_window(void);         /* that game's window (NULL: no box over a full-screen game) */
 int dds_on_game_window_thread(void); /* a box is open and the caller is the thread of the game window under it */
-void dds_shot_start(const char *key); /* okplay.ini wsock_screenshot_key (default ctrl+f12, "off"): a key that saves the screen
-                                      * with okplay's boxes as a BMP in okplay-screenshots beside the game */
-int dds_shot_here(UINT m);           /* the box's message filter: 1 = m was a screenshot asked for on the box's thread (taken) */
+void dds_shot_start(const char *key); /* okplay.ini wsock_screenshot_key (default ctrl+f12, "off"): the key that, pressed in an
+                                      * okplay box, saves the game with the box as a BMP in okplay-screenshots beside the game */
+int dds_shot_key(const MSG *m);      /* the box's message filter, for each key: 1 = the screenshot key (taken here) */
 void dds_detach(void);               /* DLL unload (not process exit): the game windows get their own procedures back */

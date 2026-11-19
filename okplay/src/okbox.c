@@ -642,7 +642,11 @@ static INT_PTR CALLBACK simple_proc( HWND dlg, UINT msg, WPARAM wp, LPARAM lp )
 }
 
 /* simple_textboxes=auto (the default): the styled boxes belong to Age of Empires II - any other
- * game gets the plain ones. 0 / 1 force one kind everywhere. */
+ * game gets the plain ones, unless okbox_prefer_styled asked for them (okplay wsock over a DirectDraw wrapper:
+ * the box is drawn into the game's screen, and a styled box has no Windows title bar to come out wrong).
+ * 0 / 1 force one kind everywhere. */
+static BOOL okbox_styled_pref;
+void okbox_prefer_styled( BOOL on ) { okbox_styled_pref = on; }
 
 static BOOL simple_boxes( void )
 {
@@ -651,9 +655,10 @@ static BOOL simple_boxes( void )
     if ( simple >= 0 ) return simple;
     okbox_ini_str( "simple_textboxes", "auto", v, sizeof(v) );
     if ( v[ 0 ] == '0' || v[ 0 ] == '1' ) simple = v[ 0 ] == '1';
-    else simple = !okbox_is_aoe2();
+    else simple = !okbox_is_aoe2() && !okbox_styled_pref;
     okp_log( 1, "boxes: %s (okplay.ini simple_textboxes=%s%s)", simple ? "plain Windows dialogs" : "Age of Empires II style",
-             v, v[ 0 ] == '0' || v[ 0 ] == '1' ? "" : okbox_is_aoe2() ? ": this is Age of Empires II" : ": not Age of Empires II" );
+             v, v[ 0 ] == '0' || v[ 0 ] == '1' ? "" : okbox_is_aoe2() ? ": this is Age of Empires II" :
+             okbox_styled_pref ? ": drawn into a game's screen" : ": not Age of Empires II" );
     return simple;
 }
 

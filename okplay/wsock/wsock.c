@@ -2000,11 +2000,17 @@ static int in_box_window(HWND w)
            GetWindowThreadProcessId(w, NULL) == GetCurrentThreadId();
 }
 
+static UINT_PTR box_watch_timer;   /* over a wrapper's window: the box's thread timer for dds_box_watch */
+
 static LRESULT CALLBACK box_filter(int code, WPARAM wp, LPARAM lp)
 {
     if (code >= 0 && wp == PM_REMOVE) {
         MSG *m = (MSG *)lp;
-        if (!m->hwnd && dds_shot_here(m->message)) m->message = WM_NULL;   /* a screenshot key press, taken here (ddshow.c) */
+        if (dds_shot_key(m)) m->message = WM_NULL;   /* the screenshot key, pressed in a box: taken here (ddshow.c) */
+        if (m->message == WM_TIMER && !m->hwnd && box_watch_timer && m->wParam == box_watch_timer) {
+            dds_box_watch(0);   /* the box stays above the game (ddshow.c) */
+            m->message = WM_NULL;
+        }
         /* only its timer ticks and input: its own posted messages go through as usual (holding them back and
          * posting them again later left Road Rash's join without its network tick); box_open keeps any call
          * that comes back in from opening another box */
@@ -2275,7 +2281,9 @@ static INT_PTR run_box(okw_box *b)
         okbox_set_owner(dds_game_window());
         okp_log(2, "box: owned by the game window %p (it stays above it)", (void *)dds_game_window());
     }
+    if (dds_box_wrapped()) { dds_box_watch(1); box_watch_timer = SetTimer(NULL, 0, 100, NULL); }   /* (10 a second: typing shows at once) */
     run_box_show(b);
+    if (box_watch_timer) { KillTimer(NULL, box_watch_timer); box_watch_timer = 0; dds_box_paint_end(); }
     okbox_set_owner(NULL);
     if (na) {
         if (my_keys) UnhookWindowsHookEx(my_keys);
@@ -4745,6 +4753,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
                 box_front = GetPrivateProfileIntA("okplay", "wsock_box_front", 0, ini) != 0;
                 GetPrivateProfileStringA("okplay", "wsock_box_wrapper", "auto", v, sizeof(v), ini);
                 if (!_stricmp(v, "off")) { dds_set_wrapper(0); okp_log(2, "boxes: DirectDraw wrappers are not looked for (okplay.ini wsock_box_wrapper=off)"); }
+                GetPrivateProfileStringA("okplay", "wsock_box_paint", "draw", v, sizeof(v), ini);
+                if (!_stricmp(v, "0") || !_stricmp(v, "off")) { dds_set_paint(0); okp_log(2, "boxes: over a wrapper the game's screen is not refreshed while a box is open (okplay.ini wsock_box_paint=%s)", v); }
+                else if (!_stricmp(v, "present")) { dds_set_paint(1); okp_log(2, "boxes: over a wrapper the wrapper draws the box, okplay refreshes the game's screen (okplay.ini wsock_box_paint=present)"); }
                 if (!GetPrivateProfileIntA("okplay", "wsock_box_drag", 1, ini)) { dds_set_drag(0); okp_log(2, "boxes: no dragging over a wrapper's window (okplay.ini wsock_box_drag=0)"); }
                 if (GetPrivateProfileIntA("okplay", "wsock_box_stall_log", 0, ini)) { dds_set_stall_log(1); okp_log(2, "boxes: thread positions are logged when the game stalls under a box (okplay.ini wsock_box_stall_log=1)"); }
                 GetPrivateProfileStringA("okplay", "wsock_box_flip", "", v, sizeof(v), ini);

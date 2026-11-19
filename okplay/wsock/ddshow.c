@@ -20,6 +20,7 @@
 #include <stdlib.h>
 #include <ddraw.h>
 #include "ddshow.h"
+#include "okbox.h"
 
 #define NSLOT 32   /* IDirectDraw7 has 30 methods; the older interfaces fewer, in the same order */
 #define NSURF 52   /* IDirectDrawSurface7 has 49 methods; the older surface interfaces fewer, in the same order */
@@ -854,6 +855,217 @@ void dds_guard_end(void)   /* the box is gone: the game window in front again, t
 
 int dds_box_over_game(void) { return dd_guard != 0; }
 int dds_box_wrapped(void) { return dd_guard && dd_wrap_now; }
+
+/* ---- the box stays above the game over a wrapper's window (universal; any wrapper the box method is used for) ----
+ * Over DDrawCompat the box, though owned by the game window, was sometimes not seen: right after it opened the game
+ * window was moved in the window order (WM_WINDOWPOSCHANGED, from outside the game - laptop, 2026-11-16: one launch
+ * fine, the next not).  So while the box is open, ten times a second on the box's own thread (a thread timer read
+ * by the box's message filter, wsock.c), the window order is looked at: if the game window, or another window of
+ * this program that is not a box, is above the box, the box is put back on top and given the front.  Logged the first
+ * time and when what was found changes, so the log says who covered it. */
+static BOOL CALLBACK dds_box_of_thread(HWND w, LPARAM lp)
+{
+    char cls[16] = "";
+    if (!IsWindowVisible(w)) return TRUE;
+    GetClassNameA(w, cls, sizeof(cls));
+    if (strcmp(cls, "#32770")) return TRUE;
+    *(HWND *)lp = w;   /* (the last one listed: the top box of this thread) */
+    return TRUE;
+}
+
+static int dd_watch_raised, dd_watch_seen, dd_watch_ticks;
+static int dd_paint = 2;            /* okplay.ini wsock_box_paint: 2 = draw (default), 1 = present, 0 = off (see dds_box_watch) */
+static int dd_paint_ok, dd_paint_fail;
+void dds_set_paint(int on) { dd_paint = on; }
+
+/* ---- the box drawn into the game's own screen, over a wrapper's window ----
+ * On top, in front and repainted, the box was still not seen over DDrawCompat (laptop, 2026-11-19, 0.2.13/0.2.14):
+ * the wrapper puts on the screen what the game draws, and the game does not draw while it waits on us.  So we draw
+ * for it: the game's picture kept when the box opened, with the box (PrintWindow) at its place, onto the surface
+ * the game's DirectDraw shows (IDirectDraw*::GetGDISurface - the documented way to ask for it; every interface
+ * version has it at the same place, as GetDC/ReleaseDC on the surface).  The box window itself stays where it is
+ * (on top, in front, invisible or not), so the pointer and the keys still reach it.  Ten times a second while the box
+ * is open, on the box's thread - the game's own thread, waiting in our call.  The game draws over it again itself
+ * once the box is answered. */
+static int dds_paint_box(HWND box, int with_box)
+{
+    BOOL (WINAPI *pw)(HWND, HDC, UINT) = (BOOL (WINAPI *)(HWND, HDC, UINT))GetProcAddress(GetModuleHandleA("user32.dll"), "PrintWindow");
+    HDC sdc, mdc = NULL, kdc = NULL;
+    HBITMAP bm = NULL;
+    HGDIOBJ mwas = NULL, kwas = NULL;
+    RECT r;
+    int done = 0, w, h;
+    EnterCriticalSection(&dd_snap_cs);
+    if (!dd_snap) { LeaveCriticalSection(&dd_snap_cs); return 0; }
+    w = dd_snap_w; h = dd_snap_h;
+    sdc = GetDC(NULL);
+    if (sdc) { mdc = CreateCompatibleDC(sdc); kdc = CreateCompatibleDC(sdc); bm = CreateCompatibleBitmap(sdc, w, h); }
+    if (mdc && kdc && bm) {
+        mwas = SelectObject(mdc, bm);
+        kwas = SelectObject(kdc, dd_snap);
+        BitBlt(mdc, 0, 0, w, h, kdc, 0, 0, SRCCOPY);
+        SelectObject(kdc, kwas);
+        if (with_box && box && pw && GetWindowRect(box, &r)) {   /* (screen and picture: the same 640x480 as the game sees it) */
+            int bw = r.right - r.left, bh = r.bottom - r.top;
+            HBITMAP bb = CreateCompatibleBitmap(sdc, bw, bh);
+            if (bb) {
+                kwas = SelectObject(kdc, bb);
+                if (pw(box, kdc, 0)) BitBlt(mdc, r.left, r.top, bw, bh, kdc, 0, 0, SRCCOPY);
+                SelectObject(kdc, kwas);
+                DeleteObject(bb);
+            }
+        }
+        /* onto the game's shown surface, through the first DirectDraw object of the game that hands one out */
+        EnterCriticalSection(&dd_lock);
+        for (dd_px *p = dd_list; p && !done; p = p->next) {
+            void *surf = NULL, **sv;
+            HDC gdc = NULL;
+            if (!p->live) continue;
+            void **rv = *(void ***)p->real;
+            if (FAILED(((HRESULT (WINAPI *)(void *, void **))rv[14])(p->real, &surf)) || !surf) continue;   /* GetGDISurface */
+            sv = *(void ***)surf;
+            if (SUCCEEDED(((HRESULT (WINAPI *)(void *, HDC *))sv[17])(surf, &gdc)) && gdc) {   /* GetDC */
+                BitBlt(gdc, 0, 0, w, h, mdc, 0, 0, SRCCOPY);
+                ((HRESULT (WINAPI *)(void *, HDC))sv[26])(surf, gdc);   /* ReleaseDC */
+                done = 1;
+            }
+            ((ULONG (WINAPI *)(void *))sv[2])(surf);   /* Release (GetGDISurface added a reference) */
+        }
+        LeaveCriticalSection(&dd_lock);
+        SelectObject(mdc, mwas);
+    }
+    if (bm) DeleteObject(bm);
+    if (mdc) DeleteDC(mdc);
+    if (kdc) DeleteDC(kdc);
+    if (sdc) ReleaseDC(NULL, sdc);
+    LeaveCriticalSection(&dd_snap_cs);
+    if (done) { if (!dd_paint_ok++) okp_log(2, with_box ? "ddshow: the box is drawn into the game's screen (its DirectDraw GDI surface)"
+                                                         : "ddshow: the game's kept picture is put on its screen (its DirectDraw GDI surface), the wrapper draws the box"); }
+    else if (!dd_paint_fail++) okp_log(1, "ddshow: the box could not be drawn into the game's screen (no GDI surface / no DC)");
+    return done;
+}
+
+/* "present" after the first picture: one pixel of the kept picture put back on the game's screen, in a corner the
+ * box does not cover - enough for the wrapper to draw again (with the box), nothing of its drawing is wiped */
+static void dds_kick(HWND box)
+{
+    RECT r;
+    int x = 0, y = 0, done = 0;
+    COLORREF c = 0;
+    EnterCriticalSection(&dd_snap_cs);
+    if (!dd_snap) { LeaveCriticalSection(&dd_snap_cs); return; }
+    if (box && GetWindowRect(box, &r) && r.left <= 0 && r.top <= 0) { x = dd_snap_w - 1; y = dd_snap_h - 1; }
+    HDC sdc = GetDC(NULL), kdc = sdc ? CreateCompatibleDC(sdc) : NULL;
+    if (kdc) { HGDIOBJ was = SelectObject(kdc, dd_snap); c = GetPixel(kdc, x, y); SelectObject(kdc, was); DeleteDC(kdc); }
+    if (sdc) ReleaseDC(NULL, sdc);
+    LeaveCriticalSection(&dd_snap_cs);
+    EnterCriticalSection(&dd_lock);
+    for (dd_px *p = dd_list; p && !done; p = p->next) {
+        void *surf = NULL, **sv;
+        HDC gdc = NULL;
+        if (!p->live) continue;
+        void **rv = *(void ***)p->real;
+        if (FAILED(((HRESULT (WINAPI *)(void *, void **))rv[14])(p->real, &surf)) || !surf) continue;   /* GetGDISurface */
+        sv = *(void ***)surf;
+        if (SUCCEEDED(((HRESULT (WINAPI *)(void *, HDC *))sv[17])(surf, &gdc)) && gdc) {   /* GetDC */
+            SetPixel(gdc, x, y, c);
+            ((HRESULT (WINAPI *)(void *, HDC))sv[26])(surf, gdc);   /* ReleaseDC */
+            done = 1;
+        }
+        ((ULONG (WINAPI *)(void *))sv[2])(surf);
+    }
+    LeaveCriticalSection(&dd_lock);
+}
+
+void dds_box_paint_end(void)   /* the box closed: the kept picture back on the game's screen, until the game draws */
+{
+    if (dd_paint && dd_paint_ok && dd_wrap_now) dds_paint_box(NULL, 0);
+}
+void dds_box_watch(int first)
+{
+    HWND box = NULL, w, cover = NULL, g = dd_game_wnd;
+    char cls[64] = "", txt[64] = "";
+    DWORD pid = 0;
+    int n = 0;
+    if (!dd_guard || !dd_wrap_now) return;
+    if (first) { dd_watch_raised = 0; dd_watch_seen = -1; dd_watch_ticks = 0; dd_paint_ok = dd_paint_fail = 0; return; }   /* (the box is not up yet: the first look logs) */
+    EnumThreadWindows(GetCurrentThreadId(), dds_box_of_thread, (LPARAM)&box);
+    if (!box) return;
+    for (w = GetTopWindow(NULL); w && w != box && n < 2000; w = GetWindow(w, GW_HWNDNEXT), n++) {
+        if (!IsWindowVisible(w)) continue;
+        GetWindowThreadProcessId(w, &pid);
+        if (w == g || (pid == GetCurrentProcessId() && GetWindow(box, GW_OWNER) != w)) {
+            RECT a, b, i;
+            if (GetWindowRect(w, &a) && GetWindowRect(box, &b) && IntersectRect(&i, &a, &b)) { cover = w; break; }
+        }
+    }
+    if ((cover != NULL) != dd_watch_seen) {
+        HWND f = GetForegroundWindow();
+        DWORD fpid = 0;
+        if (f) { GetWindowThreadProcessId(f, &fpid); GetClassNameA(f, cls, sizeof(cls)); GetWindowTextA(f, txt, sizeof(txt)); }
+        okp_log(2, "ddshow: box %p %s; in front: %p \"%s\" \"%s\" (%s)", (void *)box,
+                cover ? "is under a window of this program" : "is on top", (void *)f, cls, txt,
+                !f ? "none" : f == box ? "the box" : fpid == GetCurrentProcessId() ? "this program" : "another program");
+        if (cover) {
+            char ccls[64] = "";
+            GetClassNameA(cover, ccls, sizeof(ccls));
+            okp_log(1, "ddshow: the box was covered by %p \"%s\"%s - put back on top", (void *)cover, ccls, cover == g ? " (the game window)" : "");
+        }
+        dd_watch_seen = cover != NULL;
+    }
+    /* The box on top and in front, and still not seen (laptop, 2026-11-19, 0.2.13): the wrapper shows only what it
+     * last put on the screen, and the game does not draw while it waits on us.  For the box's first 2 s the game
+     * window (painted from the kept picture) and the box are repainted, so the wrapper has something new to show -
+     * as when the box was dragged, which it showed cleanly (0.2.8). */
+    if (dd_paint == 1) {
+        /* [default] "present": the wrapper draws the box itself.  DDrawCompat draws a program's ordinary windows into
+         * the game's screen (GdiInterops) whenever something new reaches it - seen in 0.2.15, where it drew its own
+         * copy of the box over ours.  The game does not draw while it waits on us, so: the game's kept picture once
+         * (and the box painted once), then ten times a second one pixel of it in a corner the box does not cover.
+         * 0.2.17 put the whole picture back each time and repainted the box: that wiped the wrapper's box each time
+         * and it blinked hard.  The box is the real window, title bar and close button as Windows draws them. */
+        /* The box painted once more a few times just after the wrapper started drawing it: painted only before
+         * (0.2.18) the wrapper's copy was an empty frame until the box was dragged, which repainted it. */
+        if (!dd_paint_ok) {
+            RedrawWindow(box, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            dds_paint_box(box, 0);
+            dd_watch_ticks = 0;
+        }
+        else {
+            ++dd_watch_ticks;
+            if (dd_watch_ticks == 2 || dd_watch_ticks == 3 || dd_watch_ticks == 5 || dd_watch_ticks == 10)
+                RedrawWindow(box, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW);
+            dds_kick(box);
+        }
+    }
+    else if (dd_paint == 2) {
+        /* "draw" (0.2.16): the box window itself made see-through (opacity 1 of 255): the wrapper drew it too, without its text,
+         * between our pictures - the box blinked (laptop, 2026-11-19, 0.2.15).  A layered window that is not fully
+         * transparent still takes the pointer and keys, and PrintWindow still draws it whole for our picture. */
+        LONG ex = GetWindowLongA(box, GWL_EXSTYLE);
+        if (!(ex & WS_EX_LAYERED)) {
+            BOOL (WINAPI *sla)(HWND, COLORREF, BYTE, DWORD) =
+                (BOOL (WINAPI *)(HWND, COLORREF, BYTE, DWORD))GetProcAddress(GetModuleHandleA("user32.dll"), "SetLayeredWindowAttributes");
+            if (sla) {
+                SetWindowLongA(box, GWL_EXSTYLE, ex | WS_EX_LAYERED);
+                sla(box, 0, 1, LWA_ALPHA);
+                okp_log(2, "ddshow: box %p made see-through - what is seen of it is drawn into the game's screen", (void *)box);
+            }
+        }
+        dds_paint_box(box, 1);   /* every look: the box as it is now, into the game's screen (above) */
+    }
+    else if (dd_watch_ticks < 8) {
+        if (++dd_watch_ticks == 1) okp_log(2, "ddshow: repainting the game window and the box for 2 s (the wrapper shows them)");
+        if (g && IsWindow(g)) RedrawWindow(g, NULL, NULL, RDW_INVALIDATE | RDW_UPDATENOW);
+        RedrawWindow(box, NULL, NULL, RDW_INVALIDATE | RDW_FRAME | RDW_ERASE | RDW_ALLCHILDREN | RDW_UPDATENOW);
+    }
+    if (cover) {
+        SetWindowPos(box, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_SHOWWINDOW);
+        BringWindowToTop(box);
+        if (GetForegroundWindow() != box) SetForegroundWindow(box);
+        if (++dd_watch_raised == 40) okp_log(1, "ddshow: the box was put back on top 40 times - something keeps covering it");
+    }
+}
 int dds_box_can_drag(void) { return dd_guard && dd_wrap_now && dd_snap; }
 HWND dds_game_window(void) { return dd_guard ? dd_game_wnd : NULL; }
 
@@ -869,6 +1081,8 @@ int dds_show_gdi(void)   /* the thread that will show the window (the game's own
     int n = 0;
     if (dds_wrapper()) {   /* the wrapper shows our window itself: no screen-page switch (see dds_wrapper) */
         if (dd_guard) return 0;   /* (an inner box: the outer one's guard stays) */
+        /* (okbox_prefer_styled - okplay's own box style, no Windows title bar - is not used yet: the styled box paints
+         * only on screen, so PrintWindow got nothing and nothing was drawn, laptop 2026-11-19, 0.2.20) */
         InterlockedExchange(&dd_wrap_now, 1);
         if (!dds_guard_begin()) {
             InterlockedExchange(&dd_wrap_now, 0);
@@ -929,16 +1143,14 @@ int dds_show_gdi(void)   /* the thread that will show the window (the game's own
 
 /* ---- a screenshot on a key (universal: any game the shim is in) ----
  * Windows' own screenshot keys often get nothing of a game a wrapper shows (NFS3 portable with DDrawCompat,
- * 2026-11-16), and never the game and okplay's box together.  A key registered for this program (default
+ * 2026-11-16), and never the game and okplay's box together.  A key pressed in a box (default
  * Ctrl+F12, okplay.ini wsock_screenshot_key=off|ctrl+f12|alt+f11|...) saves what is on the screen of the game, with
  * okplay's open boxes drawn on top where they are, as a BMP in "okplay-screenshots" beside the game.
  * Where the work is done (the first try read the screen from the key's own thread while a box was open over
  * DDrawCompat, and the game froze, 2026-11-16 - every step is logged now, so a stop shows where it was):
- *  - a box is open: on the box's own thread (the key's thread posts it there; the box's message filter in wsock.c
- *    calls dds_shot_here), and over a wrapper's window the game's picture is the one kept when the box opened
- *    (dd_snap: that screen read worked) - nothing of the screen is read again;
- *  - no box open, a wrapper shows the game: not taken (logged), until a safe way is known;
- *  - otherwise: the screen is read on the key's thread, the size of the game window's monitor.
+ *  - only while a box is open, on the box's own thread (its message filter in wsock.c calls dds_shot_key for each
+ *    key): over a wrapper's window the game's picture is the one kept when the box opened (dd_snap: that screen read
+ *    worked), otherwise the screen is read, the size of the game window's monitor.
  * The boxes are drawn in by PrintWindow (XP and later, looked up at run time). */
 static BOOL CALLBACK shot_box_win(HWND w, LPARAM lp)   /* okplay's visible dialogs, top first */
 {
@@ -1044,44 +1256,21 @@ static void shot_take(int on_box_thread)
     else okp_log(1, "screenshot: could not be taken (error %lu)", (unsigned long)GetLastError());
 }
 
-static UINT shot_mods, shot_vk, shot_msg;
+static UINT shot_mods, shot_vk;
 
-int dds_shot_here(UINT m)   /* the box's message filter: a screenshot asked for on this (the box's) thread */
+/* The box's message filter (wsock.c box_filter), for every key going to a box: 1 = it was the screenshot key, taken
+ * here on the box's own thread.  No thread or hotkey of our own: 0.2.10/0.2.11 started one at game start for the key,
+ * and over DDrawCompat the box was then never seen (laptop, 2026-11-16) - so the key works while a box is open. */
+int dds_shot_key(const MSG *m)
 {
-    if (!shot_msg || m != shot_msg) return 0;
+    if (!shot_vk || (m->message != WM_KEYDOWN && m->message != WM_SYSKEYDOWN) || m->wParam != shot_vk) return 0;
+    UINT mods = ((GetKeyState(VK_CONTROL) & 0x8000) ? MOD_CONTROL : 0) | ((GetKeyState(VK_MENU) & 0x8000) ? MOD_ALT : 0) |
+                ((GetKeyState(VK_SHIFT) & 0x8000) ? MOD_SHIFT : 0);
+    if (mods != shot_mods) return 0;
+    if (m->lParam & 0x40000000) return 1;   /* (held down: one picture per press) */
+    okp_log(2, "screenshot: key pressed in a box");
     shot_take(1);
     return 1;
-}
-
-static void shot_key(void)
-{
-    okp_log(2, "screenshot: key pressed");
-    if (dd_guard && dd_box_tid && shot_msg) {
-        if (PostThreadMessageA(dd_box_tid, shot_msg, 0, 0)) { okp_log(3, "screenshot: handed to the box's thread %lx", (unsigned long)dd_box_tid); return; }
-    }
-    if (dd_wrapped == 1) {
-        okp_log(1, "screenshot: not taken - over a DirectDraw wrapper only while an okplay box is open, for now");
-        return;
-    }
-    shot_take(0);
-}
-
-static DWORD WINAPI shot_thread(LPVOID arg)
-{
-    MSG m;
-    (void)arg;
-    char tv[16];
-    if (GetEnvironmentVariableA("OKP_TEST_SHOT_MS", tv, sizeof(tv)) && atoi(tv) > 0) {   /* tests: the key "pressed" after N ms */
-        Sleep((DWORD)atoi(tv));
-        shot_key();
-    }
-    if (!RegisterHotKey(NULL, 0x4f4b, shot_mods, shot_vk)) {
-        okp_log(1, "screenshot: key not available (error %lu: another program has it?) - set okplay.ini wsock_screenshot_key", (unsigned long)GetLastError());
-        return 0;
-    }
-    while (GetMessageA(&m, NULL, 0, 0) > 0)
-        if (m.message == WM_HOTKEY) shot_key();
-    return 0;
 }
 
 void dds_shot_start(const char *key)   /* "off", or modifiers + a key: ctrl+f12, alt+shift+s, f11 */
@@ -1103,8 +1292,6 @@ void dds_shot_start(const char *key)   /* "off", or modifiers + a key: ctrl+f12,
     }
     if (!vk) { okp_log(1, "screenshot: key \"%s\" not understood (okplay.ini wsock_screenshot_key) - off", key); return; }
     shot_mods = mods; shot_vk = vk;
-    shot_msg = RegisterWindowMessageA("okplay.ddshow.screenshot");
-    HANDLE t = CreateThread(NULL, 64 * 1024, shot_thread, NULL, 0, NULL);
-    if (t) CloseHandle(t);
-    okp_log(2, "screenshot: %s saves the screen with okplay's boxes to okplay-screenshots (okplay.ini wsock_screenshot_key)", key);
+    okp_log(2, "screenshot: %s while an okplay box is open saves the game with the box to okplay-screenshots (okplay.ini wsock_screenshot_key)", key);
 }
+

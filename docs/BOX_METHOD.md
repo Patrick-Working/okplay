@@ -412,3 +412,26 @@ when the box opened is used (no new screen read); with a wrapper and no box open
 is logged. Stand-in run here (no wrapper): taken on the box's thread, box drawn in, saved. Over DDrawCompat: not run
 yet (DDrawCompat 0.7.1 crashes any program on this PC at "Installing DirectDraw hooks", so it cannot be tried here).
 Test knob: `OKP_TEST_SHOT_MS=N` "presses" the key N ms after start.
+
+### 11.2 Getting the box seen over DDrawCompat (2026-11-16 - 11-19, wsock 0.2.12 - 0.2.21, laptop runs)
+
+The wrapper method of section 11 worked in some launches and not in others: the box was on top and in front
+(logged by the watch, 0.2.13) yet not on the screen. DDrawCompat puts on the screen what the game draws, and draws
+the program's ordinary windows into it (its GdiInterops) only when something new reaches the game's screen - and the
+game draws nothing while it waits on our box. Steps (each one laptop run):
+
+| Build | What | Result |
+|---|---|---|
+| 0.2.12 | screenshot key read in the box's message filter (no thread of its own) | screenshot works; box seen in one launch, not the next |
+| 0.2.13 | watch: box put back on top if covered, 10 times a second | box on top and in front, still not seen |
+| 0.2.14 | repaint game window and box for 2 s | not seen |
+| 0.2.15 | okplay draws kept picture + box (PrintWindow) onto the game's GDI surface (GetGDISurface, GetDC) | **seen**, but blinks: DDrawCompat drew its own copy (without text) in between |
+| 0.2.16 | + the real box made see-through (layered, opacity 1/255), 10 per second | **steady and usable**; the title bar / close button drawn wrong |
+| 0.2.17 - 0.2.19 | "present": only the game's picture refreshed, DDrawCompat to draw the real box | blinks hard / box empty until dragged / not drawn at all - not dependable |
+| 0.2.20 | draw + okplay's styled box | nothing drawn: the styled box paints only on screen (BeginPaint), PrintWindow gets nothing |
+| 0.2.21 | 0.2.16's way as the default (`wsock_box_paint=draw`; `present`, `0` selectable) | the stopgap |
+
+The correct fix is not to stop the game at all: ask before the game starts (launcher), or ask without blocking and
+let the game draw the question in its own menus. NFS3's menus are text files (`FEDATA\MENUS\*.mnu`: buttons with
+`codelink`, `text` keys into a string table, `nextmenu`), which okplay could hand the game modified in memory -
+research in C:\nfs3lab (private).

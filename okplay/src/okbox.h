@@ -31,6 +31,7 @@ struct pw_dialog
 
 /* hinst: the module the dialogs belong to; is_aoe2: NULL = never styled automatically; ini: okplay.ini path */
 void okbox_init( HINSTANCE hinst, BOOL (*is_aoe2)( void ), const char *ini );
+void okbox_prefer_styled( BOOL on ); /* simple_textboxes=auto: the styled boxes for any game (okplay wsock over a wrapper) */
 void okbox_set_owner( HWND w );      /* the window that owns the next boxes (NULL: the active window, as before) */
 HWND okbox_get_owner( void );
 void okbox_set_topmost( BOOL on );   /* boxes always on top and in front (okplay wsock: full-screen games) */
