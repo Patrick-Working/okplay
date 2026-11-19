@@ -19,6 +19,7 @@ void dds_set_paint(int on);          /* okplay.ini wsock_box_paint=0: over a wra
 void dds_box_paint_end(void);        /* the box closed: the kept picture back on the game's screen (box thread) */
 void dds_box_watch(int first);       /* over a wrapper's window: the box put back above the game if covered (box thread, timer) */
 int dds_box_wrapped(void);           /* that game is shown by a DirectDraw wrapper: the box takes the front (no out-of-front box) */
+void dds_set_overlay(int on);        /* okplay.ini wsock_overlay: okplay's overlay drawn into the game's frames (ovl.c) */
 int dds_box_over_game(void);         /* a box is open over a full-screen game */
 HWND dds_game_window(void);         /* that game's window (NULL: no box over a full-screen game) */
 int dds_on_game_window_thread(void); /* a box is open and the caller is the thread of the game window under it */

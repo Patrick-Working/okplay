@@ -37,6 +37,7 @@
 #include "rr_fix.h"
 #include "nfs3_fix.h"
 #include "ddshow.h"
+#include "ovl.h"
 #include <mmsystem.h>
 #include "okbox.h"
 #include <commctrl.h>
@@ -4746,13 +4747,25 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
                 GetPrivateProfileStringA("okplay", "wsock_screenshot_key", "ctrl+f12", sk, sizeof(sk), ini);
                 dds_shot_start(sk);
             }
+            if (game->kinds & OKW_TCP) {   /* [universal] okplay's overlay in the game's frames (src/ovl.c, docs/OVERLAY.md) */
+                char ot[160], brand[64];
+                int on = GetPrivateProfileIntA("okplay", "wsock_overlay", 0, ini) != 0;   /* off by default: the popups stay (owner, 2026-11-19); overlay + popups over DDrawCompat hung (docs/OVERLAY.md) */
+                GetPrivateProfileStringA("okplay", "brand", "Oldkid.net Online Play", brand, sizeof(brand), ini);
+                snprintf(ot, sizeof(ot), "%s  -  wsock %s  -  overlay test (milestone 1)", brand, OKP_VERSION_STR);
+                ovl_setup(on, (DWORD)GetPrivateProfileIntA("okplay", "wsock_overlay_banner_s", 20, ini) * 1000, ot);
+                if (on) dds_set_overlay(1);
+            }
             if (game->kinds & OKW_TCP) dds_init();   /* okplay's boxes over a full-screen DirectDraw game (ddshow.c) */
             if (game->kinds & OKW_TCP) {   /* wsock_box_focus: is the game told that a box took its place in front? */
                 char v[16];
                 int keep;
-                box_front = GetPrivateProfileIntA("okplay", "wsock_box_front", 0, ini) != 0;
-                GetPrivateProfileStringA("okplay", "wsock_box_wrapper", "auto", v, sizeof(v), ini);
-                if (!_stricmp(v, "off")) { dds_set_wrapper(0); okp_log(2, "boxes: DirectDraw wrappers are not looked for (okplay.ini wsock_box_wrapper=off)"); }
+                /* [universal] the 0.8.7 method is the default again (0.3.4): Windows' screen page, the box takes the
+                 * front.  Everything tried after it hung on a laptop with DDrawCompat; the 0.8.7 method held over two
+                 * full runs (docs/OVERLAY.md, investigation).  The newer methods stay, opt-in:
+                 * wsock_box_front=0 (out-of-the-front box), wsock_box_wrapper=auto (DDrawCompat drawing) */
+                box_front = GetPrivateProfileIntA("okplay", "wsock_box_front", 1, ini) != 0;
+                GetPrivateProfileStringA("okplay", "wsock_box_wrapper", "off", v, sizeof(v), ini);
+                if (!_stricmp(v, "auto")) { dds_set_wrapper(1); okp_log(2, "boxes: DirectDraw wrappers are looked for (okplay.ini wsock_box_wrapper=auto)"); }
                 GetPrivateProfileStringA("okplay", "wsock_box_paint", "draw", v, sizeof(v), ini);
                 if (!_stricmp(v, "0") || !_stricmp(v, "off")) { dds_set_paint(0); okp_log(2, "boxes: over a wrapper the game's screen is not refreshed while a box is open (okplay.ini wsock_box_paint=%s)", v); }
                 else if (!_stricmp(v, "present")) { dds_set_paint(1); okp_log(2, "boxes: over a wrapper the wrapper draws the box, okplay refreshes the game's screen (okplay.ini wsock_box_paint=present)"); }

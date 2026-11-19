@@ -21,6 +21,7 @@
 #include <ddraw.h>
 #include "ddshow.h"
 #include "okbox.h"
+#include "ovl.h"
 
 #define NSLOT 32   /* IDirectDraw7 has 30 methods; the older interfaces fewer, in the same order */
 #define NSURF 52   /* IDirectDrawSurface7 has 49 methods; the older surface interfaces fewer, in the same order */
@@ -185,6 +186,10 @@ static int hook_import(HMODULE m, const char *dll, const char *fn, void *to, voi
  * Shared: any game whose imports are watched here. */
 static volatile LONG dd_guard;
 static volatile LONG dd_wrap_now;   /* the guard is on over a game a DirectDraw wrapper shows (dds_wrapper) */
+/* diagnosis of a box that stops (0.3.2): the step the box's own drawing is at, and when its last round finished;
+ * dds_watch logs them (and, with okplay.ini wsock_box_stall_log=1, where the box's thread is) if a round takes > 1.5 s */
+static volatile LONG dd_step;
+static volatile DWORD dd_beat;
 /* The game's picture as it was when the box opened, over a wrapper's window: painted back wherever the box uncovers
  * the game window (the game itself does not redraw while it waits on us - dragging the box left a "hall of mirrors"
  * with DDrawCompat, 2026-11-16).  Taken from the screen, the size of the game window's monitor (a wrapper may tell
@@ -236,6 +241,7 @@ void dds_set_stall_log(int on) { dd_stall_log = on; }
  * not a surface interface) answers the real pointer, so an identity compare with the stand-in fails.
  * [universal; found with: boxgame.c (the stand-in game)] */
 static int dd_hold;                 /* dds_set_flip_hold */
+static int dd_ovl;                  /* dds_set_overlay: the primary's stand-in also draws okplay's overlay into each frame */
 static volatile LONG dd_held;       /* flips held during the box now open */
 static volatile LONG dd_stop;       /* flips stop now: set before the switch to Windows' page, so none slips in after it */
 static CRITICAL_SECTION ds_flip_cs; /* a flip under way ends before that switch */
@@ -250,6 +256,9 @@ static const GUID ds_iids[5] = {   /* IDirectDrawSurface, 2, 3, 4, 7 (ddraw.h) *
     { 0x0B2B8630, 0xAD35, 0x11D0, { 0x8E, 0xA6, 0x00, 0x60, 0x97, 0x97, 0xEA, 0x5B } },
     { 0x06675A80, 0x3B9B, 0x11D2, { 0xB9, 0x2F, 0x00, 0x60, 0x97, 0x97, 0xEA, 0x5B } },
 };
+
+static void ds_ovl_on(void *surf, int which, const char *how);   /* (below: the overlay drawn into a frame) */
+static int ds_whole_frame(void *surf, int which);                 /* (below) */
 
 static int ds_iid(REFIID r)   /* 1..5 = IDirectDrawSurface, 2, 3, 4, 7; 0 = another interface */
 {
@@ -277,8 +286,9 @@ static void *ds_wrap(void *real, int which)   /* the stand-in for a real primary
             p->live = 1;
             p->next = ds_list;
             ds_list = p;
-            okp_log(3, "ddshow: the game has a primary surface (%p, IDirectDrawSurface%s) - its flips are held while a box is open",
-                    real, which == 1 ? "" : which == 2 ? "2" : which == 3 ? "3" : which == 4 ? "4" : "7");
+            okp_log(3, "ddshow: the game has a primary surface (%p, IDirectDrawSurface%s) - its flips are watched (%s%s%s)",
+                    real, which == 1 ? "" : which == 2 ? "2" : which == 3 ? "3" : which == 4 ? "4" : "7",
+                    dd_hold ? "held while a box is open" : "", dd_hold && dd_ovl ? ", " : dd_ovl ? "" : "", dd_ovl ? "okplay's overlay drawn in" : "");
         }
     }
     LeaveCriticalSection(&ds_lock_cs);
@@ -296,6 +306,10 @@ static HRESULT WINAPI ps_qi(dd_px *p, REFIID r, void **out)
 static HRESULT WINAPI ps_blt(dd_px *p, RECT *dst, void *src, RECT *sr, DWORD flags, void *fx)   /* slot 5 */
 {
     void **rv = *(void ***)p->real;
+    /* a game that copies its frame onto the primary (a windowed game): the overlay goes on the frame first, the frame
+     * being the copy's source (the primary is the whole screen there, and gives no device context on Windows 10) */
+    if (src && dd_ovl && !(flags & DDBLT_COLORFILL) && ovl_wants_frames() && ds_whole_frame(ds_unwrap(src), p->v4))
+        ds_ovl_on(ds_unwrap(src), p->v4, "the game's frame, before its copy to the screen");
     return ((HRESULT (WINAPI *)(void *, RECT *, void *, RECT *, DWORD, void *))rv[5])(p->real, dst, ds_unwrap(src), sr, flags, fx);
 }
 
@@ -317,10 +331,60 @@ static HRESULT WINAPI ps_delatt(dd_px *p, DWORD f, void *s)   /* slot 8: DeleteA
     return ((HRESULT (WINAPI *)(void *, DWORD, void *))rv[8])(p->real, f, ds_unwrap(s));
 }
 
+/* ---- okplay's overlay drawn into the game's frames (ovl.c; docs/OVERLAY.md) ----
+ * Just before the game shows a frame (its primary's Flip), the frame about to be shown - the back buffer - gets the
+ * overlay drawn on it through a device context (IDirectDrawSurface*::GetDC/ReleaseDC; slots are the same in every
+ * surface interface: GetAttachedSurface 12, GetDC 17, GetSurfaceDesc 22, ReleaseDC 26).  A game that copies its
+ * frame onto the primary instead (Blt) gets it drawn on the primary just after the copy.  On the game's own drawing
+ * thread, inside its own frame: nothing of ours competes with the game or a wrapper for the screen. */
+static void ds_ovl_on(void *surf, int which, const char *how)
+{
+    void **sv = *(void ***)surf;
+    HDC dc = NULL;
+    int w = 0, h = 0, bpp = 0;
+    if (which >= 4) {
+        DDSURFACEDESC2 d; memset(&d, 0, sizeof(d)); d.dwSize = sizeof(d);
+        if (SUCCEEDED(((HRESULT (WINAPI *)(void *, void *))sv[22])(surf, &d))) { w = d.dwWidth; h = d.dwHeight; bpp = d.ddpfPixelFormat.dwRGBBitCount; }
+    } else {
+        DDSURFACEDESC d; memset(&d, 0, sizeof(d)); d.dwSize = sizeof(d);
+        if (SUCCEEDED(((HRESULT (WINAPI *)(void *, void *))sv[22])(surf, &d))) { w = d.dwWidth; h = d.dwHeight; bpp = d.ddpfPixelFormat.dwRGBBitCount; }
+    }
+    if (w <= 0 || h <= 0) return;
+    HRESULT hr = ((HRESULT (WINAPI *)(void *, HDC *))sv[17])(surf, &dc);
+    if (FAILED(hr) || !dc) {
+        static int told;
+        if (!told++) okp_log(1, "overlay: the game's frame (%s) gives no device context (0x%08lx) - nothing drawn", how, (unsigned long)hr);
+        return;
+    }
+    ovl_draw(dc, w, h, bpp);
+    ((HRESULT (WINAPI *)(void *, HDC))sv[26])(surf, dc);
+}
+
+static int ds_whole_frame(void *surf, int which)   /* a copy's source that is a whole frame (320x200 and up), not a piece */
+{
+    void **sv = *(void ***)surf;
+    DWORD w = 0, h = 0;
+    if (which >= 4) { DDSURFACEDESC2 d; memset(&d, 0, sizeof(d)); d.dwSize = sizeof(d); if (SUCCEEDED(((HRESULT (WINAPI *)(void *, void *))sv[22])(surf, &d))) { w = d.dwWidth; h = d.dwHeight; } }
+    else { DDSURFACEDESC d; memset(&d, 0, sizeof(d)); d.dwSize = sizeof(d); if (SUCCEEDED(((HRESULT (WINAPI *)(void *, void *))sv[22])(surf, &d))) { w = d.dwWidth; h = d.dwHeight; } }
+    return w >= 320 && h >= 200;
+}
+
+static void ds_ovl_frame(dd_px *p)   /* before the flip: on the back buffer */
+{
+    void **rv = *(void ***)p->real, *back = NULL;
+    DDSCAPS2 caps;   /* (DDSCAPS is its first member: right for every surface interface) */
+    memset(&caps, 0, sizeof(caps));
+    caps.dwCaps = DDSCAPS_BACKBUFFER;
+    if (FAILED(((HRESULT (WINAPI *)(void *, void *, void **))rv[12])(p->real, &caps, &back)) || !back) return;
+    ds_ovl_on(back, p->v4, "back buffer");
+    ((ULONG (WINAPI *)(void *))(*(void ***)back)[2])(back);   /* (GetAttachedSurface added a reference) */
+}
+
 static HRESULT WINAPI ps_flip(dd_px *p, void *target, DWORD flags)   /* slot 11 in every IDirectDrawSurface */
 {
     void **rv = *(void ***)p->real;
     HRESULT hr;
+    if (dd_ovl && ovl_wants_frames()) ds_ovl_frame(p);
     if (!dd_hold) return ((HRESULT (WINAPI *)(void *, void *, DWORD))rv[11])(p->real, ds_unwrap(target), flags);
     EnterCriticalSection(&ds_flip_cs);
     if (dd_stop) {
@@ -339,7 +403,7 @@ static HRESULT WINAPI px_cs(dd_px *p, void *desc, void **out, IUnknown *outer)
 {
     void **rv = *(void ***)p->real;
     HRESULT hr = ((HRESULT (WINAPI *)(void *, void *, void **, IUnknown *))rv[6])(p->real, desc, out, outer);
-    if (FAILED(hr) || !desc || !out || !*out || outer || !dd_hold) return hr;
+    if (FAILED(hr) || !desc || !out || !*out || outer || !(dd_hold || dd_ovl)) return hr;
     DWORD size = *(DWORD *)desc, flags = ((DWORD *)desc)[1], caps;
     /* (ddsCaps sits at the same place in both today's headers; read through the right type all the same) */
     if (p->v4) {
@@ -355,9 +419,16 @@ static HRESULT WINAPI px_cs(dd_px *p, void *desc, void **out, IUnknown *outer)
     return hr;
 }
 
-static void dd_put_cs(void)   /* slot 6 of the stand-in: ours with the hold on, the plain thunk without */
+static void dd_put_cs(void)   /* slot 6 of the stand-in: ours with the hold or the overlay on, the plain thunk without */
 {
-    if (dd_thunk[6]) dd_vtbl[6] = dd_hold ? (void *)px_cs : dd_thunk[6];
+    if (dd_thunk[6]) dd_vtbl[6] = (dd_hold || dd_ovl) ? (void *)px_cs : dd_thunk[6];
+}
+
+void dds_set_overlay(int on)   /* before dds_init (DllMain) or after */
+{
+    dd_ovl = on != 0;
+    dd_put_cs();
+    okp_log(2, "ddshow: okplay's overlay %s the game's frames (okplay.ini wsock_overlay)", dd_ovl ? "is drawn into" : "is not drawn into");
 }
 
 void dds_set_flip_hold(int on)   /* before dds_init (DllMain) or after: both work */
@@ -556,8 +627,8 @@ static void dds_where(DWORD tid, const char *who, DWORD silent)
 static volatile DWORD dd_pong;
 static DWORD WINAPI dds_watch(LPVOID arg)
 {
-    DWORD asked = 0, last = 0;
-    int shots = 0, was = 0;
+    DWORD asked = 0, last = 0, blast = 0;
+    int shots = 0, was = 0, bshots = 0;
     (void)arg;
     while (dd_guard) {
         HWND w = dd_game_wnd;
@@ -568,7 +639,18 @@ static DWORD WINAPI dds_watch(LPVOID arg)
             if (was) okp_log(2, "stall: the game window's thread reads its messages again (after %lu ms)", (unsigned long)(now - asked));
             was = 0; asked = 0;
         }
-        else if (now - asked > 700 && shots < 8 && now - last > 1000) {
+        if (dd_wrap_now && dd_beat && (LONG)(now - dd_beat) > 1500 && bshots < 4 && now - blast > 2000) {   /* (signed: a round may end after now was read) */
+            static const char *steps[] = { "between rounds", "waiting for the kept picture's lock", "composing the picture",
+                "waiting for the DirectDraw objects' lock", "in the wrapper: GetGDISurface", "in the wrapper: GetDC on the game's screen",
+                "drawing onto the game's screen", "in the wrapper: ReleaseDC", "in the wrapper: Release", "tidying up" };
+            LONG st = dd_step;
+            const char *sn = st >= 0 && st <= 9 ? steps[st] : st == 20 ? "round start" : st == 21 ? "the window order" : st == 22 ? "the box's drawing" : "?";
+            okp_log(1, "stall: the box's own round has not finished for %lu ms - step %ld (%s); the game window's thread %s",
+                    (unsigned long)(now - dd_beat), (long)st, sn, dd_pong == asked || !asked ? "answers" : "does not answer");
+            if (dd_stall_log && dd_box_tid) dds_where(dd_box_tid, "the box's thread", 0);
+            bshots++; blast = now;
+        }
+        if (now - asked > 700 && asked && dd_pong != asked && shots < 8 && now - last > 1000) {
             DWORD gt = GetWindowThreadProcessId(w, NULL);
             /* where the threads are is read by holding them for a moment: a diagnosis, only when asked for
              * (okplay.ini wsock_box_stall_log=1).  Otherwise one line, and no thread is touched. */
@@ -725,7 +807,7 @@ void dds_detach(void)   /* this DLL is unloaded while the process goes on: every
  * Found by the wrapper's own version text (RT_VERSION of the loaded ddraw.dll, read in place) and, for DDrawCompat,
  * its FullscreenMode setting: "exclusive" there means real full screen, and the usual measures apply.
  * okplay.ini wsock_box_wrapper=off turns this off. */
-static int dd_wrap_mode = 1;        /* dds_set_wrapper: 1 = auto, 0 = off */
+static int dd_wrap_mode = 0;        /* dds_set_wrapper: 1 = auto, 0 = off (the default since 0.3.4: the 0.8.7 method held over DDrawCompat, 2026-11-19) */
 static int dd_wrapped = -1;         /* -1 = not looked yet; 0 = none (or exclusive); 1 = a borderless wrapper */
 void dds_set_wrapper(int on) { dd_wrap_mode = on; }
 
@@ -826,6 +908,7 @@ void dds_guard_end(void)   /* the box is gone: the game window in front again, t
     int fg = -1;   /* SetForegroundWindow's answer; -1 = no game window to call it for */
     DWORD fpid = 0;
     HWND f;
+    ovl_pause(0);
     if (!dd_guard) return;
     if (dd_game_wnd && IsWindow(dd_game_wnd) && GetPropA(dd_game_wnd, DD_PROP)) dds_cursor(dd_game_wnd, 0);
     if (dd_game_wnd && IsWindow(dd_game_wnd)) {
@@ -895,7 +978,9 @@ static int dds_paint_box(HWND box, int with_box)
     HGDIOBJ mwas = NULL, kwas = NULL;
     RECT r;
     int done = 0, w, h;
+    dd_step = 1;   /* waiting for the kept picture's lock */
     EnterCriticalSection(&dd_snap_cs);
+    dd_step = 2;   /* composing the picture (memory only) */
     if (!dd_snap) { LeaveCriticalSection(&dd_snap_cs); return 0; }
     w = dd_snap_w; h = dd_snap_h;
     sdc = GetDC(NULL);
@@ -916,22 +1001,29 @@ static int dds_paint_box(HWND box, int with_box)
             }
         }
         /* onto the game's shown surface, through the first DirectDraw object of the game that hands one out */
+        dd_step = 3;   /* waiting for the DirectDraw objects' lock */
         EnterCriticalSection(&dd_lock);
         for (dd_px *p = dd_list; p && !done; p = p->next) {
             void *surf = NULL, **sv;
             HDC gdc = NULL;
             if (!p->live) continue;
             void **rv = *(void ***)p->real;
+            dd_step = 4;   /* in the wrapper: GetGDISurface */
             if (FAILED(((HRESULT (WINAPI *)(void *, void **))rv[14])(p->real, &surf)) || !surf) continue;   /* GetGDISurface */
             sv = *(void ***)surf;
+            dd_step = 5;   /* in the wrapper: GetDC on the game's screen */
             if (SUCCEEDED(((HRESULT (WINAPI *)(void *, HDC *))sv[17])(surf, &gdc)) && gdc) {   /* GetDC */
+                dd_step = 6;   /* drawing onto the game's screen */
                 BitBlt(gdc, 0, 0, w, h, mdc, 0, 0, SRCCOPY);
+                dd_step = 7;   /* in the wrapper: ReleaseDC */
                 ((HRESULT (WINAPI *)(void *, HDC))sv[26])(surf, gdc);   /* ReleaseDC */
                 done = 1;
             }
+            dd_step = 8;   /* in the wrapper: Release */
             ((ULONG (WINAPI *)(void *))sv[2])(surf);   /* Release (GetGDISurface added a reference) */
         }
         LeaveCriticalSection(&dd_lock);
+        dd_step = 9;   /* tidying up (memory only) */
         SelectObject(mdc, mwas);
     }
     if (bm) DeleteObject(bm);
@@ -988,9 +1080,11 @@ void dds_box_watch(int first)
     DWORD pid = 0;
     int n = 0;
     if (!dd_guard || !dd_wrap_now) return;
-    if (first) { dd_watch_raised = 0; dd_watch_seen = -1; dd_watch_ticks = 0; dd_paint_ok = dd_paint_fail = 0; return; }   /* (the box is not up yet: the first look logs) */
+    dd_step = 20;   /* the box's look round starts */
+    if (first) { dd_watch_raised = 0; dd_watch_seen = -1; dd_watch_ticks = 0; dd_paint_ok = dd_paint_fail = 0; dd_step = 0; dd_beat = GetTickCount() | 1; return; }   /* (the box is not up yet: the first look logs) */
     EnumThreadWindows(GetCurrentThreadId(), dds_box_of_thread, (LPARAM)&box);
-    if (!box) return;
+    if (!box) { dd_step = 0; dd_beat = GetTickCount() | 1; return; }
+    dd_step = 21;   /* the window order */
     for (w = GetTopWindow(NULL); w && w != box && n < 2000; w = GetWindow(w, GW_HWNDNEXT), n++) {
         if (!IsWindowVisible(w)) continue;
         GetWindowThreadProcessId(w, &pid);
@@ -1017,6 +1111,7 @@ void dds_box_watch(int first)
      * last put on the screen, and the game does not draw while it waits on us.  For the box's first 2 s the game
      * window (painted from the kept picture) and the box are repainted, so the wrapper has something new to show -
      * as when the box was dragged, which it showed cleanly (0.2.8). */
+    dd_step = 22;   /* the box's drawing */
     if (dd_paint == 1) {
         /* [default] "present": the wrapper draws the box itself.  DDrawCompat draws a program's ordinary windows into
          * the game's screen (GdiInterops) whenever something new reaches it - seen in 0.2.15, where it drew its own
@@ -1042,8 +1137,10 @@ void dds_box_watch(int first)
         /* "draw" (0.2.16): the box window itself made see-through (opacity 1 of 255): the wrapper drew it too, without its text,
          * between our pictures - the box blinked (laptop, 2026-11-19, 0.2.15).  A layered window that is not fully
          * transparent still takes the pointer and keys, and PrintWindow still draws it whole for our picture. */
+        /* (drawn first, see-through after: made see-through before the first picture was in, the box blinked once) */
+        int drawn = dds_paint_box(box, 1);
         LONG ex = GetWindowLongA(box, GWL_EXSTYLE);
-        if (!(ex & WS_EX_LAYERED)) {
+        if (drawn && !(ex & WS_EX_LAYERED)) {
             BOOL (WINAPI *sla)(HWND, COLORREF, BYTE, DWORD) =
                 (BOOL (WINAPI *)(HWND, COLORREF, BYTE, DWORD))GetProcAddress(GetModuleHandleA("user32.dll"), "SetLayeredWindowAttributes");
             if (sla) {
@@ -1052,7 +1149,6 @@ void dds_box_watch(int first)
                 okp_log(2, "ddshow: box %p made see-through - what is seen of it is drawn into the game's screen", (void *)box);
             }
         }
-        dds_paint_box(box, 1);   /* every look: the box as it is now, into the game's screen (above) */
     }
     else if (dd_watch_ticks < 8) {
         if (++dd_watch_ticks == 1) okp_log(2, "ddshow: repainting the game window and the box for 2 s (the wrapper shows them)");
@@ -1065,6 +1161,8 @@ void dds_box_watch(int first)
         if (GetForegroundWindow() != box) SetForegroundWindow(box);
         if (++dd_watch_raised == 40) okp_log(1, "ddshow: the box was put back on top 40 times - something keeps covering it");
     }
+    dd_step = 0;
+    dd_beat = GetTickCount() | 1;   /* this look round finished */
 }
 int dds_box_can_drag(void) { return dd_guard && dd_wrap_now && dd_snap; }
 HWND dds_game_window(void) { return dd_guard ? dd_game_wnd : NULL; }
@@ -1079,6 +1177,7 @@ int dds_show_gdi(void)   /* the thread that will show the window (the game's own
 {
     if (!dd_ready) return 0;
     int n = 0;
+    ovl_pause(1);   /* one drawer at a time: the overlay stands aside while an old box is open (dds_guard_end) */
     if (dds_wrapper()) {   /* the wrapper shows our window itself: no screen-page switch (see dds_wrapper) */
         if (dd_guard) return 0;   /* (an inner box: the outer one's guard stays) */
         /* (okbox_prefer_styled - okplay's own box style, no Windows title bar - is not used yet: the styled box paints
