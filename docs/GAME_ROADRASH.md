@@ -175,7 +175,7 @@ Clean room: Winsock is a public standard; Microsoft's wsock32/ws2_32 are never d
 the game was observed only through its socket calls; the netcode fixes below (0.2.0) also use what studying
 the game's exes taught us (addresses and what the values there mean). No game code or bytes are copied.
 
-## Netcode fixes (0.2.0, `okplay/wsock/rr_fix.c`)
+## Netcode fixes (0.2.0, `okplay/wsock/games/roadrash/rr_fix.c`)
 
 Road Rash draws another player's bike by guessing forward from that player's last report (sent every 2
 game steps, 60 steps a second) and snaps it to each new report. Over the internet the guesses go wrong more

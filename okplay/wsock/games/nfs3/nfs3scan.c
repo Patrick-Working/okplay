@@ -1,7 +1,7 @@
 /* okplay wsock tests - nfs3scan: runs the Need for Speed III address finder (nfs3_find.c) over an exe file and
  * prints what it found; for builds in the known tables (nfs3_known.h) it compares field by field. [game: NFS3]
  * Read-only: the exe is only read. Not part of build.sh; build it with the same i686 MinGW gcc:
- *   gcc -O2 -Wall -Wextra -I.. -o nfs3scan.exe nfs3scan.c ../nfs3_find.c -lbcrypt
+ *   gcc -O2 -Wall -Wextra -I. -I../.. -o nfs3scan.exe nfs3scan.c nfs3_find.c -lbcrypt   (in this folder)
  * Use: nfs3scan.exe <exe>[@<fingerprint>] ...   (@: compare as that build, e.g. an exe dumped from memory whose file
  * on disk is packed; exit code: 0 = every exe found and, where known, the same as the table) */
 #define NFS3_KNOWN_MENU

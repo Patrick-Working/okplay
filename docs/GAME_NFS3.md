@@ -4,7 +4,7 @@ Online play through the game's own **Connect Players > Network (TCP)** menu, wit
 beside `nfs3.exe` (`okplay/wsock/`, the same shim as Road Rash; this game uses its TCP half). No DirectPlay.
 The game's exe is never changed.
 
-Builds known to the shim (by exe fingerprint, `okplay/wsock/nfs3_fix.c`): Modern Patch 1.6.1, the portable
+Builds known to the shim (by exe fingerprint, `okplay/wsock/games/nfs3/nfs3_fix.c`): Modern Patch 1.6.1, the portable
 1.6.2 Beta, the 1998 OEM release and the 1998 CD release. Tested on Windows 98 (86Box, software renderer),
 two PCs: Modern Patch against Modern Patch and 1998 against 1998, host and join, races to the end, clean exit.
 
@@ -73,7 +73,7 @@ two PCs: Modern Patch against Modern Patch and 1998 against 1998, host and join,
 
 Every okplay question for this game is asked in the game's own menus and popups, drawn by the game in its own
 style; okplay's Windows boxes (which fought full-screen DirectDraw and wrappers such as DDrawCompat: see
-`docs/OVERLAY.md`, `docs/BOX_METHOD.md`) are only the fallback. Code: `okplay/wsock/nfs3_menu.c` [game: NFS3].
+`docs/OVERLAY.md`, `docs/BOX_METHOD.md`) are only the fallback. Code: `okplay/wsock/games/nfs3/nfs3_menu.c` [game: NFS3].
 Builds: the 1.6.x exes (Modern Patch 1.6.1, portable 1.6.2 Beta), recognised by the game's own data (the menu
 handler table entry for "connect" with its known handlers). Anything else, or okplay.ini `nfs3_menu=0`: the
 Windows boxes as before. Nothing in the game folder changes; the game's exe is never changed.
