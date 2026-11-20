@@ -37,6 +37,7 @@
 #include "rr_fix.h"
 #include "nfs3_fix.h"
 #include "nfs3_menu.h"
+#include "nettrace.h"
 #include "ddshow.h"
 #include "ovl.h"
 #include <mmsystem.h>
@@ -1067,6 +1068,7 @@ static void tcp_rx(uint64_t from, const uint8_t *d, int len)   /* okw_lock held,
         }
         if (c->rd_shut) { tconn_abort(c, 1, WSAECONNABORTED); break; }   /* as Windows: data after shutdown(SD_RECEIVE) resets */
         ring_put(c, b, (uint32_t)bl);
+        if (nt_enabled()) { uintptr_t gs = 0; for (int i = 0; i < OKW_MAX_SOCKS; i++) if (socks[i].used && socks[i].c == c) gs = (uintptr_t)socks[i].s; nt_event('A', gs, bl); }   /* (nettrace: okplay has the bytes for the game) */
         c->rx_gen++;
         last_race_tick = GetTickCount();   /* (notices wait while a game is going) */
         wake();
@@ -2473,6 +2475,7 @@ static int choose_mode(void)
         }
         okp_log(1, "wsock: %s (okplay.ini wsock_mode=%s)", m == 2 ? "Online Play" : m == 3 ? "LAN Play" :
                 "the game's original TCP/IP - okplay stays out", v);
+        nt_mode(m == 2 ? "okplay online" : m == 3 ? "okplay lan" : "direct");
         if (m >= 2) okp_reports_kick();   /* report.c: a crash report or connection reports waiting (asks first) */
         InterlockedExchange(&mode_choice, m);
         if (mode_provisional) {   /* it started as Online Play while the box was open: the answer decides */
@@ -4328,7 +4331,15 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
     return r;
 }
 
+static int x_send_in(SOCKET s, const char *b, int len, int f);
 int WINAPI x_send(SOCKET s, const char *b, int len, int f)
+{
+    int r = x_send_in(s, b, len, f);
+    nt_event('S', (uintptr_t)s, r);   /* (nettrace: the bytes the game sent, any mode) */
+    return r;
+}
+
+static int x_send_in(SOCKET s, const char *b, int len, int f)
 {
     if (!okw_on) return send(s, b, len, f);
     if (tcp_entry(s, 1)) {   /* (no box waits here: the game's comms thread) */
@@ -4390,7 +4401,15 @@ static int do_recv(SOCKET s, char *b, int len, struct sockaddr *a, int *al, int 
     }
 }
 
+static int x_recv_in(SOCKET s, char *b, int len, int f);
 int WINAPI x_recv(SOCKET s, char *b, int len, int f)
+{
+    int r = x_recv_in(s, b, len, f);
+    if (!(f & MSG_PEEK)) nt_event('R', (uintptr_t)s, r);   /* (nettrace: the bytes the game took, any mode) */
+    return r;
+}
+
+static int x_recv_in(SOCKET s, char *b, int len, int f)
 {
     if (!okw_on) return recv(s, b, len, f);
     if (tcp_entry(s, 1)) return tcp_recv(s, b, len, f);
@@ -4919,6 +4938,7 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
             if ((game->kinds & OKW_TCP) && !hook_exe_import("KERNEL32.dll", "ExitProcess", (void *)hook_ExitProcess, (void **)&real_ExitProcess))
                 okp_log(2, "wsock: the game's ExitProcess is not seen - no resets for open connections when it ends");
             if (game->fix_init) game->fix_init(ini);   /* rr_fix.c: Road Rash's netcode fixes; nfs3_fix.c: NFS3's game state */
+            nt_init(ini);   /* nettrace.c: okplay.ini wsock_nettrace=1 (off by default) */
             int win = GetPrivateProfileIntA("okplay", "wsock_tcp_window", 65536, ini);
             tcp_window = win < 4096 ? 4096 : win > (1 << 20) ? (1 << 20) : (uint32_t)win;
             {   /* wsock_max_players: the players a hosted room takes, host included (2..64; else the game's own word, or 8) */

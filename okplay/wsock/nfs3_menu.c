@@ -5,8 +5,8 @@
  * draws them, in its own style, and the choice is known before any socket exists - nothing is asked inside a
  * network call (docs/OVERLAY.md: why).
  *
- * How (learned by studying the game; nothing of it is copied here - only addresses and what they mean; private
- * study notes C:\nfs3lab\notes\NFS3_MENUS.md):
+ * How (learned by studying the game; nothing of it is copied here - only addresses and what they mean; the study
+ * notes are private, not in this repo):
  *  - The menus are text files (fedata\menus\*.mnu) the game reads with CreateFileA at front-end start. okplay hooks
  *    the exe's CreateFileA import and hands the game an edited copy of connect.mnu, made at run time from the
  *    player's own file: the one "tcp" tab becomes three ("tcp okp_online", "tcp okp_lan", "tcp okp_direct"), the

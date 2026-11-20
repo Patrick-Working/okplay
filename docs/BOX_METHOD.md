@@ -434,4 +434,4 @@ game draws nothing while it waits on our box. Steps (each one laptop run):
 The correct fix is not to stop the game at all: ask before the game starts (launcher), or ask without blocking and
 let the game draw the question in its own menus. NFS3's menus are text files (`FEDATA\MENUS\*.mnu`: buttons with
 `codelink`, `text` keys into a string table, `nextmenu`), which okplay could hand the game modified in memory -
-research in C:\nfs3lab (private).
+private research; built since wsock 0.3.5: `docs/GAME_NFS3.md`, "In-game menus".
