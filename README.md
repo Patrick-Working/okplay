@@ -34,6 +34,29 @@ Released builds: <https://oldkid.net>.
 
 Working here: start with `docs/WORKING_NOTES.md` (rules, recipes, where things stand).
 
+## In progress: Need for Speed III in the game's own menus
+
+<img src="docs/images/nfs3-okplay-menu.png" alt="Need for Speed III's Connect Players screen with Oldkid.net Online, Oldkid.net LAN and the game's own Network (TCP), and the game's Host Game / Join Game popup titled Oldkid.net Online" width="320" align="right">
+
+Test builds (`wsock32.dll` 0.3.x, November 2026; not in the v0.8.7 download yet). Every okplay question for Need
+for Speed III moves into the game's own menus, drawn by the game in its own style - no Windows boxes over the
+full-screen game:
+
+- **Oldkid.net Online** and **Oldkid.net LAN** in the game's Connect Players menu, next to its own Network (TCP).
+- **Join Game** shows the list of games in the game's own popup: pick one and you're in, no address to type.
+  Games are listed as "NFS3: PC name - player's Game", with players and a password marker.
+- **Passwords** for hosting and joining are typed in the game's own popups.
+- **Any build**: the Modern Patch 1.6.1 and the portable 1.6.2 build by their known tables; other builds (the 1998
+  releases) through an address finder that reads the game at start and falls back to the small Windows boxes when
+  it can't confirm everything.
+- **Smoother racing next**: a timing trace of every network message (`wsock_nettrace=1`) to compare okplay with
+  the game's own TCP/IP and tune the transport.
+
+How it works: [docs/GAME_NFS3.md](docs/GAME_NFS3.md#in-game-menus-wsock-035---0310-2026-11-19). Code:
+`okplay/wsock/games/nfs3/`.
+
+<br clear="right">
+
 ## Road Rash Online (Steam/GoG/CD-Rom): what v0.8.5 improves
 
 `wsock32.dll` 0.2.0 fixes Road Rash's own netcode. It works for the Steam and GOG editions (the same exe,
