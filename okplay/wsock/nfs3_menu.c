@@ -18,36 +18,18 @@
  *    choice and goes on into the game's TCP callback (the game's "TCP Connection: Host / Join" box follows).
  *  - The game's leave handler already sets the link type for any pressed element tagged "tcp".
  *  - The game's functions use Watcom's register calls (eax, edx, ...; every register but eax kept): small thunks.
- * Builds: the 1.6.x exes (Modern Patch 1.6.1, portable 1.6.2 Beta) share every address used here; the build is
- * recognised by the game's own data at those addresses (the handler table entry pointing at "connect" with the
- * known enter/leave handlers), not by code bytes. Anything else: the Windows box as before. okplay.ini
- * nfs3_menu=0 turns this off. */
+ * Builds: the 1.6.x exes (Modern Patch 1.6.1, portable 1.6.2 Beta) share every address used here (okplay's table,
+ * nfs3_known.h); they are recognised by the game's own data at those addresses (the handler table entry pointing at
+ * "connect" with the known enter/leave handlers) and the exe's PE time stamp, not by code bytes (the 1998 exes have
+ * the same handler entry but another TCP box). Any other build: the addresses are found in the game itself
+ * (nfs3_find.c); if that fails, the Windows box as before. okplay.ini nfs3_menu=0 turns this off. */
 #include "okp.h"
 #include "nfs3_menu.h"
 #include "ddshow.h"
+#define NFS3_KNOWN_MENU
+#include "nfs3_known.h"
 #include <string.h>
 #include <stdlib.h>
-
-typedef struct {
-    const char *name;
-    uint32_t hentry;       /* the connect menu's entry in the handler table: {name, -, -, enter, leave, idle} */
-    uint32_t name_str;     /* "connect" */
-    uint32_t enter, leave; /* its enter / leave handlers */
-    uint32_t find;         /* element of a menu by codelink token: eax = menu, edx = token -> eax = element or 0 */
-    uint32_t tcp_cb;       /* the game's TCP callback (its "TCP Connection" box): eax = element */
-    uint32_t lobby_entry, lobby_name, lobby_idle;   /* the lobby menu (mainmult): its handler entry, "mainmult", its idle */
-    uint32_t pop_choice, pop_notice, pop_text;      /* the game's popups: choice, notice, text entry (open) */
-    uint32_t pop_active, pop_button, pop_edit;      /* is one open (al), the button chosen, the text entry's buffer */
-    uint32_t pop_cbvar, pop_btnvar;                 /* the open popup's callback, its chosen button (variables) */
-    uint32_t tcp_choice_cb, join_cb;                /* the "TCP Connection" box's callback; its Join box's callback */
-    uint32_t tcp_btns, tcp_help;                    /* that box's 4 button texts and help lines (char *[]) */
-} nm_build;
-
-static const nm_build nm_builds[] = {
-    { "1.6.x (Modern Patch 1.6.1, portable 1.6.2 Beta)", 0x555f00, 0x537d1c, 0x4405c0, 0x440730, 0x442a40, 0x43fe50,
-      0x555ed0, 0x537d04, 0x4403f0, 0x4446d0, 0x444a80, 0x444c20, 0x4438b0, 0x4446c0, 0x444c10,
-      0x558b18, 0x558b3c, 0x43f760, 0x43f680, 0x5f4064, 0x5f4074 },
-};
 
 /* text entries okplay uses (unused by the game's menus and code in the 1.6.x builds) */
 #define T_ONLINE 1718
@@ -300,9 +282,10 @@ void __cdecl nm_after_tcp(void)   /* the game's TCP box is open: okplay's callba
         nm_tcp_choice_orig = NB->tcp_choice_cb;
         char **gb = (char **)NB->tcp_btns, **gh = (char **)NB->tcp_help;
         static char *btn[3], *help[3];   /* Host, Join, Cancel: no "Port" (okplay carries the game's connections) */
-        btn[0] = gb[0]; btn[1] = gb[1]; btn[2] = gb[3];
-        help[0] = gh[0]; help[1] = gh[1]; help[2] = gh[3];
-        nm_open_choice(1, title, 3, btn, help, 0, 1, (void *)nm_tcp_choice_thunk);
+        int c = NB->tcp_nbtn == 4 ? 3 : 2;   /* (the 1998 box has no Port: Host, Join, Cancel as they are) */
+        btn[0] = gb[0]; btn[1] = gb[1]; btn[2] = gb[c];
+        if (gh) { help[0] = gh[0]; help[1] = gh[1]; help[2] = gh[c]; }
+        nm_open_choice(1, title, 3, btn, gh ? help : NULL, 0, 1, (void *)nm_tcp_choice_thunk);
     }
     else okp_log(1, "nfs3 menu: the TCP box is not as known (callback %08x) - the game's own Join box stays", (unsigned)*cb);
 }
@@ -310,7 +293,7 @@ void __cdecl nm_after_tcp(void)   /* the game's TCP box is open: okplay's callba
 void __cdecl nm_tcp_choice_pre(void)   /* okplay's box has no Port: its 3rd button is the game's 4th (Cancel) */
 {
     uint32_t *b = (uint32_t *)NB->pop_btnvar;
-    if (*b == 2) *b = 3;
+    if (NB->tcp_nbtn == 4 && *b == 2) *b = 3;   /* (a 3-button box: the same buttons, nothing moves) */
 }
 
 uint32_t __cdecl nm_after_tcp_choice(uint32_t action, int result, uint8_t *close)
@@ -567,14 +550,28 @@ void nfs3_menu_init(const char *ini)
     nm_on = GetPrivateProfileIntA("okplay", "nfs3_menu", 1, ini) != 0;
     if (!nm_on) { okp_log(2, "nfs3 menu: off (okplay.ini nfs3_menu=0) - okplay's Windows box asks"); return; }
     if ((uint32_t)GetModuleHandleA(NULL) != 0x400000) return;
+    uint32_t stamp = 0, lfanew = 0;   /* the exe's PE time stamp (its header, as loaded) */
+    if (readable(0x40003c, 4) && (lfanew = *(uint32_t *)0x40003c) < 0x1000 && readable(0x400000 + lfanew + 8, 4))
+        stamp = *(uint32_t *)(0x400000 + lfanew + 8);
     for (unsigned i = 0; i < sizeof(nm_builds) / sizeof(nm_builds[0]); i++) {
         const nm_build *b = &nm_builds[i];
         if (!readable(b->hentry, 24) || !readable(b->name_str, 8)) continue;
         uint32_t *h = (uint32_t *)b->hentry;
         if (h[0] != b->name_str || strcmp((const char *)b->name_str, "connect") || h[3] != b->enter || h[4] != b->leave) continue;
+        if (stamp != b->pe_time[0] && stamp != b->pe_time[1]) continue;   /* (the 1998 exes: same entry, another TCP box) */
         NB = b;
     }
-    if (!NB) { okp_log(2, "nfs3 menu: not a build okplay's menu entries know - okplay's Windows box asks"); return; }
+    if (NB) okp_log(1, "nfs3 menu: the addresses are okplay's table's (%s)", NB->name);
+    else {   /* not a build in the table: the game itself says where they are */
+        const nfs3_found *f = nfs3_find_running();
+        if (!f) { okp_log(1, "nfs3 menu: not a build okplay knows, and its addresses were not found in it (%s) - okplay's Windows box asks", nfs3_find_why()); return; }
+        char t[1024];
+        nfs3_found_text(f, t, sizeof(t));
+        okp_log(1, "nfs3 menu: not a build in okplay's table (PE time %08x) - the addresses were found in the game itself (TCP box: %u buttons)",
+                (unsigned)stamp, (unsigned)f->nm.tcp_nbtn);
+        okp_log(2, "nfs3 menu: found %s", t);
+        NB = &f->nm;
+    }
     nm_orig_enter = NB->enter; nm_find_fn = NB->find; nm_tcp_cb = NB->tcp_cb;
     if (!dds_hook_import(GetModuleHandleA(NULL), "kernel32.dll", "CreateFileA", (void *)hk_cfa, (void **)&real_cfa) || !real_cfa) {
         NB = NULL;

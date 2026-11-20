@@ -27,27 +27,18 @@
  * nfs3_join_prefill=0 turns it off. Data only: that one text buffer is written, never any code.
  *
  * The builds are recognised by their exe fingerprint (okp_exe_build); the addresses are absolute, for the exe loaded
- * at its usual base 0x400000 (anywhere else: not known). Unknown builds, or memory that can't be read: -1, and
- * wsock.c keeps its listen-again rule. The values are only read, never written. */
+ * at its usual base 0x400000 (anywhere else: not known). The table (nfs3_known.h) comes first; a build not in it,
+ * or a field the table leaves 0, is looked up in the game itself (nfs3_find.c). Unknown builds the finder can't
+ * read, or memory that can't be read: -1, and wsock.c keeps its listen-again rule. The values are only read, never
+ * written (except the Join box text, above). */
 #include "okp.h"
 #include "nfs3_fix.h"
 #include "nfs3_menu.h"
+#define NFS3_KNOWN_FIX
+#include "nfs3_known.h"
 #include <string.h>
 
-typedef struct {
-    const char *build, *name;
-    uint32_t net;      /* DWORD: the network game state; the DWORD after it (net + 4): the game type */
-    uint32_t server;   /* WORD: this PC is the server */
-    uint32_t join;     /* char[30]: the Join box's address, typed last (0 = not pinned down for this build) */
-    uint32_t pname;    /* char[]: the player's name as the menus show it ("Player 1 Name"); 0 = not pinned down */
-} nfs3_build;
-
-static const nfs3_build builds[] = {
-    { "240a083a78ac3b83", "Modern Patch 1.6.1",              0x7a22e0, 0x7a22da, 0x6fbb7e, 0x6fd2fc },
-    { "397dee58eb88822c", "portable 1.6.2 Beta",             0x7a22e0, 0x7a22da, 0x6fbb7e, 0x6fd2fc },
-    { "b390be67925b2ad0", "1998 OEM release",                0x7a22e0, 0x7a22da, 0, 0 },   /* (Join box buffer not studied) */
-    { "53aa0dfcf438788d", "1998 CD (unpacked in memory)",    0x7c92e0, 0x7c92da, 0x722b7e, 0x7242fc },   /* (packed on disk) */
-};
+static nfs3_build found_b;   /* a build not in the table (or with fields the table leaves 0): what the finder found */
 
 /* B: the build, once the exe's fingerprint is known (set by find_build's thread, once; never cleared: the exe
  * doesn't change while it runs). readable: both addresses were found readable once (set at the first good check,
@@ -68,10 +59,34 @@ static DWORD WINAPI find_build(LPVOID arg)
     okp_exe_build(build, exe, sizeof(exe));
     for (unsigned i = 0; i < sizeof(builds) / sizeof(builds[0]) && !b; i++)
         if (!strcmp(build, builds[i].build)) b = &builds[i];
-    if (!b) {
-        okp_log(1, "nfs3: %s build %s is not one okplay knows - Host Game is told by the listen-again rule", exe,
-                build[0] ? build : "?");
-        return 0;
+    if (!b) {   /* not in the table: the game itself says where its state is */
+        const nfs3_found *f = nfs3_find_running();
+        if (!f) {
+            okp_log(1, "nfs3: %s build %s is not one okplay knows, and its state was not found in it (%s) - Host Game is "
+                    "told by the listen-again rule", exe, build[0] ? build : "?", nfs3_find_why());
+            return 0;
+        }
+        found_b.build = "";
+        found_b.name = "(not in okplay's table: found in the game)";
+        found_b.net = f->fx.net;
+        found_b.server = f->fx.server;
+        found_b.join = f->join_len >= 29 ? f->fx.join : 0;   /* (prefill keeps 30 bytes) */
+        found_b.pname = f->fx.pname;
+        okp_log(1, "nfs3: %s build %s is not one okplay knows - its state was found in the game itself", exe, build[0] ? build : "?");
+        okp_log(2, "nfs3: found { \"%s\", net 0x%x, server 0x%x, join 0x%x (%u chars), pname 0x%x } (for okplay's table)",
+                build, f->fx.net, f->fx.server, f->fx.join, f->join_len, f->fx.pname);
+        b = &found_b;
+    } else if ((!b->join || !b->pname) && (uintptr_t)GetModuleHandleA(NULL) == 0x400000u) {   /* fields not pinned down */
+        const nfs3_found *f = nfs3_find_running();
+        if (f && f->fx.net == b->net && f->fx.server == b->server) {
+            found_b = *b;
+            if (!found_b.join && f->join_len >= 29) found_b.join = f->fx.join;
+            if (!found_b.pname) found_b.pname = f->fx.pname;
+            okp_log(1, "nfs3: %s - the Join box text (0x%x) and the player's name (0x%x) were found in the game itself", b->name,
+                    found_b.join, found_b.pname);
+            b = &found_b;
+        } else okp_log(2, "nfs3: %s - the Join box text / player's name were not found in the game (%s)", b->name,
+                       f ? "its state differs from okplay's table" : nfs3_find_why());
     }
     if ((uintptr_t)GetModuleHandleA(NULL) != 0x400000u) {
         okp_log(1, "nfs3: %s (%s) is loaded at %p, not 0x400000 - Host Game is told by the listen-again rule", exe,
