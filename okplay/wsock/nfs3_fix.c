@@ -39,13 +39,14 @@ typedef struct {
     uint32_t net;      /* DWORD: the network game state; the DWORD after it (net + 4): the game type */
     uint32_t server;   /* WORD: this PC is the server */
     uint32_t join;     /* char[30]: the Join box's address, typed last (0 = not pinned down for this build) */
+    uint32_t pname;    /* char[]: the player's name as the menus show it ("Player 1 Name"); 0 = not pinned down */
 } nfs3_build;
 
 static const nfs3_build builds[] = {
-    { "240a083a78ac3b83", "Modern Patch 1.6.1",              0x7a22e0, 0x7a22da, 0x6fbb7e },
-    { "397dee58eb88822c", "portable 1.6.2 Beta",             0x7a22e0, 0x7a22da, 0x6fbb7e },
-    { "b390be67925b2ad0", "1998 OEM release",                0x7a22e0, 0x7a22da, 0 },   /* (Join box buffer not studied) */
-    { "53aa0dfcf438788d", "1998 CD (unpacked in memory)",    0x7c92e0, 0x7c92da, 0x722b7e },   /* (packed on disk) */
+    { "240a083a78ac3b83", "Modern Patch 1.6.1",              0x7a22e0, 0x7a22da, 0x6fbb7e, 0x6fd2fc },
+    { "397dee58eb88822c", "portable 1.6.2 Beta",             0x7a22e0, 0x7a22da, 0x6fbb7e, 0x6fd2fc },
+    { "b390be67925b2ad0", "1998 OEM release",                0x7a22e0, 0x7a22da, 0, 0 },   /* (Join box buffer not studied) */
+    { "53aa0dfcf438788d", "1998 CD (unpacked in memory)",    0x7c92e0, 0x7c92da, 0x722b7e, 0x7242fc },   /* (packed on disk) */
 };
 
 /* B: the build, once the exe's fingerprint is known (set by find_build's thread, once; never cleared: the exe
@@ -167,18 +168,20 @@ void nfs3_join_prefill(int okplay_on)
     }
 }
 
-/* The player's own name in the game (Player 1 Name), as the game holds it for a network game: up to 10 characters and
- * a 0 at net - 0xCB (the first entry of the game's name list). Read only; 1 = a name was read. */
+/* The player's own name in the game (Player 1 Name): the menus' name buffer (b->pname, the one the lobby shows), else
+ * the game's network name list (net - 0xCB, its first entry; filled only once a network game runs). Up to 10
+ * characters and a 0. Read only; 1 = a name was read. */
 int nfs3_player_name(char *out, int n)
 {
     static volatile LONG name_readable;
     const nfs3_build *b = B;
     if (!b || n < 2) return 0;
+    uint32_t at = b->pname ? b->pname : b->net - 0xCB;
     if (!name_readable) {
-        if (!can_read(b->net - 0xCB, 11)) return 0;
+        if (!can_read(at, 11)) return 0;
         InterlockedExchange(&name_readable, 1);
     }
-    const volatile unsigned char *p = (const volatile unsigned char *)(uintptr_t)(b->net - 0xCB);
+    const volatile unsigned char *p = (const volatile unsigned char *)(uintptr_t)at;
     int i = 0;
     for (; i < 10 && i < n - 1; i++) {
         unsigned char c = p[i];

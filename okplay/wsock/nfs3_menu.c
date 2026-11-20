@@ -246,7 +246,7 @@ static int nm_lines_set(const char *a, const char *b, const char *c, const char 
 }
 
 /* ---- joining: the game list in the game's own popup (instead of the game's Join box with an address) ---- */
-typedef struct { uint64_t host; uint32_t room; int locked, curp, maxp; char name[40]; } okw_room_brief;
+typedef struct { uint64_t host; uint32_t room; int locked, curp, maxp; char name[64]; } okw_room_brief;
 int okw_rooms(okw_room_brief *out, int max);
 void okw_join_pick(uint64_t host, uint32_t room, const char *typed);
 
@@ -255,7 +255,7 @@ static okw_room_brief nm_room[NM_MAXROOMS];
 static int nm_nroom, nm_pick_i;
 static uint32_t nm_list_sig;
 static DWORD nm_list_t;
-static char nm_rb[NM_MAXROOMS + 2][44], nm_rh[NM_MAXROOMS + 2][64], *nm_rbtn[NM_MAXROOMS + 2], *nm_rhelp[NM_MAXROOMS + 2];
+static char nm_rb[NM_MAXROOMS + 2][64], nm_rh[NM_MAXROOMS + 2][64], *nm_rbtn[NM_MAXROOMS + 2], *nm_rhelp[NM_MAXROOMS + 2];
 
 static uint32_t rooms_sig(const okw_room_brief *r, int n)
 {

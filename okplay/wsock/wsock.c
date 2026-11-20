@@ -228,6 +228,7 @@ static struct { uint64_t peer; DWORD tick; } closed_peers[8];   /* players we ha
 static int nclosed_peers;
 static int player_name_set;           /* okplay.ini has a name= of the player's own */
 static char player_name[32];          /* okplay.ini name=, else the computer's name: in a TCP game's room name */
+static char pc_name[32];              /* the computer's name: in a TCP game's room name ("NFS3: <PC> - <player>'s Game") */
 /* The player limit of a hosted TCP game (room_max_players):
  * max_players_ini: okplay.ini wsock_max_players (2..64; 0 = not set). Read once, at load.
  * rec_curp, rec_maxp: the players and the limit the room record says now (-1 = none built). Set: build_room_record.
@@ -1316,7 +1317,10 @@ static void build_room_record(void)   /* okw_lock held */
     }
     if (game->kinds & OKW_TCP) {
         room_who(rec_who, sizeof(rec_who));
-        if (rec_who[0]) snprintf(name, sizeof(name), "%s - %s's game", game->name, rec_who);
+        /* "NFS3: <PC> - <player>'s Game"; the PC's name alone when no player name is known (or it is the same) */
+        const char *tag = !strcmp(game->id, "nfs3") ? "NFS3" : game->name;
+        if (pc_name[0] && rec_who[0] && _stricmp(pc_name, rec_who)) snprintf(name, sizeof(name), "%s: %s - %s's Game", tag, pc_name, rec_who);
+        else if (rec_who[0] || pc_name[0]) snprintf(name, sizeof(name), "%s: %s's Game", tag, rec_who[0] ? rec_who : pc_name);
         curp += (uint32_t)tcp_room_players();
         rec_curp = (int)curp;
         rec_maxp = (int)maxp;
@@ -1663,6 +1667,7 @@ static void tcp_join_undo(uint64_t host, const char *why, int drop)   /* okw_loc
     if (!was_in) return;
     okp_report_session_end(ctx);   /* (the join's connection line) */
     EnterCriticalSection(&ctx->lock);
+    if (!drop) { ctx->left_room = ctx->room; ctx->left_host = host; ctx->left_until = okp_now() + 5000; }   /* (its FIN still goes) */
     okp_peer *p = okp_peer_get(ctx, host, 0);
     if (drop && p && !p->hold && !tcp_conns_to(host)) {
         okp_peer_free_bufs(p);
@@ -3325,7 +3330,7 @@ static int room_list_box(uint64_t *host)
 /* [universal] the room list for a game whose own menus show it (NFS3: nfs3_menu.c), and the pick made there: the
  * room host (and the password, when the room has one) is known before the game connects - the connect goes there
  * without a box (resolve_rules: "the room picked before"), and the path is started at once. Game's thread. */
-typedef struct { uint64_t host; uint32_t room; int locked, curp, maxp; char name[40]; } okw_room_brief;
+typedef struct { uint64_t host; uint32_t room; int locked, curp, maxp; char name[64]; } okw_room_brief;
 int okw_rooms(okw_room_brief *out, int max)   /* -1 = okplay is not running; else the rooms of this game */
 {
     static DWORD asked;
@@ -4931,6 +4936,8 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
                 GetPrivateProfileStringA("okplay", "name", "", player_name, sizeof(player_name), ini);
                 player_name_set = player_name[0] != 0;
                 if (!player_name[0] && !GetComputerNameA(player_name, &nl)) player_name[0] = 0;
+                nl = sizeof(pc_name);
+                if (!GetComputerNameA(pc_name, &nl)) pc_name[0] = 0;
             }
             okp_log(2, "wsock: game profile %s (%s%s%s)", game->id, game->kinds & OKW_UDP ? "UDP" : "",
                     game->kinds == (OKW_UDP | OKW_TCP) ? " + " : "", game->kinds & OKW_TCP ? "TCP" : "");

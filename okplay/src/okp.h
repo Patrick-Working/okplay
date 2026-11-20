@@ -236,6 +236,9 @@ typedef struct {
     uint64_t self;
     uint32_t room;
     uint64_t host_peer;            /* name server peer (when joined) */
+    uint32_t left_room;            /* the room a joiner just left, its host, and until when (okp_now) that host's */
+    uint64_t left_host;            /* reliable lane (acks, the last frames: its FIN) is still taken - handle_packet */
+    DWORD left_until;
     int is_host;
     int host_transport;            /* the host's transport, told in its probes (-1 = not known) */
     /* the room's state for the room list (rdv.c room_state): lobby / playing / between games */

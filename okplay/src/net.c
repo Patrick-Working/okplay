@@ -1099,7 +1099,11 @@ static void handle_packet(okp_ctx *c, uint8_t *b, int n, SOCKADDR_IN6 *from)
     okp_wire *w = (okp_wire *)b;
     if (w->m0 != 'O' || w->m1 != 'K' || w->ver != OKP_WIRE_VER) return;
     if (w->to != c->self || w->from == 0 || w->from == c->self) return;
-    if (c->room == 0 || w->room != c->room) return;
+    /* (the room just left: for a few seconds its host's reliable lane still counts - our last frames get acked, its
+     * last frames are acked back - instead of both sides resending into nothing; nothing of it reaches a new room) */
+    int left = c->room == 0 && w->room && w->room == c->left_room && w->from == c->left_host &&
+               (w->type == OKP_T_RACK || w->type == OKP_T_RDATA || w->type == OKP_T_RFRAG) && (int)(c->left_until - okp_now()) > 0;
+    if (!left && (c->room == 0 || w->room != c->room)) return;
 
     uint8_t *body = b + sizeof(okp_wire);
     int blen = n - sizeof(okp_wire);
@@ -1271,6 +1275,7 @@ static void handle_packet(okp_ctx *c, uint8_t *b, int n, SOCKADDR_IN6 *from)
         }
         uint8_t ack[sizeof(okp_wire) + 8];
         fill_wire(c, (okp_wire *)ack, OKP_T_RACK, w->from);
+        ((okp_wire *)ack)->room = w->room;   /* (= c->room, except for the room just left) */
         uint32_t aseq = have ? seq : p->r_rx_next - 1;   /* (below cum: confirms nothing new) */
         memcpy(ack + sizeof(okp_wire), &p->r_rx_next, 4);
         memcpy(ack + sizeof(okp_wire) + 4, &aseq, 4);
