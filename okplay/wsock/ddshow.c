@@ -153,6 +153,9 @@ static FARPROC WINAPI hk_gpa(HMODULE m, LPCSTR name)
 }
 
 /* m's import of dll!fn now calls `to`; the slot's old value goes to *orig if that is still empty */
+static int hook_import(HMODULE m, const char *dll, const char *fn, void *to, void **orig);
+int dds_hook_import(HMODULE m, const char *dll, const char *fn, void *to, void **orig) { return hook_import(m, dll, fn, to, orig); }
+
 static int hook_import(HMODULE m, const char *dll, const char *fn, void *to, void **orig)
 {
     uint8_t *base = (uint8_t *)m;

@@ -26,4 +26,5 @@ int dds_on_game_window_thread(void); /* a box is open and the caller is the thre
 void dds_shot_start(const char *key); /* okplay.ini wsock_screenshot_key (default ctrl+f12, "off"): the key that, pressed in an
                                       * okplay box, saves the game with the box as a BMP in okplay-screenshots beside the game */
 int dds_shot_key(const MSG *m);      /* the box's message filter, for each key: 1 = the screenshot key (taken here) */
+int dds_hook_import(HMODULE m, const char *dll, const char *fn, void *to, void **orig);   /* m's import of dll!fn -> to (1 = done) */
 void dds_detach(void);               /* DLL unload (not process exit): the game windows get their own procedures back */

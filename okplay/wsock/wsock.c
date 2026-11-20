@@ -36,6 +36,7 @@
 #include "okp.h"
 #include "rr_fix.h"
 #include "nfs3_fix.h"
+#include "nfs3_menu.h"
 #include "ddshow.h"
 #include "ovl.h"
 #include <mmsystem.h>
@@ -2446,6 +2447,9 @@ static int choose_mode(void)
         GetPrivateProfileStringA("okplay", "wsock_mode", "ask", v, sizeof(v), ini);
         GetEnvironmentVariableA("OKP_WSOCK_MODE", v, sizeof(v));
         int m = !_stricmp(v, "online") ? 2 : !_stricmp(v, "lan") ? 3 : (!_stricmp(v, "original") || !_stricmp(v, "windows")) ? 1 : 0;
+        if (!m && game->fix_init == nfs3_init && (m = nfs3_menu_mode()) != 0) {   /* [game: NFS3] picked in its own menu (nfs3_menu.c) */
+            snprintf(v, sizeof(v), "game menu");
+        }
         if (!m) {
             okw_box b;
             memset(&b, 0, sizeof(b));

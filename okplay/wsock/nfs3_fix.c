@@ -31,6 +31,7 @@
  * wsock.c keeps its listen-again rule. The values are only read, never written. */
 #include "okp.h"
 #include "nfs3_fix.h"
+#include "nfs3_menu.h"
 #include <string.h>
 
 typedef struct {
@@ -86,6 +87,7 @@ int nfs3_init(const char *ini)
     DWORD id;
     HANDLE t;
     prefill_on = GetPrivateProfileIntA("okplay", "nfs3_join_prefill", 1, ini) != 0;
+    nfs3_menu_init(ini);   /* okplay's entries in the game's own Network menu (nfs3_menu.c) - before its front end starts */
     t = CreateThread(NULL, 0, find_build, NULL, 0, &id);
     if (t) CloseHandle(t);
     return t != NULL;
