@@ -170,6 +170,13 @@ static CRITICAL_SECTION okw_ask_lock;   /* one box at a time; held while it is o
 /* game passwords (as the drop-in: only "okp1-" + a salted SHA-256 travels) */
 static uint32_t pending_room;           /* the host's room id, chosen before its password box */
 static int host_pw_asked, host_has_pw;
+/* [universal] a game whose own menus ask okplay's questions (NFS3: nfs3_menu.c) - okw_set_ui_ingame(1): the host
+ * password is asked there (the room is listed only after the answer), and queued notices/questions go there instead of
+ * Windows boxes (okw_ui_take / okw_ui_answer). Nothing is asked inside a network call. */
+static volatile LONG ui_ingame, host_pw_ingame, host_deferred;
+static uint64_t ig_pw_host;   /* a join password given in the game's own popup, for this host's room (okw_join_pick) */
+static uint32_t ig_pw_room;
+void okw_set_ui_ingame(int on) { InterlockedExchange(&ui_ingame, on); }
 static char host_hash[64];
 static uint64_t authed[OKP_MAX_PEERS];  /* host: joiners that showed the right hash */
 static int nauthed;
@@ -1456,6 +1463,7 @@ static void end_session(void)   /* no lock held */
     mode_provisional = 0;
     InterlockedExchange(&mode_choice, 0);
     host_pw_asked = host_has_pw = 0;
+    InterlockedExchange(&host_pw_ingame, 0); InterlockedExchange(&host_deferred, 0);
     SecureZeroMemory(host_hash, sizeof(host_hash));
     pending_room = 0;
     close_owed = 0;
@@ -1722,6 +1730,7 @@ static void host_game_over(int owe_close)
     if (owe_close && ctx && ctx->room && ctx->mode == OKP_MODE_ONLINE) close_owed = ctx->room;
     if (!host_pw_asked && !pending_room) return;
     host_pw_asked = host_has_pw = 0;
+    InterlockedExchange(&host_pw_ingame, 0); InterlockedExchange(&host_deferred, 0);
     SecureZeroMemory(host_hash, sizeof(host_hash));
     pending_room = 0;
     nauthed = 0;
@@ -2397,6 +2406,7 @@ int okp_ui_ask_conn_reports(void) { return (int)ui_ask(0, NULL); }
 static void ui_show_pending(void)
 {
     static volatile LONG showing;   /* (not TryEnterCriticalSection: on Windows 9x it is a stub that always fails) */
+    if (ui_ingame) return;   /* the game's own menus show them (okw_ui_take) */
     if (!ui_pending || box_open || GetTickCount() - last_race_tick < 5000) return;
     if (InterlockedExchange(&showing, 1)) return;   /* one thread at a time; box_open keeps the other boxes apart */
     for (;;) {
@@ -2487,6 +2497,13 @@ static void ask_host_password(void)
     WCHAR w[64];
     if (box_open) return;   /* back in from inside a box (9x): asked when that one closes */
     EnterCriticalSection(&okw_ask_lock);
+    if (!host_pw_asked && ui_ingame) {   /* asked in the game's own lobby; the room is listed after the answer */
+        host_pw_asked = 1;
+        pending_room = (uint32_t)okp_rand64() | 1;
+        InterlockedExchange(&host_pw_ingame, 1);
+        InterlockedExchange(&host_deferred, 1);
+        okp_log(2, "wsock: the host password is asked in the game's own lobby - the room is listed after the answer");
+    }
     if (!host_pw_asked) {
         host_pw_asked = 1;
         pending_room = (uint32_t)okp_rand64() | 1;
@@ -2502,6 +2519,57 @@ static void ask_host_password(void)
         }
     }
     LeaveCriticalSection(&okw_ask_lock);
+}
+
+int okw_host_pw_pending(void) { return host_pw_ingame != 0; }
+
+void okw_host_pw_answer(const char *typed)   /* the game's thread: the lobby's password popup was answered (NULL: none) */
+{
+    if (!InterlockedExchange(&host_pw_ingame, 0)) return;
+    if (typed && *typed) {
+        WCHAR w[64], h[64];
+        MultiByteToWideChar(1252, 0, typed, -1, w, 64);
+        GUID g = room_guid(pending_room);
+        okbox_hash_password(w, &g, h, 64);
+        wide_to_ascii(h, host_hash, sizeof(host_hash));
+        SecureZeroMemory(w, sizeof(w)); SecureZeroMemory(h, sizeof(h));
+        host_has_pw = 1;
+    }
+    okp_log(1, "password: %s (asked in the game's lobby)", host_has_pw ? "set - a locked game" : "none - an open game");
+    if (InterlockedExchange(&host_deferred, 0)) {
+        EnterCriticalSection(&okw_lock);
+        host_room();
+        LeaveCriticalSection(&okw_lock);
+    }
+}
+
+/* the queued notices/questions, for the game's own menus: what waits (0: nothing), its texts, and the answer */
+int okw_ui_take(char *a, int an, char *b, int bn)
+{
+    int k;
+    EnterCriticalSection(&ui_lock);
+    k = ui_update.on ? 4 : ui_unreach.on ? 5 : ui_nonet.on ? 6 : ui_crash.on ? 7 : ui_conn.on ? 8 : ui_wrongpw ? 3 : ui_full ? 12 : ui_noanswer ? 11 : 0;
+    if (a && an) a[0] = 0;
+    if (b && bn) b[0] = 0;
+    if (k == 4) { if (a) lstrcpynA(a, ui_update.latest, an); }
+    if (k == 5) { if (a) lstrcpynA(a, ui_unreach.server, an); if (b) lstrcpynA(b, ui_unreach.why, bn); }
+    LeaveCriticalSection(&ui_lock);
+    return k;
+}
+
+void okw_ui_answer(int kind, int r)
+{
+    EnterCriticalSection(&ui_lock);
+    if (kind == 4) ui_update.on = 0;
+    else if (kind == 5) ui_unreach.on = 0;
+    else if (kind == 6) ui_nonet.on = 0;
+    else if (kind == 3) InterlockedExchange(&ui_wrongpw, 0);
+    else if (kind == 12) InterlockedExchange(&ui_full, 0);
+    else if (kind == 11) InterlockedExchange(&ui_noanswer, 0);
+    else if (kind == 7 && ui_crash.on) { ui_crash.on = 0; ui_crash.answer = r; if (ui_crash.done) SetEvent(ui_crash.done); }
+    else if (kind == 8 && ui_conn.on) { ui_conn.on = 0; ui_conn.answer = r; if (ui_conn.done) SetEvent(ui_conn.done); }
+    LeaveCriticalSection(&ui_lock);
+    okp_log(2, "wsock: queued %s %d answered in the game's own menu (%d)", kind == 7 || kind == 8 ? "question" : "notice", kind, r);
 }
 
 /* the game is joining `host`'s room, which has a password. The box runs on a thread of its own and the game
@@ -3254,6 +3322,50 @@ static int room_list_box(uint64_t *host)
     return 1;
 }
 
+/* [universal] the room list for a game whose own menus show it (NFS3: nfs3_menu.c), and the pick made there: the
+ * room host (and the password, when the room has one) is known before the game connects - the connect goes there
+ * without a box (resolve_rules: "the room picked before"), and the path is started at once. Game's thread. */
+typedef struct { uint64_t host; uint32_t room; int locked, curp, maxp; char name[40]; } okw_room_brief;
+int okw_rooms(okw_room_brief *out, int max)   /* -1 = okplay is not running; else the rooms of this game */
+{
+    static DWORD asked;
+    int n = 0;
+    EnterCriticalSection(&okw_lock);
+    if (!ctx) { LeaveCriticalSection(&okw_lock); return -1; }
+    if (!asked || GetTickCount() - asked > 3000) { asked = GetTickCount() | 1; ask_for_rooms(); }
+    EnterCriticalSection(&ctx->lock);
+    for (int i = 0; i < ctx->nrooms && n < max; i++) {
+        okw_roominfo ri;
+        if (!room_live(i) || !room_tcp(&ctx->rooms[i], NULL, NULL)) continue;
+        room_read(&ctx->rooms[i], &ri);
+        out[n].host = ri.host; out[n].room = ri.room; out[n].locked = ri.locked; out[n].curp = ri.curp; out[n].maxp = ri.maxp;
+        lstrcpynA(out[n].name, ri.name[0] ? ri.name : "(no name)", sizeof(out[n].name));
+        n++;
+    }
+    LeaveCriticalSection(&ctx->lock);
+    LeaveCriticalSection(&okw_lock);
+    return n;
+}
+
+void okw_join_pick(uint64_t host, uint32_t room, const char *typed)   /* typed: the room's password (NULL: none) */
+{
+    EnterCriticalSection(&okw_lock);
+    picked_host = host;
+    if (typed) {
+        WCHAR w[64], h[64];
+        MultiByteToWideChar(1252, 0, typed, -1, w, 64);
+        GUID g = room_guid(room);
+        okbox_hash_password(w, &g, h, 64);
+        wide_to_ascii(h, join_hash, sizeof(join_hash));
+        SecureZeroMemory(w, sizeof(w)); SecureZeroMemory(h, sizeof(h));
+        ig_pw_host = host; ig_pw_room = room;
+    }
+    int in = ctx && tcp_join(host);   /* (the path starts now: the game's connect finds it up) */
+    LeaveCriticalSection(&okw_lock);
+    okp_log(1, "wsock: room of host %016llx picked in the game's own list%s%s", (unsigned long long)host,
+            typed ? ", password given" : "", in ? "" : " - not joined yet");
+}
+
 /* "Connecting..." until the okplay path to `host` is up (LB_PATH) or the password was answered (LB_AUTH): IDOK = there,
  * IDCANCEL = the player cancelled, IDABORT = max_ms passed */
 static INT_PTR wait_box(int mode, uint64_t host, const char *name, DWORD max_ms)
@@ -3284,6 +3396,7 @@ static void notice_no_answer(void)   /* the game's thread, no lock held */
     okw_box b;
     okp_log(1, "wsock: notice to the player: No answer from the host. The game may have started or closed.");
     if (okbox_test_answers() && getenv("OKP_TEST_JOIN_PASSWORD")) return;
+    if (ui_ingame) { InterlockedExchange(&ui_noanswer, 1); return; }   /* (the game's own menus show it) */
     memset(&b, 0, sizeof(b));
     b.kind = 11;
     run_box(&b);
@@ -3298,11 +3411,14 @@ static int tcp_password(uint64_t host, uint32_t room, const char *name)
     int known = auth_host == host && auth_room == room && auth_state == 2;   /* (a new room of the same host asks again) */
     LeaveCriticalSection(&okw_lock);
     if (known) return 1;
-    okp_log(1, "wsock: %s has a password - asking for it", name);
+    EnterCriticalSection(&okw_lock);
+    int ingame = ui_ingame && ig_pw_host == host && ig_pw_room == room;   /* given in the game's own popup (okw_join_pick) */
+    LeaveCriticalSection(&okw_lock);
+    okp_log(1, "wsock: %s has a password - %s", name, ingame ? "given in the game's own popup" : "asking for it");
     memset(&b, 0, sizeof(b));
     b.kind = 2;
     b.g = room_guid(room);
-    if (!run_box(&b)) {
+    if (!ingame && !run_box(&b)) {
         okp_log(1, "wsock: password cancelled - not joining");
         EnterCriticalSection(&okw_lock);
         tcp_join_undo(host, "password cancelled", 1);
@@ -3310,7 +3426,8 @@ static int tcp_password(uint64_t host, uint32_t room, const char *name)
         return 0;
     }
     EnterCriticalSection(&okw_lock);
-    wide_to_ascii(b.w, join_hash, sizeof(join_hash));
+    if (!ingame) wide_to_ascii(b.w, join_hash, sizeof(join_hash));   /* (in-game: okw_join_pick has set join_hash) */
+    ig_pw_host = 0; ig_pw_room = 0;
     auth_host = host;
     auth_room = room;
     auth_state = 1;
@@ -3321,7 +3438,12 @@ static int tcp_password(uint64_t host, uint32_t room, const char *name)
     InterlockedExchange(&auth_in_list, 1);   /* a "no" is shown here, not by control() */
     LeaveCriticalSection(&okw_lock);
     SecureZeroMemory(b.w, sizeof(b.w));
-    INT_PTR w = in ? wait_box(LB_AUTH, host, name, 15000) : IDCANCEL;
+    INT_PTR w;
+    if (in && ingame) {   /* the game's own "Connecting..." is up: wait for the host's answer without a box of ours */
+        DWORD t0 = GetTickCount();
+        w = IDABORT;
+        while (GetTickCount() - t0 < 15000) { if (auth_state != 1) { w = IDOK; break; } Sleep(50); }
+    } else w = in ? wait_box(LB_AUTH, host, name, 15000) : IDCANCEL;
     InterlockedExchange(&auth_in_list, 0);
     EnterCriticalSection(&okw_lock);
     int st = in ? auth_state : -2;
@@ -3339,9 +3461,12 @@ static int tcp_password(uint64_t host, uint32_t room, const char *name)
     } else {
         okp_log(1, "wsock: wrong password - not joining");
         if (!getenv("OKP_TEST_JOIN_PASSWORD")) {
-            memset(&b, 0, sizeof(b));
-            b.kind = 3;
-            run_box(&b);
+            if (ui_ingame) InterlockedExchange(&ui_wrongpw, 1);   /* (the game's own menus show it) */
+            else {
+                memset(&b, 0, sizeof(b));
+                b.kind = 3;
+                run_box(&b);
+            }
         }
     }
     return 0;
@@ -4480,9 +4605,11 @@ int WINAPI x_listen(SOCKET s, int b)
     if (host) {
         send_owed_close();   /* (the last room's close, with its id, before this one gets a new id) */
         ask_host_password();
-        EnterCriticalSection(&okw_lock);
-        host_room();
-        LeaveCriticalSection(&okw_lock);
+        if (!host_deferred) {   /* (asked in the game's own lobby: okw_host_pw_answer lists the room) */
+            EnterCriticalSection(&okw_lock);
+            host_room();
+            LeaveCriticalSection(&okw_lock);
+        }
     }
     ui_show_pending();
     return r;

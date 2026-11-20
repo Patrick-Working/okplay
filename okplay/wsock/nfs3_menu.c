@@ -35,10 +35,18 @@ typedef struct {
     uint32_t enter, leave; /* its enter / leave handlers */
     uint32_t find;         /* element of a menu by codelink token: eax = menu, edx = token -> eax = element or 0 */
     uint32_t tcp_cb;       /* the game's TCP callback (its "TCP Connection" box): eax = element */
+    uint32_t lobby_entry, lobby_name, lobby_idle;   /* the lobby menu (mainmult): its handler entry, "mainmult", its idle */
+    uint32_t pop_choice, pop_notice, pop_text;      /* the game's popups: choice, notice, text entry (open) */
+    uint32_t pop_active, pop_button, pop_edit;      /* is one open (al), the button chosen, the text entry's buffer */
+    uint32_t pop_cbvar, pop_btnvar;                 /* the open popup's callback, its chosen button (variables) */
+    uint32_t tcp_choice_cb, join_cb;                /* the "TCP Connection" box's callback; its Join box's callback */
+    uint32_t tcp_btns, tcp_help;                    /* that box's 4 button texts and help lines (char *[]) */
 } nm_build;
 
 static const nm_build nm_builds[] = {
-    { "1.6.x (Modern Patch 1.6.1, portable 1.6.2 Beta)", 0x555f00, 0x537d1c, 0x4405c0, 0x440730, 0x442a40, 0x43fe50 },
+    { "1.6.x (Modern Patch 1.6.1, portable 1.6.2 Beta)", 0x555f00, 0x537d1c, 0x4405c0, 0x440730, 0x442a40, 0x43fe50,
+      0x555ed0, 0x537d04, 0x4403f0, 0x4446d0, 0x444a80, 0x444c20, 0x4438b0, 0x4446c0, 0x444c10,
+      0x558b18, 0x558b3c, 0x43f760, 0x43f680, 0x5f4064, 0x5f4074 },
 };
 
 /* text entries okplay uses (unused by the game's menus and code in the 1.6.x builds) */
@@ -61,6 +69,91 @@ void __cdecl nm_pick(uint32_t elem);
 void nm_enter_thunk(void);
 void nm_pick_thunk(void);
 uint32_t __cdecl nm_find(uint32_t menu, const char *token);
+uint32_t nm_orig_lobby_idle, nm_f_choice, nm_f_notice, nm_f_text, nm_f_active, nm_f_button, nm_f_edit;
+void __cdecl nm_idle(uint32_t menu, int lobby);
+int __cdecl nm_popup_cb(int result, uint8_t *close);
+void nm_idle_connect_thunk(void);
+void nm_idle_lobby_thunk(void);
+void nm_popup_cb_thunk(void);
+void __cdecl nm_open_choice(int ntitle, char **titles, int nbtn, char **btns, char **help, int def, int layout, void *cb);
+void __cdecl nm_open_text(int ntitle, char **titles, int nbtn, char **btns, int def, char *buf, int maxlen, int charset, void *cb);
+void __cdecl nm_open_notice(int n, char **lines, int timeout, int keys, void *cb);
+uint32_t __cdecl nm_call0(uint32_t fn);   /* a game function with no arguments: its eax */
+uint32_t nm_tcp_choice_orig;
+void nm_tcp_choice_thunk(void);
+void __cdecl nm_tcp_choice_pre(void);
+uint32_t __cdecl nm_after_tcp_choice(uint32_t action, int result, uint8_t *close);
+void __cdecl nm_after_tcp(void);
+uint32_t __cdecl nm_call_cb(uint32_t fn, int result, uint8_t *close);   /* a popup callback of the game's: its action */
+__asm__(
+    ".text\n"
+    ".globl _nm_idle_connect_thunk\n"
+    "_nm_idle_connect_thunk:\n"     /* the connect menu had no idle handler: okplay's, nothing to chain */
+    "  pushl %ecx\n  pushl %edx\n"
+    "  pushl $0\n  pushl %eax\n  call _nm_idle\n  addl $8, %esp\n"
+    "  xorl %eax, %eax\n"
+    "  popl %edx\n  popl %ecx\n  ret\n"
+    ".globl _nm_idle_lobby_thunk\n"
+    "_nm_idle_lobby_thunk:\n"       /* the lobby's own idle first (eax = menu as given), then okplay's */
+    "  pushl %ecx\n  pushl %edx\n  pushl %eax\n"
+    "  call *_nm_orig_lobby_idle\n"
+    "  movl (%esp), %ecx\n"
+    "  pushl %eax\n"
+    "  pushl $1\n  pushl %ecx\n  call _nm_idle\n  addl $8, %esp\n"
+    "  popl %eax\n  addl $4, %esp\n"
+    "  popl %edx\n  popl %ecx\n  ret\n"
+    ".globl _nm_popup_cb_thunk\n"
+    "_nm_popup_cb_thunk:\n"         /* a popup's callback: eax = result, edx = the close byte; eax back = menu action */
+    "  pushl %ebx\n  pushl %ecx\n  pushl %edx\n  pushl %esi\n  pushl %edi\n  pushl %ebp\n"
+    "  pushl %edx\n  pushl %eax\n  call _nm_popup_cb\n  addl $8, %esp\n"
+    "  popl %ebp\n  popl %edi\n  popl %esi\n  popl %edx\n  popl %ecx\n  popl %ebx\n  ret\n"
+    ".globl _nm_open_choice\n"
+    "_nm_open_choice:\n"            /* (ntitle, titles, nbtn, btns, help, def, layout, cb) */
+    "  pushl %ebx\n  pushl %esi\n  pushl %edi\n  pushl %ebp\n"
+    "  movl 48(%esp), %eax\n  pushl %eax\n"
+    "  movl 48(%esp), %eax\n  pushl %eax\n"
+    "  movl 48(%esp), %eax\n  pushl %eax\n"
+    "  movl 48(%esp), %eax\n  pushl %eax\n"
+    "  movl 36(%esp), %eax\n  movl 40(%esp), %edx\n  movl 44(%esp), %ebx\n  movl 48(%esp), %ecx\n"
+    "  call *_nm_f_choice\n"
+    "  popl %ebp\n  popl %edi\n  popl %esi\n  popl %ebx\n  ret\n"
+    ".globl _nm_open_text\n"
+    "_nm_open_text:\n"              /* (ntitle, titles, nbtn, btns, def, buf, maxlen, charset, cb) */
+    "  pushl %ebx\n  pushl %esi\n  pushl %edi\n  pushl %ebp\n"
+    "  movl 52(%esp), %eax\n  pushl %eax\n"
+    "  movl 52(%esp), %eax\n  pushl %eax\n"
+    "  movl 52(%esp), %eax\n  pushl %eax\n"
+    "  movl 52(%esp), %eax\n  pushl %eax\n"
+    "  movl 52(%esp), %eax\n  pushl %eax\n"
+    "  movl 40(%esp), %eax\n  movl 44(%esp), %edx\n  movl 48(%esp), %ebx\n  movl 52(%esp), %ecx\n"
+    "  call *_nm_f_text\n"
+    "  popl %ebp\n  popl %edi\n  popl %esi\n  popl %ebx\n  ret\n"
+    ".globl _nm_open_notice\n"
+    "_nm_open_notice:\n"            /* (n, lines, timeout, keys, cb) */
+    "  pushl %ebx\n  pushl %esi\n  pushl %edi\n  pushl %ebp\n"
+    "  movl 36(%esp), %eax\n  pushl %eax\n"
+    "  movl 24(%esp), %eax\n  movl 28(%esp), %edx\n  movl 32(%esp), %ebx\n  movl 36(%esp), %ecx\n"
+    "  call *_nm_f_notice\n"
+    "  popl %ebp\n  popl %edi\n  popl %esi\n  popl %ebx\n  ret\n"
+    ".globl _nm_tcp_choice_thunk\n"
+    "_nm_tcp_choice_thunk:\n"      /* the TCP box's callback: the game's own first, then okplay's look at what it opened */
+    "  pushl %ecx\n  pushl %edx\n  pushl %eax\n"
+    "  call _nm_tcp_choice_pre\n"
+    "  movl (%esp), %eax\n  movl 4(%esp), %edx\n  movl 8(%esp), %ecx\n"
+    "  call *_nm_tcp_choice_orig\n"
+    "  movl 4(%esp), %edx\n  movl (%esp), %ecx\n"
+    "  pushl %edx\n  pushl %ecx\n  pushl %eax\n  call _nm_after_tcp_choice\n  addl $12, %esp\n"
+    "  addl $4, %esp\n  popl %edx\n  popl %ecx\n  ret\n"
+    ".globl _nm_call_cb\n"
+    "_nm_call_cb:\n"               /* (fn, result, close): eax = result, edx = close */
+    "  pushl %ebx\n  pushl %esi\n  pushl %edi\n  pushl %ebp\n"
+    "  movl 20(%esp), %ecx\n  movl 24(%esp), %eax\n  movl 28(%esp), %edx\n  call *%ecx\n"
+    "  popl %ebp\n  popl %edi\n  popl %esi\n  popl %ebx\n  ret\n"
+    ".globl _nm_call0\n"
+    "_nm_call0:\n"
+    "  pushl %ebx\n  pushl %ecx\n  pushl %edx\n  pushl %esi\n  pushl %edi\n  pushl %ebp\n"
+    "  movl 28(%esp), %eax\n  call *%eax\n"
+    "  popl %ebp\n  popl %edi\n  popl %esi\n  popl %edx\n  popl %ecx\n  popl %ebx\n  ret\n");
 __asm__(
     ".text\n"
     ".globl _nm_enter_thunk\n"
@@ -87,7 +180,11 @@ __asm__(
     "  popl %eax\n"
     "  popl %edx\n"
     "  popl %ecx\n"
-    "  jmp *_nm_tcp_cb\n"
+    "  call *_nm_tcp_cb\n"       /* (it takes eax only, and keeps every register) */
+    "  pushl %ecx\n  pushl %edx\n  pushl %eax\n"
+    "  call _nm_after_tcp\n"
+    "  popl %eax\n  popl %edx\n  popl %ecx\n"
+    "  ret\n"
     ".globl _nm_find\n"
     "_nm_find:\n"                 /* cdecl (menu, token) -> the game's finder (eax, edx) */
     "  pushl %ebx\n"
@@ -128,6 +225,203 @@ void __cdecl nm_pick(uint32_t elem)
 }
 
 int nfs3_menu_mode(void) { return nm_on && NB ? (int)nm_mode : 0; }
+
+/* ---- okplay's questions and notices in the game's own popups (on the game's thread, from the menus' idle) ---- */
+int okw_host_pw_pending(void);
+void okw_host_pw_answer(const char *typed);
+int okw_ui_take(char *a, int an, char *b, int bn);
+void okw_ui_answer(int kind, int r);
+void okw_set_ui_ingame(int on);
+
+enum { NM_NONE, NM_HOSTPW, NM_ASK7, NM_ASK8, NM_ROOMS, NM_JOINPW };
+static int nm_cur;                       /* what okplay's open popup asks (its callback says what to do) */
+static char nm_l[6][96], *nm_lines[6], *nm_btns[3], nm_b[3][24], nm_buf[64];
+
+static int nm_lines_set(const char *a, const char *b, const char *c, const char *d)
+{
+    const char *in[4] = { a, b, c, d };
+    int n = 0;
+    for (int i = 0; i < 4; i++) if (in[i] && in[i][0]) { lstrcpynA(nm_l[n], in[i], sizeof(nm_l[n])); nm_lines[n] = nm_l[n]; n++; }
+    return n;
+}
+
+/* ---- joining: the game list in the game's own popup (instead of the game's Join box with an address) ---- */
+typedef struct { uint64_t host; uint32_t room; int locked, curp, maxp; char name[40]; } okw_room_brief;
+int okw_rooms(okw_room_brief *out, int max);
+void okw_join_pick(uint64_t host, uint32_t room, const char *typed);
+
+#define NM_MAXROOMS 7
+static okw_room_brief nm_room[NM_MAXROOMS];
+static int nm_nroom, nm_pick_i;
+static uint32_t nm_list_sig;
+static DWORD nm_list_t;
+static char nm_rb[NM_MAXROOMS + 2][44], nm_rh[NM_MAXROOMS + 2][64], *nm_rbtn[NM_MAXROOMS + 2], *nm_rhelp[NM_MAXROOMS + 2];
+
+static uint32_t rooms_sig(const okw_room_brief *r, int n)
+{
+    uint32_t h = 2166136261u ^ (uint32_t)n;
+    for (int i = 0; i < n; i++) { h = (h ^ (uint32_t)r[i].host ^ (uint32_t)(r[i].host >> 32)) * 16777619u; h = (h ^ (uint32_t)(r[i].curp << 8 | r[i].maxp << 16 | r[i].locked)) * 16777619u; }
+    return h;
+}
+
+static void nm_show_rooms(void)   /* (re)opens okplay's game list popup */
+{
+    int n = okw_rooms(nm_room, NM_MAXROOMS);
+    if (n < 0) n = 0;
+    nm_nroom = n;
+    nm_list_sig = rooms_sig(nm_room, n);
+    nm_list_t = GetTickCount();
+    int lines = nm_mode == 3 ? nm_lines_set("Oldkid.net LAN - games on this network:", n ? NULL : "Looking for games...", NULL, NULL)
+                             : nm_lines_set("Oldkid.net Online - pick a game to join:", n ? NULL : "Looking for games...", NULL, NULL);
+    int b = 0;
+    for (int i = 0; i < n; i++, b++) {
+        snprintf(nm_rb[b], sizeof(nm_rb[b]), "%s", nm_room[i].name);
+        for (char *c = nm_rb[b]; *c; c++) if ((unsigned char)*c < 0x20) *c = ' ';
+        if (nm_room[i].maxp > 0)
+            snprintf(nm_rh[b], sizeof(nm_rh[b]), "%d/%d players%s%s", nm_room[i].curp, nm_room[i].maxp,
+                     nm_room[i].curp >= nm_room[i].maxp ? ", full" : "", nm_room[i].locked ? ", password" : "");
+        else snprintf(nm_rh[b], sizeof(nm_rh[b]), "%s", nm_room[i].locked ? "Password" : "Open game");
+    }
+    lstrcpynA(nm_rb[b], "Refresh", sizeof(nm_rb[b])); lstrcpynA(nm_rh[b], "Look for games again", sizeof(nm_rh[b])); b++;
+    lstrcpynA(nm_rb[b], "Cancel", sizeof(nm_rb[b])); nm_rh[b][0] = 0; b++;
+    for (int i = 0; i < b; i++) { nm_rbtn[i] = nm_rb[i]; nm_rhelp[i] = nm_rh[i]; }
+    nm_cur = NM_ROOMS;
+    nm_open_choice(lines, nm_lines, b, nm_rbtn, nm_rhelp, 0, 1, (void *)nm_popup_cb_thunk);
+}
+
+void __cdecl nm_after_tcp(void)   /* the game's TCP box is open: okplay's callback goes in front of the game's */
+{
+    if (nm_mode != 2 && nm_mode != 3) return;
+    uint32_t *cb = (uint32_t *)NB->pop_cbvar;
+    if (*cb == NB->tcp_choice_cb) {   /* opened again, the same box with okplay's header and callback */
+        static char head[2][24] = { "Oldkid.net Online", "Oldkid.net LAN" };
+        static char *title[1];
+        title[0] = head[nm_mode == 3];
+        nm_tcp_choice_orig = NB->tcp_choice_cb;
+        char **gb = (char **)NB->tcp_btns, **gh = (char **)NB->tcp_help;
+        static char *btn[3], *help[3];   /* Host, Join, Cancel: no "Port" (okplay carries the game's connections) */
+        btn[0] = gb[0]; btn[1] = gb[1]; btn[2] = gb[3];
+        help[0] = gh[0]; help[1] = gh[1]; help[2] = gh[3];
+        nm_open_choice(1, title, 3, btn, help, 0, 1, (void *)nm_tcp_choice_thunk);
+    }
+    else okp_log(1, "nfs3 menu: the TCP box is not as known (callback %08x) - the game's own Join box stays", (unsigned)*cb);
+}
+
+void __cdecl nm_tcp_choice_pre(void)   /* okplay's box has no Port: its 3rd button is the game's 4th (Cancel) */
+{
+    uint32_t *b = (uint32_t *)NB->pop_btnvar;
+    if (*b == 2) *b = 3;
+}
+
+uint32_t __cdecl nm_after_tcp_choice(uint32_t action, int result, uint8_t *close)
+{
+    (void)result; (void)close;
+    if ((nm_mode == 2 || nm_mode == 3) && (nm_call0(NB->pop_active) & 0xff) && *(uint32_t *)NB->pop_cbvar == NB->join_cb) {
+        okp_log(1, "nfs3 menu: Join - the game list in the game's own popup instead of the address box");
+        nm_show_rooms();   /* (opened over the game's Join box, as the game opened that over its TCP box) */
+    }
+    return action;
+}
+
+static uint32_t nm_join_now(uint8_t *close)   /* the game's own Join box, answered: the address okplay knows */
+{
+    char *edit = (char *)nm_call0(NB->pop_edit);
+    lstrcpynA(edit, "oldkid.net", 30);
+    *(uint32_t *)NB->pop_btnvar = 0;   /* Ok */
+    nm_cur = NM_NONE;
+    okp_log(1, "nfs3 menu: joining - the game's own connect follows");
+    return nm_call_cb(NB->join_cb, 1, close);
+}
+
+void __cdecl nm_idle(uint32_t menu, int lobby)
+{
+    char a[200], b[200];
+    (void)menu;
+    int active = (int)(nm_call0(NB->pop_active) & 0xff);
+    if (nm_cur != NM_NONE && !active) {   /* okplay's popup went without an answer (menu left): asked again */
+        okp_log(2, "nfs3 menu: okplay's popup %d closed without an answer - asked again", nm_cur);
+        nm_cur = NM_NONE;
+    }
+    if (nm_cur == NM_ROOMS && active && GetTickCount() - nm_list_t > 1000) {   /* the list follows the rooms */
+        okw_room_brief r[NM_MAXROOMS];
+        int n = okw_rooms(r, NM_MAXROOMS);
+        nm_list_t = GetTickCount();
+        if (n >= 0 && rooms_sig(r, n) != nm_list_sig) nm_show_rooms();
+        return;
+    }
+    if (nm_cur != NM_NONE || active) return;   /* one popup at a time */
+    if (lobby && okw_host_pw_pending()) {
+        int n = nm_lines_set("Password for your game:", "Leave it empty for an open game.", NULL, NULL);
+        lstrcpynA(nm_b[0], "Ok", sizeof(nm_b[0])); lstrcpynA(nm_b[1], "No Password", sizeof(nm_b[1]));
+        nm_btns[0] = nm_b[0]; nm_btns[1] = nm_b[1];
+        nm_buf[0] = 0;
+        nm_cur = NM_HOSTPW;
+        nm_open_text(n, nm_lines, 2, nm_btns, 0, nm_buf, 20, 1, (void *)nm_popup_cb_thunk);
+        okp_log(2, "nfs3 menu: the host password asked in the game's own popup");
+        return;
+    }
+    int k = okw_ui_take(a, sizeof(a), b, sizeof(b));
+    if (!k) return;
+    if (k == 7 || k == 8) {
+        int n = k == 8 ? nm_lines_set("Oldkid.net Online Play: send anonymous", "connection reports? They help fix problems.", NULL, NULL)
+                       : nm_lines_set("Oldkid.net Online Play: the game stopped last time.", "Send the crash report to help fix it?", NULL, NULL);
+        lstrcpynA(nm_b[0], "Yes", sizeof(nm_b[0])); lstrcpynA(nm_b[1], "No", sizeof(nm_b[1]));
+        nm_btns[0] = nm_b[0]; nm_btns[1] = nm_b[1];
+        nm_cur = k == 8 ? NM_ASK8 : NM_ASK7;
+        nm_open_choice(n, nm_lines, 2, nm_btns, NULL, 0, 1, (void *)nm_popup_cb_thunk);
+        okp_log(2, "nfs3 menu: question %d asked in the game's own popup", k);
+        return;
+    }
+    char t[120];
+    int n;
+    if (k == 4) { snprintf(t, sizeof(t), "A newer version (%s) is at oldkid.net.", a); n = nm_lines_set("Oldkid.net Online Play", t, NULL, NULL); }
+    else if (k == 5) n = nm_lines_set("The Oldkid.net room server can't be reached.", "Online Play shows no rooms for now.", NULL, NULL);
+    else if (k == 6) n = nm_lines_set("No network: Oldkid.net Online and LAN Play", "can't start on this PC.", NULL, NULL);
+    else if (k == 3) n = nm_lines_set("Oldkid.net Online Play:", "Wrong password - the host said no.", NULL, NULL);
+    else if (k == 12) n = nm_lines_set("Oldkid.net Online Play:", "That game is full.", NULL, NULL);
+    else if (k == 11) n = nm_lines_set("Oldkid.net Online Play:", "No answer from the game's host.", NULL, NULL);
+    else { okw_ui_answer(k, 0); return; }
+    nm_open_notice(n, nm_lines, 0x226, 1, NULL);
+    okw_ui_answer(k, 1);
+    okp_log(2, "nfs3 menu: notice %d shown in the game's own popup", k);
+}
+
+int __cdecl nm_popup_cb(int result, uint8_t *close)
+{
+    int cur = nm_cur, btn = (int)nm_call0(NB->pop_button);
+    nm_cur = NM_NONE;
+    (void)close;   /* (left as the game set it: the popup closes) */
+    if (cur == NM_HOSTPW) {
+        const char *typed = (const char *)nm_call0(NB->pop_edit);
+        okw_host_pw_answer(result == 1 && btn == 0 && typed ? typed : NULL);
+    } else if (cur == NM_ASK7 || cur == NM_ASK8) {
+        okw_ui_answer(cur == NM_ASK8 ? 8 : 7, result == 1 && btn == 0 ? 1 : 0);
+    } else if (cur == NM_ROOMS) {
+        if (result != 1 || btn == nm_nroom + 1) { okp_log(1, "nfs3 menu: the game list was cancelled"); return 0; }
+        *close = 0;   /* (another popup of okplay's follows: kept open, as the game does) */
+        if (btn < 0 || btn >= nm_nroom) { nm_show_rooms(); return 0; }   /* Refresh */
+        nm_pick_i = btn;
+        if (nm_room[btn].locked) {
+            char t[96];
+            snprintf(t, sizeof(t), "Password for %s:", nm_room[btn].name);
+            int n = nm_lines_set(t, NULL, NULL, NULL);
+            lstrcpynA(nm_b[0], "Ok", sizeof(nm_b[0])); lstrcpynA(nm_b[1], "Back", sizeof(nm_b[1]));
+            nm_btns[0] = nm_b[0]; nm_btns[1] = nm_b[1];
+            nm_buf[0] = 0;
+            nm_cur = NM_JOINPW;
+            nm_open_text(n, nm_lines, 2, nm_btns, 0, nm_buf, 20, 1, (void *)nm_popup_cb_thunk);
+            return 0;
+        }
+        okw_join_pick(nm_room[btn].host, nm_room[btn].room, NULL);
+        return nm_join_now(close);
+    } else if (cur == NM_JOINPW) {
+        const char *typed = (const char *)nm_call0(NB->pop_edit);
+        if (result != 1 || btn != 0 || !typed) { *close = 0; nm_show_rooms(); return 0; }   /* Back: the list again */
+        okw_join_pick(nm_room[nm_pick_i].host, nm_room[nm_pick_i].room, typed);
+        return nm_join_now(close);
+    }
+    return 0;
+}
 
 /* ---- the served files ---- */
 static char *read_all(const char *path, DWORD *n)
@@ -290,5 +584,17 @@ void nfs3_menu_init(const char *ini)
     DWORD old;
     uint32_t *slot = (uint32_t *)(NB->hentry + 12);
     if (VirtualProtect(slot, 4, PAGE_READWRITE, &old)) { *slot = (uint32_t)nm_enter_thunk; VirtualProtect(slot, 4, old, &old); }
+    /* the popups (step 2): the connect menu's idle (it has none) and the lobby's (chained) - only if the lobby entry is as known */
+    uint32_t *lob = (uint32_t *)NB->lobby_entry, *cidle = (uint32_t *)(NB->hentry + 20);
+    if (readable(NB->lobby_entry, 24) && readable(NB->lobby_name, 9) && lob[0] == NB->lobby_name && !strcmp((const char *)NB->lobby_name, "mainmult")
+        && lob[5] == NB->lobby_idle && *cidle == 0) {
+        nm_orig_lobby_idle = NB->lobby_idle;
+        nm_f_choice = NB->pop_choice; nm_f_notice = NB->pop_notice; nm_f_text = NB->pop_text;
+        nm_f_active = NB->pop_active; nm_f_button = NB->pop_button; nm_f_edit = NB->pop_edit;
+        if (VirtualProtect(cidle, 4, PAGE_READWRITE, &old)) { *cidle = (uint32_t)nm_idle_connect_thunk; VirtualProtect(cidle, 4, old, &old); }
+        if (VirtualProtect(&lob[5], 4, PAGE_READWRITE, &old)) { lob[5] = (uint32_t)nm_idle_lobby_thunk; VirtualProtect(&lob[5], 4, old, &old); }
+        okw_set_ui_ingame(1);
+        okp_log(1, "nfs3 menu: okplay's questions and notices use the game's own popups (host password, reports, notices)");
+    } else okp_log(1, "nfs3 menu: the lobby is not as known - okplay's questions stay Windows boxes");
     okp_log(1, "nfs3 menu: on (%s) - Online / LAN / TCP/IP are chosen in the game's own Network menu (okplay.ini nfs3_menu=0: the Windows box)", NB->name);
 }
