@@ -430,8 +430,38 @@ static int write_all(const char *path, const char *b, DWORD n)
 }
 
 /* connect.mnu: the [button] section with "codelink=tcp" becomes three (Online, LAN, then the game's own TCP/IP);
- * the tab buttons after it move down two places.  Line by line: a section runs from a "[...]" line to the next. */
-#define NM_MAXL 400
+ * the tab buttons below it move down two places.  Line by line: a section runs from a "[...]" line to the next.
+ * The two new entries are copies of the game's own TCP/IP section (every key it has, in its order) with okplay's
+ * codelink, texts and place, so both menu styles work: the 1.6.x files place tabs by "ypos" alone; the 1998 files
+ * also carry each tab's "x"/"y" (35 pixels apart there) - those move with "ypos" (by the spacing the file itself
+ * shows), the x of each row is kept. */
+#define NM_MAXL 600
+static int sec_has(char **line, int a, int b, const char *exact)   /* a line "exact" in section [a, b) */
+{
+    for (int k = a + 1; k < b; k++) if (!strcmp(line[k], exact)) return 1;
+    return 0;
+}
+
+static int sec_int(char **line, int a, int b, const char *key)   /* "key=N" in section [a, b), else -1 */
+{
+    size_t kl = strlen(key);
+    for (int k = a + 1; k < b; k++) if (!strncmp(line[k], key, kl) && line[k][kl] == '=') return atoi(line[k] + kl + 1);
+    return -1;
+}
+
+static char *emit_sec(char *q, char **line, int a, int b, int ypos, int y, const char *codelink, int help, int text)
+{
+    for (int k = a; k < b; k++) {
+        if (ypos >= 0 && !strncmp(line[k], "ypos=", 5)) q += sprintf(q, "ypos=%d\r\n", ypos);
+        else if (y >= 0 && !strncmp(line[k], "y=", 2)) q += sprintf(q, "y=%d\r\n", y);
+        else if (codelink && !strncmp(line[k], "codelink=", 9)) q += sprintf(q, "codelink=%s\r\n", codelink);
+        else if (help && !strncmp(line[k], "help=", 5)) q += sprintf(q, "help=str_%d\r\n", help);
+        else if (text && !strncmp(line[k], "text=", 5)) q += sprintf(q, "text=str_%d\r\n", text);
+        else q += sprintf(q, "%s\r\n", line[k]);
+    }
+    return q;
+}
+
 static int make_mnu(const char *src, const char *dst)
 {
     DWORD n = 0;
@@ -447,31 +477,41 @@ static int make_mnu(const char *src, const char *dst)
         p = c ? e + 1 : e;
         if (c == '\r' && *p == '\n') p++;
     }
-    char *out = (char *)malloc(n + 4096), *q = out;
-    int done = 0;
-    if (!out) { free(in); return 0; }
-    for (int a = 0; a < nl; ) {
+    int sa[NM_MAXL], sb[NM_MAXL], ns = 0;   /* the sections */
+    for (int a = 0; a < nl && ns < NM_MAXL; ) {
         int b = a + 1;
-        while (b < nl && line[b][0] != '[') b++;          /* section [a, b) */
-        int button = !strcmp(line[a], "[button]"), tab = 0, tcp = 0, y = -1;
-        for (int k = a + 1; k < b; k++) {
-            if (!strcmp(line[k], "buttontype=tab")) tab = 1;
-            if (!strcmp(line[k], "codelink=tcp")) tcp = 1;
-            if (!strncmp(line[k], "ypos=", 5)) y = atoi(line[k] + 5);
-        }
-        if (button && tab && tcp && !done && y >= 0) {
-            q += sprintf(q, "[button]\r\nbuttontype=tab\r\nypos=%d\r\npriority=6\r\nhelp=str_%d\r\ncodelink=tcp okp_online\r\ntext=str_%d\r\nnextmenu=mainmult\r\n\r\n", y, T_HONL, T_ONLINE);
-            q += sprintf(q, "[button]\r\nbuttontype=tab\r\nypos=%d\r\npriority=6\r\nhelp=str_%d\r\ncodelink=tcp okp_lan\r\ntext=str_%d\r\nnextmenu=mainmult\r\n\r\n", y + 1, T_HLAN, T_LAN);
-        }
-        for (int k = a; k < b; k++) {
-            if (button && tab && (done || tcp) && y >= 0 && !strncmp(line[k], "ypos=", 5)) q += sprintf(q, "ypos=%d\r\n", y + 2);
-            else if (button && tab && tcp && !done && !strcmp(line[k], "codelink=tcp")) q += sprintf(q, "codelink=tcp okp_direct\r\n");
-            else q += sprintf(q, "%s\r\n", line[k]);
-        }
-        if (button && tab && tcp && !done && y >= 0) done = 1;
+        while (b < nl && line[b][0] != '[') b++;
+        sa[ns] = a; sb[ns++] = b;
         a = b;
     }
-    int ok = done && write_all(dst, out, (DWORD)(q - out));
+    #define IS_TAB(i) (!_stricmp(line[sa[i]], "[button]") && sec_has(line, sa[i], sb[i], "buttontype=tab"))
+    int t = -1, dy = 35, y0 = -1, Y = -1;
+    for (int i = 0; i < ns && t < 0; i++)
+        if (IS_TAB(i) && sec_has(line, sa[i], sb[i], "codelink=tcp") && sec_int(line, sa[i], sb[i], "ypos") >= 0) t = i;
+    if (t >= 0) {
+        Y = sec_int(line, sa[t], sb[t], "ypos");
+        y0 = sec_int(line, sa[t], sb[t], "y");
+        for (int i = 0; i < ns; i++) {   /* the file's own spacing between tab rows (1998 style) */
+            int yp = IS_TAB(i) ? sec_int(line, sa[i], sb[i], "ypos") : -1, yy = IS_TAB(i) ? sec_int(line, sa[i], sb[i], "y") : -1;
+            if (i != t && yp > 0 && yy >= 0 && y0 >= 0 && yp != Y) { dy = (yy - y0) / (yp - Y); if (dy > 0) break; dy = 35; }
+        }
+    }
+    char *out = (char *)malloc(n * 2 + 4096), *q = out;
+    if (!out || t < 0) { free(in); free(out); return 0; }
+    for (int i = 0; i < ns; i++) {
+        int yp = IS_TAB(i) ? sec_int(line, sa[i], sb[i], "ypos") : -1, yy = IS_TAB(i) ? sec_int(line, sa[i], sb[i], "y") : -1;
+        if (i == t) {
+            q = emit_sec(q, line, sa[i], sb[i], Y, y0, "tcp okp_online", T_HONL, T_ONLINE);
+            q = emit_sec(q, line, sa[i], sb[i], Y + 1, y0 >= 0 ? y0 + dy : -1, "tcp okp_lan", T_HLAN, T_LAN);
+            q = emit_sec(q, line, sa[i], sb[i], Y + 2, y0 >= 0 ? y0 + 2 * dy : -1, "tcp okp_direct", 0, 0);
+        } else if (yp > Y) {
+            q = emit_sec(q, line, sa[i], sb[i], yp + 2, yy >= 0 ? yy + 2 * dy : -1, NULL, 0, 0);   /* (below TCP/IP: two places down) */
+        } else {
+            q = emit_sec(q, line, sa[i], sb[i], yp, -1, NULL, 0, 0);
+        }
+    }
+    #undef IS_TAB
+    int ok = write_all(dst, out, (DWORD)(q - out));
     free(in); free(out);
     return ok;
 }
@@ -511,6 +551,14 @@ static int ends_with(const char *s, const char *tail)
     return a >= b && !_stricmp(s + a - b, tail);
 }
 
+static int has_text_path(const char *path)   /* ".../text/text.<lang>" in any case (the 1998 files: upper case) */
+{
+    char low[MAX_PATH];
+    lstrcpynA(low, path, sizeof(low));
+    CharLowerA(low);
+    return strstr(low, "\\text\\text.") != NULL;
+}
+
 static HANDLE WINAPI hk_cfa(LPCSTR path, DWORD acc, DWORD share, LPSECURITY_ATTRIBUTES sa, DWORD disp, DWORD fl, HANDLE tpl)
 {
     if (path && nm_on && NB && !(acc & GENERIC_WRITE)) {
@@ -523,7 +571,7 @@ static HANDLE WINAPI hk_cfa(LPCSTR path, DWORD acc, DWORD share, LPSECURITY_ATTR
                 okp_log(1, "nfs3 menu: the game's Network menu %s", served_mnu[0] ? "gets okplay's entries (an edited copy, made from the game's own file)" : "could not be edited - the game's own is used");
             }
             use = served_mnu[0] ? served_mnu : NULL;
-        } else if (strstr(path, "\\text\\text.") || strstr(path, "\\TEXT\\TEXT.")) {
+        } else if (has_text_path(path)) {
             const char *dot = strrchr(path, '.');
             if (!served_txt[0] && dot && strlen(dot) <= 4) {
                 char d[MAX_PATH];
