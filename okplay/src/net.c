@@ -492,6 +492,9 @@ static void fill_wire(okp_ctx *c, okp_wire *w, int type, uint64_t to)
     w->ver = OKP_WIRE_VER;
     w->type = (uint8_t)type;
     w->room = c->room;
+    if (!c->room && to && to == c->left_host && (int)(c->left_until - okp_now()) > 0)
+        w->room = c->left_room;   /* (the room just left: what still goes to its host - a reset for its late data - is
+                                   * taken there, and acked; with room 0 the host dropped it and it was resent for nothing) */
     w->from = c->self;
     w->to = to;
     w->token = 0;
