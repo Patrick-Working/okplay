@@ -38,6 +38,11 @@
 #define T_HLAN   1721
 
 static const nm_build *NB;
+/* The menus' "str_N" text tokens are the 1.6.x front end's (the Modern Patch): the 1998 front end only knows text names
+ * from a table in its exe, and shows any other text= as it is written. So: 1.6.x (okplay's table) gets "str_N" and
+ * okplay's four texts in its text file; any other build (found by the finder) gets the words themselves in the menu
+ * and its text file is left alone (the 1998 file's entries 1718-1721 are its dead-zone screen's labels). */
+static int nm_literal;
 static int nm_on = 1;
 static volatile LONG nm_mode;              /* 0 = nothing picked; 2 = Online, 3 = LAN, 1 = direct (the game's own) */
 static uint32_t el_online, el_lan, el_direct;
@@ -287,6 +292,10 @@ void __cdecl nm_after_tcp(void)   /* the game's TCP box is open: okplay's callba
         if (gh) { help[0] = gh[0]; help[1] = gh[1]; help[2] = gh[c]; }
         nm_open_choice(1, title, 3, btn, gh ? help : NULL, 0, 1, (void *)nm_tcp_choice_thunk);
     }
+    else if (*cb == NB->join_cb) {   /* the 1998 box goes straight to its Join box when it remembers one: the list instead */
+        okp_log(1, "nfs3 menu: Join (the game went straight to its Join box) - the game list in the game's own popup instead");
+        nm_show_rooms();
+    }
     else okp_log(1, "nfs3 menu: the TCP box is not as known (callback %08x) - the game's own Join box stays", (unsigned)*cb);
 }
 
@@ -449,14 +458,14 @@ static int sec_int(char **line, int a, int b, const char *key)   /* "key=N" in s
     return -1;
 }
 
-static char *emit_sec(char *q, char **line, int a, int b, int ypos, int y, const char *codelink, int help, int text)
+static char *emit_sec(char *q, char **line, int a, int b, int ypos, int y, const char *codelink, const char *help, const char *text)
 {
     for (int k = a; k < b; k++) {
         if (ypos >= 0 && !strncmp(line[k], "ypos=", 5)) q += sprintf(q, "ypos=%d\r\n", ypos);
         else if (y >= 0 && !strncmp(line[k], "y=", 2)) q += sprintf(q, "y=%d\r\n", y);
         else if (codelink && !strncmp(line[k], "codelink=", 9)) q += sprintf(q, "codelink=%s\r\n", codelink);
-        else if (help && !strncmp(line[k], "help=", 5)) q += sprintf(q, "help=str_%d\r\n", help);
-        else if (text && !strncmp(line[k], "text=", 5)) q += sprintf(q, "text=str_%d\r\n", text);
+        else if (help && !strncmp(line[k], "help=", 5)) q += sprintf(q, "help=%s\r\n", help);
+        else if (text && !strncmp(line[k], "text=", 5)) q += sprintf(q, "text=%s\r\n", text);
         else q += sprintf(q, "%s\r\n", line[k]);
     }
     return q;
@@ -501,13 +510,21 @@ static int make_mnu(const char *src, const char *dst)
     for (int i = 0; i < ns; i++) {
         int yp = IS_TAB(i) ? sec_int(line, sa[i], sb[i], "ypos") : -1, yy = IS_TAB(i) ? sec_int(line, sa[i], sb[i], "y") : -1;
         if (i == t) {
-            q = emit_sec(q, line, sa[i], sb[i], Y, y0, "tcp okp_online", T_HONL, T_ONLINE);
-            q = emit_sec(q, line, sa[i], sb[i], Y + 1, y0 >= 0 ? y0 + dy : -1, "tcp okp_lan", T_HLAN, T_LAN);
-            q = emit_sec(q, line, sa[i], sb[i], Y + 2, y0 >= 0 ? y0 + 2 * dy : -1, "tcp okp_direct", 0, 0);
+            char h1[64], t1[64], h2[64], t2[64];   /* 1.6.x: "str_N" (texts okplay puts in the text file); else the words */
+            if (nm_literal) {
+                lstrcpynA(h1, "Play over the Internet with Oldkid.net Online Play", 64); lstrcpynA(t1, "Oldkid.net Online", 64);
+                lstrcpynA(h2, "Play on this network with Oldkid.net Online Play", 64); lstrcpynA(t2, "Oldkid.net LAN", 64);
+            } else {
+                snprintf(h1, 64, "str_%d", T_HONL); snprintf(t1, 64, "str_%d", T_ONLINE);
+                snprintf(h2, 64, "str_%d", T_HLAN); snprintf(t2, 64, "str_%d", T_LAN);
+            }
+            q = emit_sec(q, line, sa[i], sb[i], Y, y0, "tcp okp_online", h1, t1);
+            q = emit_sec(q, line, sa[i], sb[i], Y + 1, y0 >= 0 ? y0 + dy : -1, "tcp okp_lan", h2, t2);
+            q = emit_sec(q, line, sa[i], sb[i], Y + 2, y0 >= 0 ? y0 + 2 * dy : -1, "tcp okp_direct", NULL, NULL);
         } else if (yp > Y) {
-            q = emit_sec(q, line, sa[i], sb[i], yp + 2, yy >= 0 ? yy + 2 * dy : -1, NULL, 0, 0);   /* (below TCP/IP: two places down) */
+            q = emit_sec(q, line, sa[i], sb[i], yp + 2, yy >= 0 ? yy + 2 * dy : -1, NULL, NULL, NULL);   /* (below TCP/IP: two places down) */
         } else {
-            q = emit_sec(q, line, sa[i], sb[i], yp, -1, NULL, 0, 0);
+            q = emit_sec(q, line, sa[i], sb[i], yp, -1, NULL, NULL, NULL);
         }
     }
     #undef IS_TAB
@@ -571,7 +588,7 @@ static HANDLE WINAPI hk_cfa(LPCSTR path, DWORD acc, DWORD share, LPSECURITY_ATTR
                 okp_log(1, "nfs3 menu: the game's Network menu %s", served_mnu[0] ? "gets okplay's entries (an edited copy, made from the game's own file)" : "could not be edited - the game's own is used");
             }
             use = served_mnu[0] ? served_mnu : NULL;
-        } else if (has_text_path(path)) {
+        } else if (!nm_literal && has_text_path(path)) {
             const char *dot = strrchr(path, '.');
             if (!served_txt[0] && dot && strlen(dot) <= 4) {
                 char d[MAX_PATH];
@@ -612,6 +629,7 @@ void nfs3_menu_init(const char *ini)
     if (NB) okp_log(1, "nfs3 menu: the addresses are okplay's table's (%s)", NB->name);
     else {   /* not a build in the table: the game itself says where they are */
         const nfs3_found *f = nfs3_find_running();
+        nm_literal = 1;
         if (!f) { okp_log(1, "nfs3 menu: not a build okplay knows, and its addresses were not found in it (%s) - okplay's Windows box asks", nfs3_find_why()); return; }
         char t[1024];
         nfs3_found_text(f, t, sizeof(t));
