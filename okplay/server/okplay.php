@@ -2,7 +2,7 @@
 /*
  * Oldkid.net Online Play - rendezvous for the okplay DirectPlay provider.
  * ----------------------------------------------------------------------
- * Script version: 2026-11-11 (change this line with every upload).
+ * Script version: 2026-11-25 (change this line with every upload).
  * Single file, flat-JSON store, no database. Deploy next to the old lobby:
  *     https://oldkid.net/aoe2net/okplay.php   (PHP must be able to write here)
  *
