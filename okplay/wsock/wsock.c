@@ -265,6 +265,10 @@ typedef struct {
     const char *probe;
     int probe_len;
     uint16_t probe_port;
+    /* [universal] a game whose own list asks each listed host for details: in a password room these packets pass
+     * before the password (both ways; the joiner is asked when it sends anything else - its join), and a joiner the
+     * host turned away goes back to the list. NULL = everything waits for the password (Road Rash, NFS3) */
+    int (*pre_auth)(const uint8_t *b, int len);
 } okw_game;
 #define OKW_PROBE_IP 0x014B4F7Fu   /* 127.79.75.1 (network order): never a player's address */
 
@@ -274,15 +278,28 @@ static int carma_bcast_hosts(const uint8_t *b, int len)
 {
     return len >= 12 && !memcmp(b + 4, "CW95MSG2", 8);
 }
+/* what dethrace's game list sends before anyone joins: the search and its answer, and one-content game messages
+ * (magic 0x763a5058 at 4, contents count at 0x18, first content's type at 0x1d) "send me your details" (0), the details
+ * (1), and the acknowledgement of a guaranteed message (4) */
+static int carma_pre_auth(const uint8_t *b, int len)
+{
+    uint32_t magic;
+    uint16_t n;
+    if (len >= 12 && !memcmp(b + 4, "CW95MSG", 7)) return 1;
+    if (len < 0x1e) return 0;
+    memcpy(&magic, b + 4, 4);
+    memcpy(&n, b + 0x18, 2);
+    return magic == 0x763a5058u && n == 1 && (b[0x1d] == 0 || b[0x1d] == 1 || b[0x1d] == 4);
+}
 static const okw_game okw_profiles[] = {
-    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0 },   /* Road Rash: CD, Steam/GOG */
+    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL },   /* Road Rash: CD, Steam/GOG */
     /* Need for Speed III (the 1998 CD's NFS3.EXE, Modern Patch, portable): TCP only (its IPX sockets pass through) */
     { "nfs3", "nfs3.exe", "Need for Speed III", OKW_TCP, HOST_LISTEN, nfs3_init, nfs3_hosting, nfs3_join_prefill,
-      nfs3_max_players, nfs3_player_name, NULL, NULL, 0, 0 },
+      nfs3_max_players, nfs3_player_name, NULL, NULL, 0, 0, NULL },
     /* Carmageddon through dethrace, UDP port 12286 [game: Carmageddon]: okplay's dethrace build loads wsock32.dll; an
      * unmodified dethrace loads okplay as dbghelp.dll (build_proxy.sh, OKW_PROXY) */
     { "carma", "dethrace.exe", "Carmageddon", OKW_UDP, HOST_BCAST, NULL, NULL, NULL, NULL, NULL, carma_bcast_hosts,
-      "XXXXCW95MSG1", 13, 12286 },
+      "XXXXCW95MSG1", 13, 12286, carma_pre_auth },
 };
 static const okw_game *game = &okw_profiles[0];
 
@@ -436,6 +453,7 @@ static void deliver(uint32_t from_ip, uint16_t sport, uint16_t dport, const void
 }
 
 static int send_to_peer(uint64_t peer, uint16_t sport, uint16_t dport, int flags, const void *buf, int len);
+static void leave_room(uint64_t host);
 
 static int is_authed(uint64_t peer)   /* okw_lock held */
 {
@@ -494,6 +512,7 @@ static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held *
             auth_state = 0;   /* the game's next join attempt asks again */
             SecureZeroMemory(join_hash, sizeof(join_hash));
             okp_log(1, "wsock: wrong password - the host did not let us in");
+            if (game->pre_auth) leave_room(from);   /* (the game's own list shows the room again) */
             if (!getenv("OKP_TEST_JOIN_PASSWORD") && !auth_in_list) {
                 if (game->kinds & OKW_TCP) {   /* a full-screen game: only run_box keeps a box in sight (ddshow.c) */
                     InterlockedExchange(&ui_wrongpw, 1);
@@ -1223,7 +1242,8 @@ static void okw_rx(void *c, uint64_t from, const void *data, int len)   /* okpla
     const uint8_t *d8 = (const uint8_t *)data;
     if (d8[0] == 'W' && d8[1] == 'S' && len >= 4 && d8[2] == 1) {   /* sequenced (0.1.3+) */
         EnterCriticalSection(&okw_lock);
-        if (ctx && c == ctx && !(ctx->is_host && host_has_pw && !is_authed(from))) {
+        int gated = ctx && c == ctx && ctx->is_host && host_has_pw && !is_authed(from);   /* (no password yet) */
+        if (ctx && c == ctx && (!gated || game->pre_auth)) {
             okw_link *L = link_of(from, 1);
             int n = d8[3], off = 4;
             if (L) L->caps = 1;
@@ -1233,7 +1253,8 @@ static void okw_rx(void *c, uint64_t from, const void *data, int len)   /* okpla
                 memcpy(&e, d8 + off, sizeof(e));
                 off += sizeof(e);
                 if (off + e.len > len) break;
-                if (seq_accept(L, e.seq, i < n - 1)) game_in(from, e.sport, e.dport, d8 + off, e.len);
+                if (seq_accept(L, e.seq, i < n - 1) && (!gated || game->pre_auth(d8 + off, e.len)))
+                    game_in(from, e.sport, e.dport, d8 + off, e.len);
                 off += e.len;
             }
             release_due();
@@ -1251,8 +1272,8 @@ static void okw_rx(void *c, uint64_t from, const void *data, int len)   /* okpla
     }
     if (h->flags & OKW_CTRL) {
         control(from, body, blen);
-    } else if (ctx && ctx->is_host && host_has_pw && !is_authed(from)) {
-        /* a password game: nothing from a joiner reaches the game before its password matched */
+    } else if (ctx && ctx->is_host && host_has_pw && !is_authed(from) && !(game->pre_auth && game->pre_auth(body, blen))) {
+        /* a password game: nothing from a joiner reaches the game before its password matched (but its list's questions) */
     } else {
         game_in(from, h->sport, h->dport, body, blen);
         release_due();
@@ -1264,7 +1285,7 @@ static int send_to_peer(uint64_t peer, uint16_t sport, uint16_t dport, int flags
 {
     uint8_t pkt[sizeof(okw_hdr) + 2048];
     if (len > 2048 || !ctx) return 0;
-    if (!(flags & OKW_CTRL) && peer == auth_host && auth_state != 2) {   /* a password room: wait for its yes */
+    if (!(flags & OKW_CTRL) && peer == auth_host && auth_state != 2 && !(game->pre_auth && game->pre_auth(buf, len))) {   /* a password room: wait for its yes */
         if ((auth_state == 1 || auth_state == 3) && nheld < 64 && len <= (int)sizeof(held[0].data)) {
             okw_held *e = &held[nheld++];
             e->peer = peer; e->sport = sport; e->dport = dport; e->flags = flags; e->len = len;
@@ -2688,6 +2709,7 @@ static void boxes_before_send(uint32_t ip, const char *b, int len)
         if (hosts && !host_pw_asked && !(ctx && ctx->host_peer)) ask_host_password();
         return;
     }
+    if (game->pre_auth && game->pre_auth((const uint8_t *)b, len)) return;   /* (the game's list, not a join) */
     uint64_t host = 0;
     uint32_t room = 0, flags = 0;
     EnterCriticalSection(&okw_lock);
