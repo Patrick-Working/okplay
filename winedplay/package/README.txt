@@ -34,6 +34,21 @@ Then start the game as usual -> Multiplayer. The connection list shows only:
 The first time you host, Windows may ask to let the game through the firewall:
 click Allow (LAN games need it; online games work either way).
 
+WHAT'S NEW IN 0.8.8
+-------------------
+- Need for Speed III: everything happens in the game's own menus
+  (wsock32.dll {{WSOCKVER}}). Connect Players lists Oldkid.net Online, Oldkid.net LAN and the
+  game's own Network (TCP). Join shows the open games in the game's own popup -
+  no address to type. Passwords, "That game is full." and the other notices are
+  the game's own popups too, so nothing pops out of the full-screen game. Works
+  with the Modern Patch, the portable 1.6.2 and the original 1998 release.
+- Games are listed as "NFS3: <PC> - <player>'s Game".
+- Leaving a race no longer stalls for 3 seconds.
+- Room server: a public usage page with totals and the latest games
+  (https://{{HOST}}/aoe2net/stats.php) - no names or addresses kept.
+- Nothing changed on the wire: players with 0.8.3 to 0.8.7 still play with
+  0.8.8.
+
 WHAT'S NEW IN 0.8.7
 -------------------
 - The mouse pointer is back on our boxes (wsock32.dll {{WSOCKVER}}). On
@@ -180,25 +195,27 @@ Known: the Modern Patch (1.6.1, and the portable 1.6.2 Beta) and the original
 1998 release (CD and OEM). They race each other: joining a host with the other
 one asks first, as the game is a different version - "Join anyway" works.
 
-Host: Game Setup > Connect Players > Network (TCP) > Host Game. A box asks:
+Game Setup > Connect Players lists three entries:
 
-    Online Play    internet games, listed on {{HOST}}
-    LAN Play       same-network games, no internet needed
-    Original       the game's own TCP/IP, as if this weren't here
+    Oldkid.net Online   internet games, listed on {{HOST}}
+    Oldkid.net LAN      same-network games, no internet needed
+    Network (TCP)       the game's own TCP/IP, as if this weren't here
 
-Then a box offers an optional password (asked at every hosting; empty = anyone
-can join). The game is listed as "Need for Speed III - <your name>'s game".
-Peer-to-Peer takes 2 players, Client-Server up to 8.
+Host: pick Oldkid.net Online (or LAN) > Host Game. In the lobby the game asks
+for an optional password (empty = anyone can join). The game is listed as
+"NFS3: <PC> - <your name>'s Game". Peer-to-Peer takes 2 players, Client-Server
+up to 8.
 
-Join: Game Setup > Connect Players > Network (TCP) > Join Game, and the same
-box. The Join box shows "oldkid.net": just press Ok (if it's empty - the 1998
-OEM release - type oldkid.net). A list of the open games shows the players,
-for example "(1/2 players)", and refreshes by itself; pick one and Join. A
-locked game asks for its password. A full game says "full" and can be joined
-once a place is free. A race that has already started can't be joined.
+Join: pick Oldkid.net Online (or LAN) > Join Game. The open games are listed
+in the game's own popup with their players; pick one. A locked game asks for
+its password; a game with another version of NFS3 asks first ("Join anyway"
+works). A full game says "full". A race that has already started can't be
+joined.
 
-With Original the game uses its own TCP/IP exactly as in 1998 (type the host's
-address; no list, no passwords). Logs: logs\ next to nfs3.exe.
+With Network (TCP) the game uses its own TCP/IP exactly as in 1998 (type the
+host's address; no list, no passwords). An unusual build of the game gets
+small boxes instead of the in-game menus; okplay.ini nfs3_menu=0 does that
+too. Logs: logs\ next to nfs3.exe.
 
 GAME PASSWORDS
 --------------

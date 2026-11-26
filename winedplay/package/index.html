@@ -41,7 +41,7 @@
   <section class="card download">
     <div>
       <h2 style="margin-bottom:4px">Download</h2>
-      <div class="meta">Version {{VERSION}} &middot; {{ZIPSIZE}} &middot; {{DATE}} &middot; Windows 98 to 11 &middot; new in 0.8.7: mouse pointer and box size fixed on Windows 10 and 11</div>
+      <div class="meta">Version {{VERSION}} &middot; {{ZIPSIZE}} &middot; {{DATE}} &middot; Windows 98 to 11 &middot; new in 0.8.8: Need for Speed III plays entirely in the game's own menus</div>
     </div>
     <a class="btn" href="{{ZIP}}" download>Download {{ZIP}}</a>
   </section>
@@ -56,6 +56,7 @@
     </div>
     <div id="empty" class="empty" hidden>No open games right now &mdash; host one and it appears here within seconds.</div>
     <div id="status" class="status">Loading&hellip;</div>
+    <p class="meta" style="margin-top:8px"><a href="stats.php">Usage statistics</a> &mdash; games hosted, time played and the latest games (no names or addresses kept).</p>
   </section>
 
   <section class="card">
@@ -69,8 +70,8 @@
        <span class="k">RoadRash95.exe</span> or <span class="k">ROADRASH.EXE</span>, then Mano-&agrave;-Mano &rarr; TCP/IP; a box offers
        Online Play or LAN Play. In other games <span class="k">wsock32.dll</span> does nothing, so copying everything is fine.</p>
     <p><b>Need for Speed III: Hot Pursuit</b>: the same files next to <span class="k">nfs3.exe</span>, then Game Setup &rarr;
-       Connect Players &rarr; Network (TCP) &rarr; Host Game or Join Game; a box offers Online Play or LAN Play. To join, press Ok
-       on &ldquo;oldkid.net&rdquo; in the Join box and pick a game from the list.</p>
+       Connect Players &rarr; <b>{{ONLINE}}</b> or <b>{{LAN}}</b> (new entries in the game's own menu) &rarr; Host Game or Join Game.
+       Join shows the open games in the game's own popup: pick one, no address to type.</p>
     <p>No installer, no administrator rights, no registry changes. To remove it, delete the files you copied.
        Works on Windows 98 through Windows 11 (Windows 95 should work too).</p>
   </section>
@@ -123,7 +124,8 @@
     <ul>
       <li><b>Road Rash Online (Steam/GoG/CD-Rom)</b> &mdash; the Steam edition and the original 1996 CD release play each other, Windows 98 to
           Windows 11, with passwords. Locked games show &ldquo;(pw)&rdquo; in the game's own list. New in 0.8.5: smoother racing online (the race clocks are matched, wrong guesses glide instead of jumping, no more flying bikes).</li>
-      <li><b>Need for Speed III: Hot Pursuit</b> &mdash; new in 0.8.6: the Modern Patch and the original 1998 release race each other,
+      <li><b>Need for Speed III: Hot Pursuit</b> &mdash; new in 0.8.8: everything in the game's own menus (the game list, passwords,
+          notices), with the Modern Patch, the portable 1.6.2 and the original 1998 release. Since 0.8.6: the Modern Patch and the original 1998 release race each other,
           with a list of games, passwords, Peer-to-Peer for 2 players and Client-Server for up to 8. A full game says &ldquo;full&rdquo; in the list.</li>
     </ul>
   </section>

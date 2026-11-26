@@ -2,7 +2,7 @@
 /*
  * Oldkid.net Online Play - rendezvous for the okplay DirectPlay provider.
  * ----------------------------------------------------------------------
- * Script version: 2026-11-25 (change this line with every upload).
+ * Script version: 2026-11-25b (change this line with every upload).
  * Single file, flat-JSON store, no database. Deploy next to the old lobby:
  *     https://oldkid.net/aoe2net/okplay.php   (PHP must be able to write here)
  *
@@ -128,12 +128,12 @@ const KNOWN_APPS = [
 
 // The newest drop-in: older ones show "A newer version is available" (once, never blocking).
 // Change these when you release. The note is shown as plain text under the version (keep it short).
-const LATEST_VERSION = '0.8.7';
-const LATEST_NOTE    = 'Fixes the missing mouse pointer and the oversized boxes on Windows 10 and 11 (Need for Speed III, Road Rash). Nothing else changed: it plays with 0.8.3 to 0.8.6.';
+const LATEST_VERSION = '0.8.8';
+const LATEST_NOTE    = 'Need for Speed III plays entirely in the game\'s own menus: a game list instead of an address, passwords and notices in game popups. Plays with 0.8.3 to 0.8.7.';
 
 // The newest okplay wsock (the Winsock edition, okplay/wsock/): the same notice there.
-const LATEST_WSOCK_VERSION = '0.2.2';
-const LATEST_WSOCK_NOTE    = 'Fixes the missing mouse pointer and the oversized boxes on Windows 10 and 11 (Need for Speed III, Road Rash).';
+const LATEST_WSOCK_VERSION = '0.3.15';
+const LATEST_WSOCK_NOTE    = 'Need for Speed III in the game\'s own menus: a game list instead of an address, passwords and notices in game popups.';
 
 function latest_line() {
     return 'latest ' . LATEST_VERSION . ' ' . (LATEST_NOTE === '' ? '-' : rawurlencode(LATEST_NOTE)) . "\n"

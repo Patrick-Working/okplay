@@ -4,10 +4,14 @@
 
 | inside | version | for |
 |---|---|---|
-| **DirectPlay drop-in** (`dplayx.dll`, `dplay.dll`) | 0.8.7 | DirectPlay games (AoE2, Midtown Madness 2, Necrodome, ...) |
-| **Winsock shim** (`wsock32.dll`) | 0.2.2 | games that use Winsock directly: Road Rash, Need for Speed III. Inert in every other game |
+| **DirectPlay drop-in** (`dplayx.dll`, `dplay.dll`) | 0.8.8 | DirectPlay games (AoE2, Midtown Madness 2, Necrodome, ...) |
+| **Winsock shim** (`wsock32.dll`) | 0.3.15 | games that use Winsock directly: Road Rash, Need for Speed III. Inert in every other game |
 
-**What's new in v0.8.7:** [release notes](docs/RELEASE_0.8.7.md) - the mouse pointer shows on okplay's boxes again (Windows 10/11, Need for Speed III),
+**What's new in v0.8.8:** [release notes](docs/RELEASE_0.8.8.md) - Need for Speed III plays entirely in the game's own
+menus (game list, passwords, notices), from the Modern Patch to the original 1998 release; public
+[usage statistics](https://oldkid.net/aoe2net/stats.php).
+
+**In v0.8.7:** [release notes](docs/RELEASE_0.8.7.md) - the mouse pointer shows on okplay's boxes again (Windows 10/11, Need for Speed III),
 boxes keep a sensible size on low-resolution game screens.
 
 **In v0.8.6:** [release notes](docs/RELEASE_0.8.6.md) - Need for Speed III: Hot Pursuit, TCP games over okplay,
@@ -34,11 +38,11 @@ Released builds: <https://oldkid.net>.
 
 Working here: start with `docs/WORKING_NOTES.md` (rules, recipes, where things stand).
 
-## In progress: Need for Speed III in the game's own menus
+## Need for Speed III in the game's own menus (v0.8.8)
 
 <img src="docs/images/nfs3-okplay-menu.png" alt="Need for Speed III's Connect Players screen with Oldkid.net Online, Oldkid.net LAN and the game's own Network (TCP), and the game's Host Game / Join Game popup titled Oldkid.net Online" width="320" align="right">
 
-Test builds (`wsock32.dll` 0.3.x, November 2026; not in the v0.8.7 download yet). Every okplay question for Need
+Since v0.8.8 (`wsock32.dll` 0.3.15). Every okplay question for Need
 for Speed III moves into the game's own menus, drawn by the game in its own style - no Windows boxes over the
 full-screen game:
 

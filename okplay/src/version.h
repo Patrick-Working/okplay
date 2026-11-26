@@ -3,7 +3,7 @@
 /* the drop-in edition: okplay built into Wine's dplayx.dll (winedplay/), no install */
 #define OKP_VERSION_MAJOR 0
 #define OKP_VERSION_MINOR 8
-#define OKP_VERSION_PATCH 15
+#define OKP_VERSION_PATCH 8
 #define OKP_VERSION_STR "0.8.8"
 #define OKP_EDITION "drop-in"
 #elif defined(OKP_WSOCK)
