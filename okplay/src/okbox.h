@@ -47,6 +47,7 @@ BOOL okbox_test_answers( void );   /* FALSE when OKP_PREVIEW_BOXES=1: show boxes
  * OKP_TEST_CLASSIC_ASK (windows|online|lan) */
 BOOL okbox_ask_host_password( const GUID *instance, WCHAR *hashed, DWORD size );   /* TRUE = a password */
 int okbox_ask_join_password( const GUID *instance, WCHAR *hashed, DWORD size );    /* 1 = typed, 0 = cancelled */
+int okbox_ask_join_password_text( const GUID *instance, WCHAR *hashed, DWORD size, const WCHAR *text );   /* NULL = usual text */
 void okbox_wrong_password( void );
 int okbox_ask_mode( const char *what );   /* 1 = the game's original connection, 2 = Online Play, 3 = LAN Play */
 /* notices and questions (the core's okp_ui_* hooks call these - builtin.c in the drop-in, wsock.c in

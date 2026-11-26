@@ -190,6 +190,8 @@ static volatile LONG auth_in_list;      /* the room list is waiting for the host
 typedef struct { uint64_t peer; uint16_t sport, dport; int flags, len; uint8_t data[300]; } okw_held;
 static okw_held held[64];               /* joiner: game packets waiting for the host's yes */
 static int nheld;
+static uint16_t auth_sport;   /* the game's port its held packets came from (its join) */
+static DWORD auth_since;      /* when the game's join started asking (pre_auth games: it waits 30 s) */
 static HMODULE g_self;
 static okw_link links[OKP_MAX_PEERS];
 static int redundancy;             /* send the previous packet along (Online Play by default) */
@@ -269,6 +271,10 @@ typedef struct {
      * before the password (both ways; the joiner is asked when it sends anything else - its join), and a joiner the
      * host turned away goes back to the list. NULL = everything waits for the password (Road Rash, NFS3) */
     int (*pre_auth)(const uint8_t *b, int len);
+    /* [universal] the game's own "you can't join" from a host, built for the game (out, max -> length; 0 = none): a
+     * joiner that cancels the password box gets it at once instead of waiting out its join (from probe_port).
+     * pre_auth games also get the wrong password as the same box again, while the game keeps waiting. NULL = none */
+    int (*join_refusal)(uint8_t *out, int max);
 } okw_game;
 #define OKW_PROBE_IP 0x014B4F7Fu   /* 127.79.75.1 (network order): never a player's address */
 
@@ -281,6 +287,23 @@ static int carma_bcast_hosts(const uint8_t *b, int len)
 /* what dethrace's game list sends before anyone joins: the search and its answer, and one-content game messages
  * (magic 0x763a5058 at 4, contents count at 0x18, first content's type at 0x1d) "send me your details" (0), the details
  * (1), and the acknowledgement of a guaranteed message (4) */
+static int carma_join_refusal(uint8_t *out, int max)
+{
+    /* dethrace's NEWPLAYERLIST with 0 players = "join refused" (network.c ReceivedNewPlayerList): the message header
+     * (pd 0, magic 0x763a5058, guarantee 0, sender 0, version 1, time 0, 1 content, size) + the content (size, type 3,
+     * number_of_players 0, this_index 0, batch 0); no checksum in dethrace's builds */
+    uint32_t magic = 0x763a5058u, version = 1;
+    uint16_t one = 1, size = 0x2c;
+    if (max < 0x2c) return 0;
+    memset(out, 0, 0x2c);
+    memcpy(out + 4, &magic, 4);
+    memcpy(out + 0x10, &version, 4);
+    memcpy(out + 0x18, &one, 2);
+    memcpy(out + 0x1a, &size, 2);
+    out[0x1c] = 16;
+    out[0x1d] = 3;
+    return 0x2c;
+}
 static int carma_pre_auth(const uint8_t *b, int len)
 {
     uint32_t magic;
@@ -292,14 +315,14 @@ static int carma_pre_auth(const uint8_t *b, int len)
     return magic == 0x763a5058u && n == 1 && (b[0x1d] == 0 || b[0x1d] == 1 || b[0x1d] == 4);
 }
 static const okw_game okw_profiles[] = {
-    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL },   /* Road Rash: CD, Steam/GOG */
+    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0, NULL, NULL },   /* Road Rash: CD, Steam/GOG */
     /* Need for Speed III (the 1998 CD's NFS3.EXE, Modern Patch, portable): TCP only (its IPX sockets pass through) */
     { "nfs3", "nfs3.exe", "Need for Speed III", OKW_TCP, HOST_LISTEN, nfs3_init, nfs3_hosting, nfs3_join_prefill,
-      nfs3_max_players, nfs3_player_name, NULL, NULL, 0, 0, NULL },
+      nfs3_max_players, nfs3_player_name, NULL, NULL, 0, 0, NULL, NULL },
     /* Carmageddon through dethrace, UDP port 12286 [game: Carmageddon]: okplay's dethrace build loads wsock32.dll; an
      * unmodified dethrace loads okplay as dbghelp.dll (build_proxy.sh, OKW_PROXY) */
     { "carma", "dethrace.exe", "Carmageddon", OKW_UDP, HOST_BCAST, NULL, NULL, NULL, NULL, NULL, carma_bcast_hosts,
-      "XXXXCW95MSG1", 13, 12286, carma_pre_auth },
+      "XXXXCW95MSG1", 13, 12286, carma_pre_auth, carma_join_refusal },
 };
 static const okw_game *game = &okw_profiles[0];
 
@@ -454,6 +477,7 @@ static void deliver(uint32_t from_ip, uint16_t sport, uint16_t dport, const void
 
 static int send_to_peer(uint64_t peer, uint16_t sport, uint16_t dport, int flags, const void *buf, int len);
 static void leave_room(uint64_t host);
+static DWORD WINAPI join_box_thread(LPVOID arg);
 
 static int is_authed(uint64_t peer)   /* okw_lock held */
 {
@@ -505,6 +529,10 @@ static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held *
     } else if ((b[0] == 'Y' || b[0] == 'N') && from == auth_host && auth_state == 1) {
         if (b[0] == 'Y') {
             auth_state = 2;
+            if (game->join_refusal && nheld && okp_now() - auth_since > 29000) {   /* the game gave up its join meanwhile */
+                okp_log(1, "wsock: the host let us in - the game had stopped waiting, its join is not sent (joining again won't ask)");
+                nheld = 0;
+            }
             okp_log(1, "wsock: the host let us in - %d held packet(s) go now", nheld);
             for (int i = 0; i < nheld; i++)
                 send_to_peer(held[i].peer, held[i].sport, held[i].dport, held[i].flags, held[i].data, held[i].len);
@@ -512,8 +540,11 @@ static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held *
             auth_state = 0;   /* the game's next join attempt asks again */
             SecureZeroMemory(join_hash, sizeof(join_hash));
             okp_log(1, "wsock: wrong password - the host did not let us in");
-            if (game->pre_auth) leave_room(from);   /* (the game's own list shows the room again) */
-            if (!getenv("OKP_TEST_JOIN_PASSWORD") && !auth_in_list) {
+            if (game->pre_auth && !auth_in_list) {   /* the game still waits for its join: the box again, "try again" */
+                auth_state = 3;
+                HANDLE t = CreateThread(NULL, 0, join_box_thread, (LPVOID)1, 0, NULL);
+                if (t) CloseHandle(t);
+            } else if (!getenv("OKP_TEST_JOIN_PASSWORD") && !auth_in_list) {
                 if (game->kinds & OKW_TCP) {   /* a full-screen game: only run_box keeps a box in sight (ddshow.c) */
                     InterlockedExchange(&ui_wrongpw, 1);
                     InterlockedExchange(&ui_pending, 1);
@@ -523,7 +554,8 @@ static void control(uint64_t from, const uint8_t *b, int n)   /* okw_lock held *
                 }
             }
         }
-        nheld = 0;
+        /* (a "try again" keeps what the game sent: dethrace sends its join once - its repeats are empty buffers) */
+        if (!(b[0] == 'N' && auth_state == 3 && game->pre_auth)) nheld = 0;
     }
 }
 
@@ -1287,6 +1319,8 @@ static int send_to_peer(uint64_t peer, uint16_t sport, uint16_t dport, int flags
     if (len > 2048 || !ctx) return 0;
     if (!(flags & OKW_CTRL) && peer == auth_host && auth_state != 2 && !(game->pre_auth && game->pre_auth(buf, len))) {   /* a password room: wait for its yes */
         if ((auth_state == 1 || auth_state == 3) && nheld < 64 && len <= (int)sizeof(held[0].data)) {
+            auth_sport = sport;   /* (the game's port: where its "you can't join" goes) */
+            if (!nheld) okp_log(2, "wsock: the game's packets to the password room wait for the host's yes");
             okw_held *e = &held[nheld++];
             e->peer = peer; e->sport = sport; e->dport = dport; e->flags = flags; e->len = len;
             memcpy(e->data, buf, len);
@@ -2082,6 +2116,9 @@ static void wait_for_box(void)
     /* never the thread of the game window: a window that stops reading its messages holds up the box itself
      * (Need for Speed III: seconds before the room list could be used) */
     if (dds_on_game_window_thread()) return;
+    /* [universal] a game whose list works before the password (pre_auth: dethrace, whose network runs on its window's
+     * thread) keeps running under the join box - its window keeps drawing, its join packets wait in okplay */
+    if (game->pre_auth) return;
     if (box_open && GetCurrentThreadId() != box_tid && box_done) WaitForSingleObject(box_done, INFINITE);
 }
 
@@ -2664,15 +2701,25 @@ static DWORD WINAPI join_box_thread(LPVOID arg)
 {
     WCHAR w[64];
     GUID g = room_guid(auth_room);
-    (void)arg;
+    int again = arg != NULL;   /* the host said no to the last password: the same box, "try again" */
     /* [universal] through the same gate as every other box (this thread is our own: it can wait on any Windows) */
     while (box_claim(GetCurrentThreadId()) != BOX_MINE) { if (box_done) WaitForSingleObject(box_done, 250); else Sleep(50); }
-    int ok = okbox_ask_join_password(&g, w, 64);
+    int ok = okbox_ask_join_password_text(&g, w, 64, again ? L"Wrong password - try again.\nThis game's password:" : NULL);
     EnterCriticalSection(&okw_lock);
     if (ok) {
         wide_to_ascii(w, join_hash, sizeof(join_hash));
         auth_state = 1;
         auth_tick = 0;   /* sent at the next call from the game (okw_tick) */
+    } else if (game->join_refusal) {
+        /* cancelled: the game hears the host's own "you can't join" and goes back to its list at once */
+        uint8_t m[128];
+        int n = game->join_refusal(m, (int)sizeof(m));
+        uint64_t host = auth_host;
+        if (n > 0 && auth_sport) deliver(standin_of(host), game->probe_port, auth_sport, m, n);
+        okp_log(1, "wsock: password cancelled - the game is told it can't join");
+        auth_state = 0;   /* (a later join asks again) */
+        nheld = 0;
+        leave_room(host);
     } else {
         auth_state = -1;   /* cancelled: the game's join to this room just goes nowhere */
         nheld = 0;
@@ -2691,6 +2738,7 @@ static void ask_join_password(uint64_t host, uint32_t room)
         auth_host = host;
         auth_room = room;
         auth_state = 3;
+        auth_since = okp_now();
         nheld = 0;
     }
     LeaveCriticalSection(&okw_lock);

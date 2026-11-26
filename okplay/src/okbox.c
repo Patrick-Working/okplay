@@ -851,6 +851,12 @@ BOOL okbox_ask_host_password( const GUID *instance, WCHAR *hashed, DWORD size )
 
 int okbox_ask_join_password( const GUID *instance, WCHAR *hashed, DWORD size )
 {
+    return okbox_ask_join_password_text( instance, hashed, size, NULL );
+}
+
+/* the same box with another text (NULL = the usual one); okplay wsock: "Wrong password - try again" */
+int okbox_ask_join_password_text( const GUID *instance, WCHAR *hashed, DWORD size, const WCHAR *text )
+{
     struct pw_dialog d;
     WCHAR title[ 96 ];
     const char *test = okbox_test_answers() ? getenv( "OKP_TEST_JOIN_PASSWORD" ) : NULL;
@@ -874,7 +880,7 @@ int okbox_ask_join_password( const GUID *instance, WCHAR *hashed, DWORD size )
     {
         okbox_brand( title, ARRAY_SIZE( title ) );
         d.title = title;
-        d.text = L"This game has a password.\nType it to join:";
+        d.text = text ? text : L"This game has a password.\nType it to join:";
         d.edit = TRUE;
         d.ok = L"Join";
         d.cancel = L"Cancel";
