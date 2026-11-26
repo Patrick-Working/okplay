@@ -66,6 +66,10 @@
  * no address is stored and one day's hashes can't be matched with another's. Reports go to
  * okplay_reports/<date>.php with the same daily hash (to see that one PC sent several), never the
  * address, and are deleted after REPORT_DAYS. Both are PHP files that answer 404 like the room store.
+ * Each game that ends (its host closes the room, or stops announcing it) adds one line to okplay_sessions/<month>.php:
+ * the hour it started (UTC), the game, the okplay version, how long the room was open and how long it was racing
+ * (minutes), the most players it had, and how many players asked to join. No room name, player name, address or
+ * id. Daily totals and these lines are kept forever. stats.php shows them publicly.
  */
 
 const APP_KEY   = 'okp_7Qm2xV9rLs4Hd8Wn';   // must match okplay.ini / the DLL default
@@ -107,9 +111,11 @@ const RELAY_MAX_WAIT  = 2000;     // ms an rpoll may wait for messages
 const RELAY_IDLE      = 300;      // s: a room's relay file is removed this long after its last use
 const STATS       = __DIR__ . '/okplay_stats.php';
 const REPORTS_DIR = __DIR__ . '/okplay_reports';
-const STATS_DAYS  = 400;     // daily totals kept
+const STATS_DAYS  = 0;       // daily totals kept (0: forever)
 const REPORT_DAYS = 90;      // reports kept
 const UNIQUE_CAP  = 5000;    // per day and kind; past it the count shows as "5000+"
+const SESSIONS_CAP = 3000;   // games recorded per day (more are only counted)
+const SESSIONS_DIR = __DIR__ . '/okplay_sessions';   // <YYYY-MM>.php, one line per ended game, kept forever
 const MAX_REPORTS_PER_DAY = 40;   // per address (by its daily hash)
 const REPORT_MAX  = ['crash' => 16384, 'conn' => 8192, 'check' => 16384];
 // Connection Check (netcheck.exe) test games: {0E7C4B61-93A2-4F0B-8D35-6A1F2C9B7E58}
@@ -122,7 +128,7 @@ const KNOWN_APPS = [
 
 // The newest drop-in: older ones show "A newer version is available" (once, never blocking).
 // Change these when you release. The note is shown as plain text under the version (keep it short).
-const LATEST_VERSION = '0.8.3';
+const LATEST_VERSION = '0.8.7';
 const LATEST_NOTE    = 'Fixes the missing mouse pointer and the oversized boxes on Windows 10 and 11 (Need for Speed III, Road Rash). Nothing else changed: it plays with 0.8.3 to 0.8.6.';
 
 // The newest okplay wsock (the Winsock edition, okplay/wsock/): the same notice there.
@@ -234,7 +240,7 @@ function stats_update($fn) {
         $s['rpt']  = [];
         $days = $s['days'] ?? [];
         ksort($days);
-        while (count($days) > STATS_DAYS) array_shift($days);
+        while (STATS_DAYS && count($days) > STATS_DAYS) array_shift($days);
         $s['days'] = $days;
         $dirty = true;
         reports_prune();
@@ -249,6 +255,30 @@ function stats_update($fn) {
     if ($dirty) guarded_write($fh, $s);
     flock($fh, LOCK_UN);
     fclose($fh);
+}
+
+// one ended game, appended to this month's file (kept forever; read by stats.php). A PHP file that answers 404.
+function session_log($rec) {
+    if (!is_dir(SESSIONS_DIR)) @mkdir(SESSIONS_DIR, 0755);
+    $f = SESSIONS_DIR . '/' . gmdate('Y-m') . '.php';
+    $fh = @fopen($f, 'a');
+    if (!$fh) return;
+    flock($fh, LOCK_EX);
+    clearstatcache(true, $f);
+    if (filesize($f) === 0) fwrite($fh, GUARD);
+    fwrite($fh, json_encode($rec, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE) . "\n");
+    flock($fh, LOCK_UN);
+    fclose($fh);
+}
+
+// a room that ended (closed, or no longer announced): its stats line - nothing that identifies anyone
+function session_event($r, $now) {
+    $game = ($r['game'] ?? '') !== '' ? $r['game'] : (KNOWN_APPS[$r['app'] ?? ''] ?? ($r['app'] ?? ''));
+    $start = (int)($r['created'] ?? $now);
+    $end   = min((int)($r['updated'] ?? $now), $now);
+    return ['end', ($r['app'] ?? '') === TEST_APP, $start, $game, (string)($r['ver'] ?? ''),
+            max(0, $end - $start), (int)($r['playsec'] ?? 0), max((int)($r['pmax'] ?? 0), (int)($r['players'] ?? 0)),
+            count($r['joiners'] ?? [])];
 }
 
 // count $who once today under $kind ('host', 'join', 'list'); true if it was new
@@ -477,12 +507,17 @@ foreach ($rate as $nk => $w) {
     if (!is_array($w) || $now - ($w['s'] ?? 0) >= KNOCK_WINDOW) unset($rate[$nk]);
 }
 
+$expired = false;
 foreach ($rooms as $id => $r) {
-    if ($now - ($r['updated'] ?? 0) > TTL) unset($rooms[$id]);
+    if ($now - ($r['updated'] ?? 0) > TTL) {
+        if (is_array($r) && isset($r['created'])) $events[] = session_event($r, $now);
+        unset($rooms[$id]);
+        $expired = true;   // (written back below, so it ends once: counted once)
+    }
 }
 $netk = net_key($ip);
 
-$dirty = false;
+$dirty = $expired;   // (an expired room's end is in the stats: the store must forget it now)
 $out   = '';
 $code  = 200;
 $json  = false;   // the browser signaling actions answer JSON
@@ -507,6 +542,8 @@ case 'announce':
     }
     $is_new = !isset($rooms[$room]);
     $r = $rooms[$room] ?? ['tok' => $tok, 'knocks' => [], 'created' => $now];
+    $was_playing = ($r['state'] ?? '') === 'playing';
+    $last_seen   = (int)($r['updated'] ?? $now);
     $r['peer']    = $peer;
     $r['cands']   = $cands;
     $r['enum']    = clean(field('enum', 2048), '/^[A-Za-z0-9+\/=]*\z/');
@@ -528,6 +565,8 @@ case 'announce':
     $exe = preg_replace('/[\x00-\x1f\x7f\s]/u', '', utf8_clean(field('exe', 128))) ?? '';
     $r['exe']     = utf8_cut($exe, 48, EXE_MAX_BYTES);
     if ($r['wire'] === 0 && strpos($r['ver'], '0.1') === 0) $r['wire'] = 1;   // 0.1 hosts predate the field
+    if ($was_playing) $r['playsec'] = (int)($r['playsec'] ?? 0) + max(0, min($now - $last_seen, TTL));   // (stats)
+    $r['pmax']    = max((int)($r['pmax'] ?? 0), $r['players']);
     $r['updated'] = $now;
     $r['ip']      = $ip;   // for MAX_ROOMS_PER_IP only; never sent to anyone
     $out = "ok $ip\n" . latest_line();
@@ -703,6 +742,7 @@ case 'poll':
 case 'close':
     $tok = field('tok', 32);
     if ($room !== '' && isset($rooms[$room]) && hash_equals($rooms[$room]['tok'], $tok)) {
+        $events[] = session_event($rooms[$room], $now);
         unset($rooms[$room]);
         $dirty = true;
     }
@@ -743,6 +783,14 @@ if ($events) stats_update(function (&$s, &$d, $who) use ($events, $now) {
         } elseif ($e[0] === 'join') {
             $d['joins']++;
             stats_seen($s, $d, $who, 'join');
+            $changed = true;
+        } elseif ($e[0] === 'end') {
+            if ($e[1]) continue;   // (Connection Check's test games)
+            $d['ended'] = ($d['ended'] ?? 0) + 1;
+            if ($d['ended'] <= SESSIONS_CAP)
+                session_log(['d' => gmdate('Y-m-d', $now), 'h' => (int)gmdate('G', $e[2]),
+                             'g' => function_exists('mb_substr') ? mb_substr($e[3], 0, 48, 'UTF-8') : substr($e[3], 0, 48),
+                             'v' => $e[4], 'm' => (int)round($e[5] / 60), 'r' => (int)round($e[6] / 60), 'p' => $e[7], 'j' => $e[8]]);
             $changed = true;
         } elseif ($e[0] === 'list') {
             if (stats_seen($s, $d, $who, 'list')) $changed = true;   // most lists change nothing

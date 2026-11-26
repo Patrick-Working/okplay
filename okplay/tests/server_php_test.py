@@ -1,4 +1,4 @@
-"""okplay.php + okstats.php end to end, on a local PHP (php -S): rooms, stats, reports, the stats page.
+"""okplay.php + okstats.php + stats.php end to end, on a local PHP (php -S): rooms, stats, reports, the stats pages.
 
   python okplay/tests/server_php_test.py <path to php.exe> [port]
 
@@ -44,7 +44,7 @@ def main():
     php = sys.argv[1]
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 8791
     web = tempfile.mkdtemp(prefix='okp_php_')
-    for f in ('okplay.php', 'okstats.php'):
+    for f in ('okplay.php', 'okstats.php', 'stats.php'):
         shutil.copy(os.path.join(SERVER, f), web)
     proc = subprocess.Popen([php, '-S', '127.0.0.1:%d' % port, '-t', web], stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL)
@@ -208,6 +208,42 @@ def main():
         check('No report with the id' in b, 'okstats: unknown reference')
         s, b = get(base, 'okstats.php?v=report&id=../../x:1', op)
         check('No such report' in b, 'okstats: bad report id refused')
+
+        # games that end: one line each in okplay_sessions/<month>.php (closed, or no longer announced)
+        g = dict(ann, room='0000aa01', peer='3' * 16, tok='d' * 16, name='Thiago private room', players=2, maxp=8,
+                 game='Need for Speed III', ver='0.3.15', state='lobby')
+        post(base, g)
+        post(base, dict(k=KEY, a='knock', room='0000aa01', peer='4' * 16, cands='5.6.7.8:6000'))
+        post(base, dict(g, players=3, state='playing'))
+        time.sleep(2)
+        post(base, dict(g, players=3, state='playing'))
+        s, b = post(base, dict(k=KEY, a='close', room='0000aa01', tok='d' * 16))
+        check(s == 200, 'close: ok')
+        post(base, dict(k=KEY, a='close', room='0000aa01', tok='d' * 16))   # twice: still one game
+        h = dict(ann, room='0000aa02', peer='5' * 16, tok='e' * 16, name='Evil <script>', game='<b>bad</b>', players=1)
+        post(base, h)
+        time.sleep(17)   # (TTL 15: the room expires on the next request)
+        post(base, dict(k=KEY, a='list', app=APP))
+        post(base, dict(k=KEY, a='list', app=APP))   # a second request: the expired room is not counted again
+        sd = os.path.join(web, 'okplay_sessions')
+        files = sorted(os.listdir(sd)) if os.path.isdir(sd) else []
+        check(len(files) == 1 and files[0].endswith('.php'), 'sessions: one month file')
+        lines = open(os.path.join(sd, files[0]), encoding='utf-8').read().splitlines() if files else []
+        recs = [l for l in lines[1:] if l.strip()]
+        check(lines and lines[0].startswith('<?php http_response_code(404)'), 'sessions: guarded file')
+        check(len([r for r in recs if 'Need for Speed III' in r]) == 1, 'sessions: the closed game once')
+        check(any('"p":3' in r and '"j":1' in r for r in recs), 'sessions: most players 3, one joiner')
+        check(any('bad' in r for r in recs) and len(recs) >= 2, 'sessions: the expired room counted (once)')
+        check(not any(x in ''.join(recs) for x in ('Thiago', '127.0.0.1', '3333333333333333', 'Evil')),
+              'sessions: no room names, addresses or ids')
+        s, b = get(base, 'okplay_sessions/' + (files[0] if files else 'x.php'))
+        check(s == 404, 'sessions file: 404 over the web')
+        s, b = get(base, 'stats.php')
+        check(s == 200 and 'Need for Speed III' in b and '<svg' in b, 'stats.php: public page with the game and charts')
+        check('Thiago' not in b and '<b>bad</b>' not in b and 'salt' not in b and 'ACCESS_VIOLATION' not in b
+              and '127.0.0.1' not in b, 'stats.php: nothing private, names escaped or hidden')
+        s2, b2 = get(base, 'okplay_stats_page.php')
+        check(s2 == 404, 'stats page cache: 404 over the web')
     finally:
         proc.terminate()
         proc.wait()
