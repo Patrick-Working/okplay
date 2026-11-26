@@ -583,6 +583,9 @@ static void dds_cursor(HWND w, int on)
 /* Where a thread is, for the log: its instruction pointer and what on its stack points into a loaded module
  * (mostly return addresses).  Read while it is held for a moment; named and logged after it runs again (it
  * may hold the locks that naming and logging need). */
+#ifdef _WIN64   /* (64-bit proxy build: the stall log reads 32-bit registers - not there) */
+static void dds_where(DWORD tid, const char *who, DWORD silent) { (void)tid; (void)who; (void)silent; }
+#else
 static void dds_where(DWORD tid, const char *who, DWORD silent)
 {
     DWORD a[400], out[14];
@@ -623,6 +626,7 @@ static void dds_where(DWORD tid, const char *who, DWORD silent)
     okp_log(1, "stall: %s (thread %lx)%s is at %s", who, (unsigned long)tid, silent ? " has not read its messages" : "", line);
     if (silent) okp_log(1, "stall: ... for %lu ms", (unsigned long)silent);
 }
+#endif
 
 /* While a box is open: does the thread of the game window still read its messages?  Asked four times a second;
  * when it has not answered for 700 ms that goes to the log (8 times a box at most) - with where it and the box's
@@ -725,7 +729,7 @@ static LRESULT CALLBACK dds_game_wndproc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     }
     if (m == WM_NCDESTROY) {   /* the window goes: its own procedure back, and forgotten here */
         RemovePropA(w, DD_PROP);
-        if ((WNDPROC)GetWindowLongA(w, GWL_WNDPROC) == dds_game_wndproc) SetWindowLongA(w, GWL_WNDPROC, (LONG)old);
+        if ((WNDPROC)GetWindowLongPtrA(w, GWLP_WNDPROC) == dds_game_wndproc) SetWindowLongPtrA(w, GWLP_WNDPROC, (LONG_PTR)old);
         dd_forget(w);
         if (w == dd_game_wnd) dd_game_wnd = NULL;
     }
@@ -750,7 +754,7 @@ static int dds_guard_begin(void)   /* 0: no game window found */
     EnumWindows(dds_game_win, (LPARAM)&w);
     if (!w) return 0;
     if (!GetPropA(w, DD_PROP)) {   /* not taken over yet */
-        WNDPROC cur = (WNDPROC)GetWindowLongA(w, GWL_WNDPROC);
+        WNDPROC cur = (WNDPROC)GetWindowLongPtrA(w, GWLP_WNDPROC);
         int room = 0;
         if (cur && cur != dds_game_wndproc) {
             EnterCriticalSection(&dd_lock);
@@ -760,12 +764,12 @@ static int dds_guard_begin(void)   /* 0: no game window found */
         }
         if (room) {
             SetPropA(w, DD_PROP, (HANDLE)cur);   /* the old procedure first, then ours in its place */
-            WNDPROC was = (WNDPROC)SetWindowLongA(w, GWL_WNDPROC, (LONG)dds_game_wndproc);
+            WNDPROC was = (WNDPROC)SetWindowLongPtrA(w, GWLP_WNDPROC, (LONG_PTR)dds_game_wndproc);
             if (was && was != cur && was != dds_game_wndproc) SetPropA(w, DD_PROP, (HANDLE)was);   /* (changed meanwhile) */
             okp_log(2, "ddshow: watching the game window %p (thread %lx; the box opens on thread %lx)", (void *)w,
                     (unsigned long)GetWindowThreadProcessId(w, NULL), (unsigned long)GetCurrentThreadId());
         }
-    } else if ((WNDPROC)GetWindowLongA(w, GWL_WNDPROC) != dds_game_wndproc) {
+    } else if ((WNDPROC)GetWindowLongPtrA(w, GWLP_WNDPROC) != dds_game_wndproc) {
         /* someone put a window procedure in front of ours since: ours still runs behind it, left as it is */
         okp_log(3, "ddshow: the game window's procedure changed since okplay took its place in front");
     }
@@ -788,8 +792,8 @@ void dds_detach(void)   /* this DLL is unloaded while the process goes on: every
         HWND w = dd_wnds[i];
         WNDPROC old = (WNDPROC)GetPropA(w, DD_PROP);
         if (!IsWindow(w) || !old) continue;
-        if ((WNDPROC)GetWindowLongA(w, GWL_WNDPROC) == dds_game_wndproc) {
-            SetWindowLongA(w, GWL_WNDPROC, (LONG)old);
+        if ((WNDPROC)GetWindowLongPtrA(w, GWLP_WNDPROC) == dds_game_wndproc) {
+            SetWindowLongPtrA(w, GWLP_WNDPROC, (LONG_PTR)old);
             RemovePropA(w, DD_PROP);
         }   /* (else another procedure sits in front of ours and calls it: nothing can be undone safely) */
     }

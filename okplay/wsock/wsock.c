@@ -259,20 +259,30 @@ typedef struct {
                                                * 1 = read, 0 = not known. NULL = the game has none we can read */
     int (*bcast_hosts)(const uint8_t *b, int len);   /* HOST_BCAST: does this broadcast mean "this PC hosts"? NULL = any
                                                * broadcast does (Road Rash); else 0 = a search (a joiner's), not a room */
+    /* [universal] a game that answers searches but never broadcasts on its own: every 3 s okplay hands the game's
+     * socket on probe_port this search, from OKW_PROBE_IP; a reply (bcast_hosts says it means hosting) = this PC
+     * hosts, as a broadcast would. NULL = none */
+    const char *probe;
+    int probe_len;
+    uint16_t probe_port;
 } okw_game;
+#define OKW_PROBE_IP 0x014B4F7Fu   /* 127.79.75.1 (network order): never a player's address */
 
-/* Carmageddon (dethrace, okplay build: a host broadcasts "XXXXCW95MSG2" every 3 s, a joiner "XXXXCW95MSG1") */
+/* Carmageddon (dethrace): a joiner broadcasts the search "XXXXCW95MSG1", a host answers "XXXXCW95MSG2". Upstream
+ * dethrace answers only; okplay's own dethrace build also broadcasts the answer every 3 s. The probe finds both. */
 static int carma_bcast_hosts(const uint8_t *b, int len)
 {
     return len >= 12 && !memcmp(b + 4, "CW95MSG2", 8);
 }
 static const okw_game okw_profiles[] = {
-    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL, NULL, NULL, NULL },   /* Road Rash: CD, Steam/GOG */
+    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL, NULL, NULL, NULL, NULL, 0, 0 },   /* Road Rash: CD, Steam/GOG */
     /* Need for Speed III (the 1998 CD's NFS3.EXE, Modern Patch, portable): TCP only (its IPX sockets pass through) */
     { "nfs3", "nfs3.exe", "Need for Speed III", OKW_TCP, HOST_LISTEN, nfs3_init, nfs3_hosting, nfs3_join_prefill,
-      nfs3_max_players, nfs3_player_name, NULL },
-    /* Carmageddon through dethrace (32-bit okplay build linking wsock32): UDP port 12286 [game: Carmageddon] */
-    { "carma", "dethrace.exe", "Carmageddon", OKW_UDP, HOST_BCAST, NULL, NULL, NULL, NULL, NULL, carma_bcast_hosts },
+      nfs3_max_players, nfs3_player_name, NULL, NULL, 0, 0 },
+    /* Carmageddon through dethrace, UDP port 12286 [game: Carmageddon]: okplay's dethrace build loads wsock32.dll; an
+     * unmodified dethrace loads okplay as dbghelp.dll (build_proxy.sh, OKW_PROXY) */
+    { "carma", "dethrace.exe", "Carmageddon", OKW_UDP, HOST_BCAST, NULL, NULL, NULL, NULL, NULL, carma_bcast_hosts,
+      "XXXXCW95MSG1", 13, 12286 },
 };
 static const okw_game *game = &okw_profiles[0];
 
@@ -1833,9 +1843,25 @@ static int tcp_unhost_for_connect(void)
 
 /* every call from the game: while it isn't hosting or in a room and has a socket waiting for broadcasts
  * (a server browser), list the rooms and feed their broadcasts to that socket */
+static void probe_tick(void)   /* okw_lock held: a game that only answers searches is asked whether it hosts */
+{
+    static DWORD last;
+    DWORD now = okp_now();
+    if (!game->probe || mode_choice < 2 || now - last < 3000) return;
+    for (int i = 0; i < OKW_MAX_SOCKS; i++) {
+        okw_sock *k = &socks[i];
+        if (!k->used || k->kind != K_UDP || k->port != game->probe_port || k->peer_ip) continue;
+        last = now;
+        if (k->qn > 16) return;   /* the game isn't reading (loading): no pile-up */
+        queue_pkt(k, OKW_PROBE_IP, game->probe_port, game->probe, game->probe_len);
+        return;
+    }
+}
+
 static void okw_tick(void)   /* okw_lock held */
 {
     if (!started && mode_choice >= 2) start_okplay();   /* (re)started in the mode the player picked */
+    probe_tick();
     tcp_tick();
     room_record_follow();
     link_reports();
@@ -2657,7 +2683,7 @@ static void ask_join_password(uint64_t host, uint32_t room)
 static void boxes_before_send(uint32_t ip, const char *b, int len)
 {
     if (mode_choice < 2) return;
-    if (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF) {
+    if (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF || (ip == OKW_PROBE_IP && game->probe)) {
         int hosts = !game->bcast_hosts || game->bcast_hosts((const uint8_t *)b, len);   /* (a joiner's search is no hosting) */
         if (hosts && !host_pw_asked && !(ctx && ctx->host_peer)) ask_host_password();
         return;
@@ -2909,7 +2935,7 @@ static LRESULT CALLBACK list_proc(HWND w, UINT m, WPARAM wp, LPARAM lp)
     }
     if (m == WM_NCDESTROY) {
         RemovePropA(w, LIST_PROP);
-        if (old) SetWindowLongA(w, GWL_WNDPROC, (LONG)(LONG_PTR)old);
+        if (old) SetWindowLongPtrA(w, GWLP_WNDPROC, (LONG_PTR)old);
     }
     return old ? CallWindowProcA(old, w, m, wp, lp) : DefWindowProcA(w, m, wp, lp);
 }
@@ -2921,7 +2947,7 @@ static LRESULT CALLBACK cbt_proc(int code, WPARAM wp, LPARAM lp)
         char cls[16];
         if (GetClassNameA(w, cls, sizeof(cls)) && !strcmp(cls, "#32770") && !GetPropA(w, LIST_PROP) &&
             FindWindowExA(w, NULL, "SysListView32", NULL)) {   /* (our own boxes have no list) */
-            LONG old = SetWindowLongA(w, GWL_WNDPROC, (LONG)(LONG_PTR)list_proc);
+            LONG_PTR old = SetWindowLongPtrA(w, GWLP_WNDPROC, (LONG_PTR)list_proc);
             SetPropA(w, LIST_PROP, (HANDLE)(LONG_PTR)old);
             okp_log(1, "wsock: watching the game's room list (its OK button and double click)");
         }
@@ -3272,11 +3298,11 @@ static int lb_waited(okw_listbox *L)   /* LB_PATH / LB_AUTH: what we wait for is
 
 static INT_PTR CALLBACK lb_proc(HWND dlg, UINT m, WPARAM wp, LPARAM lp)
 {
-    okw_listbox *L = (okw_listbox *)GetWindowLongA(dlg, DWL_USER);
+    okw_listbox *L = (okw_listbox *)GetWindowLongPtrA(dlg, DWLP_USER);
     switch (m) {
     case WM_INITDIALOG:
         L = (okw_listbox *)lp;
-        SetWindowLongA(dlg, DWL_USER, (LONG)(LONG_PTR)L);
+        SetWindowLongPtrA(dlg, DWLP_USER, (LONG_PTR)L);
         L->t0 = GetTickCount();
         if (L->mode != LB_LIST) {
             char t[160];
@@ -4347,7 +4373,8 @@ static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int l
     if (!ctx && !started && mode_choice >= 2) start_okplay();
     if (!ctx) return len;
     if (!k->port) k->port = next_eph++;
-    if (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF) {   /* broadcast: we host; everyone in the room gets it */
+    int probe_reply = ip == OKW_PROBE_IP && game->probe;   /* the game answered okplay's search: it hosts */
+    if (probe_reply || ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF) {   /* broadcast: we host; everyone in the room gets it */
         if (box_open && !ctx->is_host) return len;   /* the password box is still open (9x): no room yet */
         if (port != 6996 && (!game->bcast_hosts || game->bcast_hosts((const uint8_t *)b, len))) {
             memcpy(advert, b, len < (int)sizeof(advert) ? len : (int)sizeof(advert));
@@ -4357,6 +4384,7 @@ static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int l
             host_room();
             build_room_record();
         }
+        if (probe_reply) return len;   /* (an answer to okplay, nobody else's business) */
         uint64_t ids[OKP_MAX_PEERS];
         int n = 0;
         EnterCriticalSection(&ctx->lock);
@@ -4386,7 +4414,7 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
     ui_show_pending();
     if (a && al >= (int)sizeof(struct sockaddr_in)) {
         uint32_t ip = ((const struct sockaddr_in *)a)->sin_addr.s_addr;
-        if (room_closed && (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF)) check_new_game();
+        if (room_closed && (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF || (ip == OKW_PROBE_IP && game->probe))) check_new_game();
         if (!mode_choice) {
             EnterCriticalSection(&okw_lock);
             int virt = sock_of(s) != NULL;
@@ -4882,6 +4910,57 @@ static int hook_exe_import(const char *dll, const char *fn, void *to, void **ori
     return 0;
 }
 
+#ifdef OKW_PROXY
+/* ---------------------------------------------------------------- okplay loaded as another DLL (build_proxy.sh)
+ * A game that imports ws2_32.dll (a Windows "known DLL": a copy next to the exe is never loaded) gets okplay through a
+ * DLL it also imports (proxy_dbghelp.c). Here its own import table - in memory, the exe file is never touched - is
+ * pointed at okplay's Winsock; system DLLs and okplay itself keep Windows' Winsock. */
+static ULONG (WINAPI *real_gaa)(ULONG, ULONG, PVOID, PIP_ADAPTER_ADDRESSES, PULONG);
+static ULONG WINAPI hook_gaa(ULONG fam, ULONG flags, PVOID res, PIP_ADAPTER_ADDRESSES aa, PULONG size)
+{
+    /* the game takes its own address from its network adapters (dethrace: the first IPv4 address, which it tells the
+     * other players): in Online/LAN Play every IPv4 address reads as this PC's okplay address */
+    ULONG r = real_gaa(fam, flags, res, aa, size);
+    if (r != NO_ERROR || !aa || choose_mode() < 2) return r;
+    EnterCriticalSection(&okw_lock);
+    if (!okw_self) okw_self = okp_rand64();
+    uint32_t me = standin_of(okw_self);
+    LeaveCriticalSection(&okw_lock);
+    int n = 0;
+    for (PIP_ADAPTER_ADDRESSES a = aa; a; a = a->Next)
+        for (PIP_ADAPTER_UNICAST_ADDRESS u = a->FirstUnicastAddress; u; u = u->Next)
+            if (u->Address.lpSockaddr && u->Address.lpSockaddr->sa_family == AF_INET) {
+                ((struct sockaddr_in *)u->Address.lpSockaddr)->sin_addr.s_addr = me;
+                n++;
+            }
+    char t[20];
+    okp_log(1, "wsock: the game read its network adapters - %d IPv4 address(es) read as okplay's %s", n, ip_s(me, t));
+    return r;
+}
+
+static void okw_proxy_attach(void)
+{
+    static const struct { const char *fn; void *to; } ws[] = {
+        { "socket", (void *)x_socket }, { "bind", (void *)x_bind }, { "closesocket", (void *)x_closesocket },
+        { "connect", (void *)x_connect }, { "accept", (void *)x_accept }, { "listen", (void *)x_listen },
+        { "send", (void *)x_send }, { "sendto", (void *)x_sendto }, { "recv", (void *)x_recv }, { "recvfrom", (void *)x_recvfrom },
+        { "select", (void *)x_select }, { "ioctlsocket", (void *)x_ioctlsocket }, { "setsockopt", (void *)x_setsockopt },
+        { "getsockopt", (void *)x_getsockopt }, { "getsockname", (void *)x_getsockname }, { "getpeername", (void *)x_getpeername },
+        { "shutdown", (void *)x_shutdown }, { "gethostname", (void *)x_gethostname }, { "gethostbyname", (void *)x_gethostbyname },
+        { "gethostbyaddr", (void *)x_gethostbyaddr }, { "WSAStartup", (void *)x_WSAStartup }, { "WSACleanup", (void *)x_WSACleanup },
+        { "WSAGetLastError", (void *)x_WSAGetLastError }, { "WSASetLastError", (void *)x_WSASetLastError },
+        { "__WSAFDIsSet", (void *)x___WSAFDIsSet }, { "WSAAsyncSelect", (void *)x_WSAAsyncSelect },
+    };
+    int n = 0;
+    void *orig;
+    for (unsigned i = 0; i < sizeof(ws) / sizeof(ws[0]); i++)
+        n += hook_exe_import("WS2_32.dll", ws[i].fn, ws[i].to, &orig) + hook_exe_import("WSOCK32.dll", ws[i].fn, ws[i].to, &orig);
+    int g = hook_exe_import("IPHLPAPI.DLL", "GetAdaptersAddresses", (void *)hook_gaa, (void **)&real_gaa);
+    okp_log(1, "wsock: loaded as %s - %d of the game's Winsock calls go through okplay%s", "dbghelp.dll", n,
+            g ? ", its adapter list too" : " (its adapter list is not seen)");
+}
+#endif
+
 static BOOL CALLBACK ew_any_window(HWND w, LPARAM lp)
 {
     DWORD pid = 0;
@@ -4962,6 +5041,9 @@ BOOL WINAPI DllMain(HINSTANCE inst, DWORD why, LPVOID res)
         WSAStartup(MAKEWORD(2, 2), &w);
         okp_log_init(inst);
         okp_crash_install(inst);   /* a crash leaves okplay-crash-*.dmp in logs\ */
+#ifdef OKW_PROXY
+        okw_proxy_attach();
+#endif
         okp_exe_build_early();
 #ifdef OKW_LAB
         rr_lab_init();

@@ -166,7 +166,14 @@ static void write_dump(EXCEPTION_POINTERS *ep)
     if (!okp_cfg.crashdump || InterlockedExchange(&g_dumped, 1)) return;
     typedef BOOL (WINAPI *MDWD_t)(HANDLE, DWORD, HANDLE, MINIDUMP_TYPE, PMINIDUMP_EXCEPTION_INFORMATION,
                                   PMINIDUMP_USER_STREAM_INFORMATION, PMINIDUMP_CALLBACK_INFORMATION);
+#ifdef OKW_PROXY
+    /* okplay is itself dbghelp.dll here (build_proxy.sh): Windows' own, by its full path */
+    char sysdbg[MAX_PATH];
+    UINT sl = GetSystemDirectoryA(sysdbg, MAX_PATH - 16);
+    HMODULE dbg = sl ? LoadLibraryA(strcat(sysdbg, "\\dbghelp.dll")) : NULL;
+#else
     HMODULE dbg = LoadLibraryA("dbghelp.dll");
+#endif
     MDWD_t mdwd = dbg ? (MDWD_t)(void *)GetProcAddress(dbg, "MiniDumpWriteDump") : NULL;
     if (!mdwd) { okp_log(0, "crash: dbghelp unavailable, no dump written"); return; }
 

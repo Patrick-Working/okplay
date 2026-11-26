@@ -1,0 +1,20 @@
+; okplay loaded as dbghelp.dll (build_proxy.sh): the debug functions dethrace imports, passed to Windows' dbghelp.dll
+LIBRARY dbghelp.dll
+EXPORTS
+    StackWalk64=pdh_StackWalk64
+    StackWalk=pdh_StackWalk
+    SymFunctionTableAccess64=pdh_SymFunctionTableAccess64
+    SymFunctionTableAccess=pdh_SymFunctionTableAccess
+    SymGetModuleBase64=pdh_SymGetModuleBase64
+    SymGetModuleBase=pdh_SymGetModuleBase
+    SymGetModuleInfo64=pdh_SymGetModuleInfo64
+    SymGetModuleInfo=pdh_SymGetModuleInfo
+    SymGetLineFromAddr64=pdh_SymGetLineFromAddr64
+    SymGetLineFromAddr=pdh_SymGetLineFromAddr
+    SymFromAddr=pdh_SymFromAddr
+    SymInitialize=pdh_SymInitialize
+    SymCleanup=pdh_SymCleanup
+    SymRefreshModuleList=pdh_SymRefreshModuleList
+    SymSetOptions=pdh_SymSetOptions
+    SymGetOptions=pdh_SymGetOptions
+    MiniDumpWriteDump=pdh_MiniDumpWriteDump
