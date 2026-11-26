@@ -257,12 +257,22 @@ typedef struct {
                                                * known (room_max_players); type: the game's own value, for the log */
     int (*player_name)(char *out, int n);     /* the player's name in the game itself (the room is "<name>'s game");
                                                * 1 = read, 0 = not known. NULL = the game has none we can read */
+    int (*bcast_hosts)(const uint8_t *b, int len);   /* HOST_BCAST: does this broadcast mean "this PC hosts"? NULL = any
+                                               * broadcast does (Road Rash); else 0 = a search (a joiner's), not a room */
 } okw_game;
+
+/* Carmageddon (dethrace, okplay build: a host broadcasts "XXXXCW95MSG2" every 3 s, a joiner "XXXXCW95MSG1") */
+static int carma_bcast_hosts(const uint8_t *b, int len)
+{
+    return len >= 12 && !memcmp(b + 4, "CW95MSG2", 8);
+}
 static const okw_game okw_profiles[] = {
-    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL, NULL, NULL },   /* Road Rash: CD, Steam/GOG */
+    { "roadrash", "roadrash.exe,roadrash95.exe", "Road Rash", OKW_UDP, HOST_BCAST, rrf_init, NULL, NULL, NULL, NULL, NULL },   /* Road Rash: CD, Steam/GOG */
     /* Need for Speed III (the 1998 CD's NFS3.EXE, Modern Patch, portable): TCP only (its IPX sockets pass through) */
     { "nfs3", "nfs3.exe", "Need for Speed III", OKW_TCP, HOST_LISTEN, nfs3_init, nfs3_hosting, nfs3_join_prefill,
-      nfs3_max_players, nfs3_player_name },
+      nfs3_max_players, nfs3_player_name, NULL },
+    /* Carmageddon through dethrace (32-bit okplay build linking wsock32): UDP port 12286 [game: Carmageddon] */
+    { "carma", "dethrace.exe", "Carmageddon", OKW_UDP, HOST_BCAST, NULL, NULL, NULL, NULL, NULL, carma_bcast_hosts },
 };
 static const okw_game *game = &okw_profiles[0];
 
@@ -2644,11 +2654,12 @@ static void ask_join_password(uint64_t host, uint32_t room)
 }
 
 /* before a send (no okw_lock held): does it need a box first? */
-static void boxes_before_send(uint32_t ip)
+static void boxes_before_send(uint32_t ip, const char *b, int len)
 {
     if (mode_choice < 2) return;
     if (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF) {
-        if (!host_pw_asked && !(ctx && ctx->host_peer)) ask_host_password();
+        int hosts = !game->bcast_hosts || game->bcast_hosts((const uint8_t *)b, len);   /* (a joiner's search is no hosting) */
+        if (hosts && !host_pw_asked && !(ctx && ctx->host_peer)) ask_host_password();
         return;
     }
     uint64_t host = 0;
@@ -4338,7 +4349,7 @@ static int do_send(okw_sock *k, uint32_t ip, uint16_t port, const char *b, int l
     if (!k->port) k->port = next_eph++;
     if (ip == 0xFFFFFFFFu || (ntohl(ip) & 0xFF) == 0xFF) {   /* broadcast: we host; everyone in the room gets it */
         if (box_open && !ctx->is_host) return len;   /* the password box is still open (9x): no room yet */
-        if (port != 6996) {
+        if (port != 6996 && (!game->bcast_hosts || game->bcast_hosts((const uint8_t *)b, len))) {
             memcpy(advert, b, len < (int)sizeof(advert) ? len : (int)sizeof(advert));
             advert_len = len < (int)sizeof(advert) ? len : (int)sizeof(advert);
             advert_port = port;
@@ -4382,7 +4393,7 @@ int WINAPI x_sendto(SOCKET s, const char *b, int len, int f, const struct sockad
             LeaveCriticalSection(&okw_lock);
             if (virt) choose_mode();
         }
-        boxes_before_send(ip);
+        boxes_before_send(ip, b, len);
     }
     EnterCriticalSection(&okw_lock);
     okw_sock *k = sock_of(s);
