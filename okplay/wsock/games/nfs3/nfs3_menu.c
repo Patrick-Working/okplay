@@ -203,12 +203,14 @@ void __cdecl nm_after_enter(uint32_t menu)
     if (!told++) okp_log(1, "nfs3 menu: the Network menu has okplay's %d entries%s", n, n ? "" : " - none found (served menu not read?)");
 }
 
+void okw_mode_picked(int m);
 void __cdecl nm_pick(uint32_t elem)
 {
     int m = elem == el_online ? 2 : elem == el_lan ? 3 : elem == el_direct ? 1 : 0;
     if (!m) return;
     InterlockedExchange(&nm_mode, m);
     okp_log(1, "nfs3 menu: the player picked %s in the game's Network menu", m == 2 ? "Oldkid.net Online" : m == 3 ? "Oldkid.net LAN" : "TCP/IP (the game's own)");
+    okw_mode_picked(m);   /* (a different network than before: the old one ends) */
 }
 
 int nfs3_menu_mode(void) { return nm_on && NB ? (int)nm_mode : 0; }
@@ -220,7 +222,9 @@ int okw_ui_take(char *a, int an, char *b, int bn);
 void okw_ui_answer(int kind, int r);
 void okw_set_ui_ingame(int on);
 
-enum { NM_NONE, NM_HOSTPW, NM_ASK7, NM_ASK8, NM_ROOMS, NM_JOINPW };
+enum { NM_NONE, NM_HOSTPW, NM_ASK7, NM_ASK8, NM_ROOMS, NM_JOINPW, NM_BUILD };
+int okw_build_question(uint64_t host, char *theirs, int tn, char *ours, int on);
+void okw_build_agree(uint64_t host);
 static int nm_cur;                       /* what okplay's open popup asks (its callback says what to do) */
 static char nm_l[6][96], *nm_lines[6], *nm_btns[3], nm_b[3][24], nm_buf[64];
 
@@ -378,6 +382,23 @@ void __cdecl nm_idle(uint32_t menu, int lobby)
     okp_log(2, "nfs3 menu: notice %d shown in the game's own popup", k);
 }
 
+static uint32_t nm_join_picked(uint8_t *close)   /* the picked game (nm_pick_i): its password first, else join */
+{
+    if (nm_room[nm_pick_i].locked) {
+        char t[96];
+        snprintf(t, sizeof(t), "Password for %s:", nm_room[nm_pick_i].name);
+        int n = nm_lines_set(t, NULL, NULL, NULL);
+        lstrcpynA(nm_b[0], "Ok", sizeof(nm_b[0])); lstrcpynA(nm_b[1], "Back", sizeof(nm_b[1]));
+        nm_btns[0] = nm_b[0]; nm_btns[1] = nm_b[1];
+        nm_buf[0] = 0;
+        nm_cur = NM_JOINPW;
+        nm_open_text(n, nm_lines, 2, nm_btns, 0, nm_buf, 20, 1, (void *)nm_popup_cb_thunk);
+        return 0;
+    }
+    okw_join_pick(nm_room[nm_pick_i].host, nm_room[nm_pick_i].room, NULL);
+    return nm_join_now(close);
+}
+
 int __cdecl nm_popup_cb(int result, uint8_t *close)
 {
     int cur = nm_cur, btn = (int)nm_call0(NB->pop_button);
@@ -393,19 +414,24 @@ int __cdecl nm_popup_cb(int result, uint8_t *close)
         *close = 0;   /* (another popup of okplay's follows: kept open, as the game does) */
         if (btn < 0 || btn >= nm_nroom) { nm_show_rooms(); return 0; }   /* Refresh */
         nm_pick_i = btn;
-        if (nm_room[btn].locked) {
-            char t[96];
-            snprintf(t, sizeof(t), "Password for %s:", nm_room[btn].name);
-            int n = nm_lines_set(t, NULL, NULL, NULL);
-            lstrcpynA(nm_b[0], "Ok", sizeof(nm_b[0])); lstrcpynA(nm_b[1], "Back", sizeof(nm_b[1]));
+        char th[64], ou[64];
+        if (okw_build_question(nm_room[btn].host, th, sizeof(th), ou, sizeof(ou))) {   /* another version: asked here */
+            char l2[96], l3[96];
+            snprintf(l2, sizeof(l2), "Theirs: %s", th);
+            snprintf(l3, sizeof(l3), "Yours: %s", ou);
+            int n = nm_lines_set("The host runs a different version of the game:", l2, l3, "It may go out of sync in the race.");
+            lstrcpynA(nm_b[0], "Join anyway", sizeof(nm_b[0])); lstrcpynA(nm_b[1], "Back", sizeof(nm_b[1]));
             nm_btns[0] = nm_b[0]; nm_btns[1] = nm_b[1];
-            nm_buf[0] = 0;
-            nm_cur = NM_JOINPW;
-            nm_open_text(n, nm_lines, 2, nm_btns, 0, nm_buf, 20, 1, (void *)nm_popup_cb_thunk);
+            nm_cur = NM_BUILD;
+            nm_open_choice(n, nm_lines, 2, nm_btns, NULL, 1, 1, (void *)nm_popup_cb_thunk);   /* (Back is the default) */
             return 0;
         }
-        okw_join_pick(nm_room[btn].host, nm_room[btn].room, NULL);
-        return nm_join_now(close);
+        return nm_join_picked(close);
+    } else if (cur == NM_BUILD) {
+        if (result != 1 || btn != 0) { *close = 0; nm_show_rooms(); return 0; }   /* Back: the list again */
+        okw_build_agree(nm_room[nm_pick_i].host);
+        *close = 0;
+        return nm_join_picked(close);
     } else if (cur == NM_JOINPW) {
         const char *typed = (const char *)nm_call0(NB->pop_edit);
         if (result != 1 || btn != 0 || !typed) { *close = 0; nm_show_rooms(); return 0; }   /* Back: the list again */

@@ -1551,6 +1551,24 @@ static void check_new_game(void)
     if (over) end_session();
 }
 
+/* [universal] a game whose own menu picks the network (NFS3: nfs3_menu.c) - m: 1 its own TCP/IP, 2 Online, 3 LAN. The
+ * choice used to hold for the whole run ("once per launch"), so the game's own TCP/IP picked first left Online and
+ * LAN doing nothing later. A different pick now ends what the old one started; the next network call asks again
+ * (choose_mode: the menu's pick). Game's thread, in its menu, no lock held. */
+void okw_mode_picked(int m)
+{
+    int cur = (int)mode_choice;
+    if (!cur || cur == m) return;
+    okp_log(1, "wsock: the player picked another network in the game's menu (%s, was %s) - %s",
+            m == 2 ? "Online" : m == 3 ? "LAN" : "the game's own TCP/IP", cur == 2 ? "Online" : cur == 3 ? "LAN" : "the game's own TCP/IP",
+            ctx ? "okplay stops and starts again for it" : "it takes effect now");
+    EnterCriticalSection(&okw_lock);
+    int running = ctx != NULL;
+    LeaveCriticalSection(&okw_lock);
+    if (running) end_session();
+    else InterlockedExchange(&mode_choice, 0);
+}
+
 /* become the host of a room (the game broadcast, or a TCP game's host rule).
  * The room id: pending_room is chosen with the host's password box (which salts the hash with it). end_session
  * clears it, and so does host_game_over on a build whose game state is known (a new Host Game: new box, new id;
@@ -2677,14 +2695,18 @@ static int known_build(const char *b)   /* index in known_builds for this game, 
 
 /* the player picked the room of `host`: 1 = go on (same or known builds, or "Join anyway"), 0 = stay in the
  * list. okplay.ini build_check=ask (default) | off. Tests: OKP_TEST_BUILD_ANSWER=join|cancel. No lock held. */
-static int build_ok(uint64_t host, const char *theirs, const char *theirs_exe)
+static uint64_t build_agreed;   /* "Join anyway" for this host: not asked again */
+
+/* does joining `host` need the "different version" question? 0 = no (same build, builds that race each other,
+ * build_check=off, or already agreed); 1 = yes: mine/mine_exe are ours (and the log says why) */
+static int build_needs_ask(uint64_t host, const char *theirs, const char *theirs_exe, char *mine, char *mine_exe)
 {
-    static uint64_t agreed;   /* "Join anyway" for this host: not asked again */
-    char ini[MAX_PATH], mode[16] = "", mine[17] = "", mine_exe[64] = "";
+    char ini[MAX_PATH], mode[16] = "";
+    mine[0] = mine_exe[0] = 0;
     snprintf(ini, sizeof(ini), "%sokplay.ini", okp_dll_dir());
     GetPrivateProfileStringA("okplay", "build_check", "ask", mode, sizeof(mode), ini);
-    if (!_stricmp(mode, "off") || !theirs[0]) return 1;   /* (a host before 0.8.1's core sends none) */
-    okp_exe_build(mine, mine_exe, sizeof(mine_exe));
+    if (!_stricmp(mode, "off") || !theirs[0]) return 0;   /* (a host before 0.8.1's core sends none) */
+    okp_exe_build(mine, mine_exe, 64);
 #ifdef OKW_LAB   /* lab builds: okplay.ini wsock_test_build=<16 hex> stands in for our own build (bench tests) */
     {
         char fake[17] = "";
@@ -2694,18 +2716,24 @@ static int build_ok(uint64_t host, const char *theirs, const char *theirs_exe)
 #endif
     if (!mine[0] || !strcmp(mine, theirs)) {
         okp_log(2, "build: the host runs the same build of the game (%s)", mine);
-        return 1;
+        return 0;
     }
     int ia = known_build(theirs), ib = known_build(mine);
     const char *a = ia >= 0 ? known_builds[ia].what : NULL, *b = ib >= 0 ? known_builds[ib].what : NULL;
     if (a && b && known_builds[ia].group == known_builds[ib].group) {
         okp_log(1, "build: the host runs %s (%s), we run %s (%s) - builds that race each other", a, theirs, b, mine);
-        return 1;
+        return 0;
     }
     if (a && b) okp_log(1, "build: the host runs %s (%s), we run %s (%s) - known builds, but they may not race each other", a, theirs, b, mine);
     okp_log(1, "build: the host runs another build of the game - theirs %s %s%s, ours %s %s%s", theirs_exe, theirs,
             a ? "" : " (not in the known list)", mine_exe, mine, b ? "" : " (not in the known list)");
-    if (host == agreed) return 1;
+    return host != build_agreed;
+}
+
+static int build_ok(uint64_t host, const char *theirs, const char *theirs_exe)
+{
+    char mine[17] = "", mine_exe[64] = "";
+    if (!build_needs_ask(host, theirs, theirs_exe, mine, mine_exe)) return 1;
     char test[16] = "";
     GetEnvironmentVariableA("OKP_TEST_BUILD_ANSWER", test, sizeof(test));
     int go;
@@ -2727,9 +2755,30 @@ static int build_ok(uint64_t host, const char *theirs, const char *theirs_exe)
         go = (int)run_box(&bx);
     }
     okp_log(1, "build: %s", go ? "joining anyway" : "the player cancelled the join - back to the list");
-    if (go) agreed = host;
+    if (go) build_agreed = host;
     return go;
 }
+
+/* [universal] the "different version" question for a game whose own menus ask it (NFS3: nfs3_menu.c), at the pick
+ * in its game list - before the game connects, so no box opens inside the connect. 1 = ask: theirs / ours are short
+ * descriptions; okw_build_agree(host) after "Join anyway". Game's thread, no lock held. */
+static void build_describe(const char *build, const char *exe, char *out, int n)
+{
+    int i = known_build(build);
+    if (i >= 0) {   /* "Need for Speed III Modern Patch 1.6.1, nfs3.exe" -> without the game's name and the exe */
+        const char *w = known_builds[i].what, *g = game->name;
+        if (!_strnicmp(w, g, strlen(g))) w += strlen(g);
+        while (*w == ' ') w++;
+        lstrcpynA(out, w, n);
+        char *c = strrchr(out, ',');
+        if (c) *c = 0;
+        size_t l = strlen(out);   /* "(1998, OEM release)" -> "1998, OEM release" */
+        if (l >= 2 && out[0] == '(' && out[l - 1] == ')') { memmove(out, out + 1, l - 2); out[l - 2] = 0; }
+        if (!out[0]) lstrcpynA(out, known_builds[i].what, n);
+    } else snprintf(out, n, "%s (build %.8s)", exe[0] ? exe : "?", build);
+}
+
+
 
 /* ---------------------------------------------------------------- the game's room list */
 
@@ -3328,6 +3377,25 @@ static int room_list_box(uint64_t *host)
     if (run_box(&b) != IDOK || !L.host) return 0;
     *host = L.host;
     return 1;
+}
+
+int okw_build_question(uint64_t host, char *theirs_out, int tn, char *ours_out, int on)
+{
+    okw_roominfo ri;
+    char mine[17] = "", mine_exe[64] = "";
+    EnterCriticalSection(&okw_lock);
+    int have = ctx && room_of(host, &ri);
+    LeaveCriticalSection(&okw_lock);
+    if (!have || !build_needs_ask(host, ri.build, ri.exe, mine, mine_exe)) return 0;
+    build_describe(ri.build, ri.exe, theirs_out, tn);
+    build_describe(mine, mine_exe, ours_out, on);
+    return 1;
+}
+
+void okw_build_agree(uint64_t host)
+{
+    build_agreed = host;
+    okp_log(1, "build: joining anyway (answered in the game's own popup)");
 }
 
 /* [universal] the room list for a game whose own menus show it (NFS3: nfs3_menu.c), and the pick made there: the
