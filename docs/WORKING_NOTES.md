@@ -69,6 +69,11 @@ Gotchas learned the hard way:
 
 ## Next release (noted 2026-11-09)
 
+- Carmageddon through dethrace (2026-11-26, on main, wsock 0.3.16): okplay as `dbghelp.dll` for unmodified
+  dethrace (`okplay/wsock/build_proxy.sh`, `build_proxy.sh 64`), profile `carma`. Before it ships: Online Play and
+  two PCs, the package (dbghelp.dll + okplay.ini for dethrace's folder, page text), the release gate building
+  both. Notes: `docs/GAME_CARMAGEDDON.md`.
+
 - Room server over plain HTTP when HTTPS fails. A player whose PC couldn't make the secure connection (a
   broken certificate setup) got in by changing `https://` to `http://` in okplay.ini's `server=`. Plan, in
   `okplay/src/rdv.c` (shared by the drop-in and okplay wsock): after a secure-connection failure (WinHTTP

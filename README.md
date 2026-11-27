@@ -1,11 +1,15 @@
 # okplay - Oldkid.net Online Play
 
-**Latest release: v0.8.7** (2026-11-11) - one download for every game: [oldkid.net](https://oldkid.net/aoe2net/)
+**Latest release: v0.8.8** (2026-11-25) - one download for every game: [oldkid.net](https://oldkid.net/aoe2net/)
 
 | inside | version | for |
 |---|---|---|
 | **DirectPlay drop-in** (`dplayx.dll`, `dplay.dll`) | 0.8.8 | DirectPlay games (AoE2, Midtown Madness 2, Necrodome, ...) |
 | **Winsock shim** (`wsock32.dll`) | 0.3.15 | games that use Winsock directly: Road Rash, Need for Speed III. Inert in every other game |
+
+**In work on main (not in a download yet):** Carmageddon through [dethrace](https://github.com/dethrace-labs/dethrace),
+unmodified - okplay wsock 0.3.16 as `dbghelp.dll` beside `dethrace.exe` (32- and 64-bit): room list, host and join,
+passwords, races over Oldkid.net LAN Play so far ([notes](docs/GAME_CARMAGEDDON.md)).
 
 **What's new in v0.8.8:** [release notes](docs/RELEASE_0.8.8.md) - Need for Speed III plays entirely in the game's own
 menus (game list, passwords, notices), from the Modern Patch to the original 1998 release; public
@@ -183,6 +187,9 @@ passwords and boxes as the drop-in), and the game's own LAN game list becomes th
 - **Need for Speed III: Hot Pursuit** (new in v0.8.6): the Modern Patch and the original 1998 release race
   each other, Client-Server and Peer-to-Peer games, a room list instead of typed addresses, a password per
   hosting, up to 8 players, full games say so (`docs/GAME_NFS3.md`).
+- **Carmageddon through dethrace** (in work, not in a download yet): unmodified dethrace, okplay loaded as
+  `dbghelp.dll` (dethrace's Winsock is a Windows "known DLL"); the game's own list shows the rooms, passwords in
+  okplay's boxes; tested on LAN Play with the official 64-bit release (`docs/GAME_CARMAGEDDON.md`).
 
 Next: races with 3+ players, IPX games (Road Rash's IPX mode and others) over okplay.
 
